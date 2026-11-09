@@ -256,6 +256,9 @@ export const cardApi = {
 
   backfillImages: (force = false) =>
     api.post(`/cards/meta/backfill-images?force=${force}`),
+  // Pokédex auffüllen: Platzhalter für alle Spezies ohne eigene Zeile (idempotent)
+  fillPokedex: () =>
+    api.post<{ created: number; existing: number; total: number }>("/cards/meta/fill-pokedex"),
 };
 
 export const pricesApi = {

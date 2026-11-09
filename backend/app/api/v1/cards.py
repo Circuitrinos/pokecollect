@@ -371,6 +371,20 @@ def get_enums():
 
 # ── Bilder Backfill ───────────────────────────────────────────────────────────
 
+@router.post("/meta/fill-pokedex")
+async def fill_pokedex(db: Session = Depends(get_db)):
+    """
+    Legt für jede Spezies 1–1025 ohne eigene Zeile einen Pokédex-Platzhalter
+    an (services/pokedex_fill.py). Idempotent; bestehende Karten bleiben unberührt.
+    """
+    from app.services import pokedex_fill
+    try:
+        names = await pokedex_fill.fetch_species_names()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Pokémon-Namen nicht ladbar: {exc}") from exc
+    return pokedex_fill.fill_pokedex(db, names)
+
+
 @router.post("/meta/backfill-images")
 def backfill_images(
     background_tasks: BackgroundTasks,

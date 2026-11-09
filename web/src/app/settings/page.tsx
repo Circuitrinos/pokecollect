@@ -73,6 +73,7 @@ export default function SettingsPage() {
   const [pwSaving, setPwSaving] = useState(false);
   const [usage, setUsage] = useState<ScanUsage | null>(null);
   const [refreshingPrices, setRefreshingPrices] = useState(false);
+  const [fillingPokedex, setFillingPokedex] = useState(false);
   const [syncingCatalog, setSyncingCatalog] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
@@ -517,6 +518,31 @@ export default function SettingsPage() {
             </p>
           </div>
         )}
+      </Section>
+
+      {/* Pokédex auffüllen: Platzhalter für alle Spezies ohne eigene Zeile */}
+      <Section title={`📕 ${t.settings_section_pokedex}`}>
+        <p className="text-gray-400 text-xs">{t.settings_fill_pokedex_hint}</p>
+        <div className="pt-1">
+          <button
+            type="button"
+            disabled={fillingPokedex}
+            onClick={async () => {
+              setFillingPokedex(true);
+              try {
+                const r = await cardApi.fillPokedex();
+                toast.success(t.settings_fill_pokedex_done(r.data.created, r.data.existing));
+              } catch {
+                toast.error(t.settings_fill_pokedex_error);
+              } finally {
+                setFillingPokedex(false);
+              }
+            }}
+            className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-50"
+          >
+            {fillingPokedex ? "…" : t.settings_fill_pokedex}
+          </button>
+        </div>
       </Section>
 
       {/* Bilder */}
