@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # sonst Cardmarket-€ zum Tageskurs in $ umgerechnet.
     currency: str = "EUR"
 
+    # Bild-Abgleich-Dienst (Scan-Provider „local", Env MATCHER_URL). Läuft im
+    # selben Stack als Service „matcher".
+    matcher_url: str = "http://matcher:8000"
+
     @property
     def usd_mode(self) -> bool:
         return self.currency.strip().upper() == "USD"

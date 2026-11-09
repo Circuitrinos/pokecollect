@@ -22,6 +22,9 @@ class ScanRawRead(BaseModel):
     confidence: Optional[float] = None   # Roh-Sicherheit der Engine (0..1)
     bbox: Optional[list[float]] = None   # [x,y,w,h] als Anteil 0..1 des Bildes
     quad: Optional[list[list[float]]] = None  # 4 Eckpunkte [[x,y]…] (0..1) TL,TR,BR,BL
+    # Bereits bekannte TCGdex-Karte (Bild-Abgleich „local" bzw. Auswahl im
+    # Picker): der Resolver nimmt sie direkt, statt Set/Nummer/Name zu deuten.
+    tcgdex_card_id: Optional[str] = None
 
     # POST /scan/resolve nimmt diese Struktur direkt vom Client entgegen
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
@@ -45,6 +48,16 @@ class ScanMatch(BaseModel):
     variants_firstedition: Optional[bool] = None
 
 
+class ScanAlternative(BaseModel):
+    """Weiterer möglicher Treffer des Bild-Abgleichs (für die Auswahl im UI)."""
+    tcgdex_card_id: str
+    name: Optional[str] = None
+    set_name: Optional[str] = None
+    local_id: Optional[str] = None
+    image_url: Optional[str] = None
+    art_inliers: int = 0
+
+
 class ScanCandidate(BaseModel):
     """
     Ein Scan-Treffer inkl. Vorbefüllung für den Bestätigungs-Dialog.
@@ -57,10 +70,14 @@ class ScanCandidate(BaseModel):
     match: Optional[ScanMatch] = None
     suggested: dict = {}
     foil_options: list[str] = []          # erlaubte Folierungen laut variants
+    # Bild-Abgleich („local"): weitere Kandidaten und ob der Nutzer wählen muss
+    # (kein eindeutiger Treffer). Leer/False bei allen anderen Engines.
+    alternatives: list[ScanAlternative] = []
+    needs_choice: bool = False
 
 
 class ScanResponse(BaseModel):
-    engine: str                            # "gemini" | "openai" | "openrouter" | "ocr"
+    engine: str                            # "gemini" | "openai" | "openrouter" | "local" | "ocr"
     mode: ScanMode
     candidates: list[ScanCandidate]
     limit_erreicht: bool = False           # ein LIMIT (Tages- ODER Rate-Limit) griff → OCR-Fallback

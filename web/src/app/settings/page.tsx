@@ -95,7 +95,7 @@ export default function SettingsPage() {
   // Modell-Vorschläge laden, sobald ein Cloud-Provider aktiv ist / gewechselt wird.
   const provider = s?.scan_reader_provider;
   useEffect(() => {
-    if (!provider || provider === "ocr") { setModelList([]); setModelSource(null); return; }
+    if (!provider || provider === "ocr" || provider === "local") { setModelList([]); setModelSource(null); return; }
     let alive = true;
     scanApi.models(provider)
       .then((r) => { if (alive) { setModelList(r.data.models); setModelSource(r.data.source); } })
@@ -413,6 +413,7 @@ export default function SettingsPage() {
             <option value="gemini">{t.settings_scan_provider_gemini}</option>
             <option value="openai">{t.settings_scan_provider_openai}</option>
             <option value="openrouter">{t.settings_scan_provider_openrouter}</option>
+            <option value="local">{t.settings_scan_provider_local}</option>
             <option value="ocr">{t.settings_scan_provider_ocr}</option>
           </select>
         </Field>
@@ -464,7 +465,7 @@ export default function SettingsPage() {
         )}
 
         {/* Combobox-Vorschläge (bild-fähige Modelle) — Feld bleibt frei tippbar */}
-        {s.scan_reader_provider !== "ocr" && (
+        {s.scan_reader_provider !== "ocr" && s.scan_reader_provider !== "local" && (
           <>
             <datalist id="scan-model-suggestions">
               {modelList.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}

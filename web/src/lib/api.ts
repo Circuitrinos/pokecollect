@@ -464,10 +464,23 @@ export type ScanCandidate = {
     confidence: number | null;
     bbox: number[] | null;
     quad: number[][] | null;
+    tcgdex_card_id?: string | null;
   };
   match: ScanMatch | null;
   suggested: Record<string, unknown>;
   foil_options: string[];
+  // Bild-Abgleich („local"): weitere Treffer + „bitte wählen" (kein eindeutiger Treffer)
+  alternatives?: ScanAlternative[];
+  needs_choice?: boolean;
+};
+
+export type ScanAlternative = {
+  tcgdex_card_id: string;
+  name: string | null;
+  set_name: string | null;
+  local_id: string | null;
+  image_url: string | null;
+  art_inliers: number;
 };
 
 export type GeminiHinweisArt = "tageslimit" | "rate_limit" | "key_ungueltig" | "gemini_fehler" | "reader_fehler";
@@ -522,6 +535,7 @@ export type ScanRawRead = {
   set_code?: string | null;
   number?: string | null;
   language?: string | null;
+  tcgdex_card_id?: string | null;  // bekannte Karte (Auswahl im Picker)
 };
 
 export type ScanUsage = {

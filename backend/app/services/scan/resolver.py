@@ -274,7 +274,23 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     tc = None
     via_number = False
     via_number_only = False  # nur der geratene Nummer-nur-Pfad (Priorität 2)
-    if set_id and local_id:
+
+    # Priorität 0 — die Karte ist schon bekannt (Bild-Abgleich „local" oder
+    # Auswahl im Picker): direkt laden; fehlt sie in der Scan-Sprache, die
+    # englische Fassung (dieselbe TCGdex-ID).
+    via_card_id = False
+    if read.tcgdex_card_id:
+        tc = await tcgdex.get_card(read.tcgdex_card_id, tcg_lang)
+        if tc is None and tcg_lang != "en":
+            tc = await tcgdex.get_card(read.tcgdex_card_id, "en")
+        if tc is not None:
+            via_number = via_card_id = True
+            if tc.set and tc.set.id:
+                set_id = tc.set.id
+                set_row = _set_by_set_id(db, set_id) or set_row
+            local_id = tc.localId or local_id
+
+    if tc is None and set_id and local_id:
         tc = await tcgdex.fetch_card_by_set_multilang(set_id, local_id, tcg_lang)
         if tc is not None:
             via_number = True
@@ -334,14 +350,15 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         fallback_dex, fallback_en = await _dex_from_results(results)
 
     uncertain: list[str] = []
-    if not read.name:
-        uncertain.append("name")
-    if not set_id:
-        uncertain.append("set")
-    if not local_id:
-        uncertain.append("number")
-    if not read.language:
-        uncertain.append("language")
+    if not via_card_id:  # bekannte Karte: Name/Set/Nummer stehen fest, Sprache = Vorgabe
+        if not read.name:
+            uncertain.append("name")
+        if not set_id:
+            uncertain.append("set")
+        if not local_id:
+            uncertain.append("number")
+        if not read.language:
+            uncertain.append("language")
 
     match: Optional[ScanMatch] = None
     suggested: dict = {}
@@ -358,7 +375,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         # Der roh gelesene Name passt NICHT zur über Nummer/Set aufgelösten Karte
         # (typischer #33-Fehlerfall: Gemini las Label-/Attackentext als Namen) →
         # „name" als unsicher markieren; die Karte selbst steht dennoch.
-        if read.name and "name" not in uncertain \
+        if read.name and not via_card_id and "name" not in uncertain \
                 and not _name_plausibel(read.name, tc.name, eng):
             uncertain.append("name")
 

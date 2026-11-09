@@ -28,7 +28,7 @@ from app.schemas.scan import (
 from app.services.card_creation import create_owned_card
 from app.services.catalog_lookup import catalog_row_for
 from app.services.collection_slots import next_free_position
-from app.services.scan import crop_hints, gemini, model_catalog, ocr, vlm
+from app.services.scan import crop_hints, gemini, local_match, model_catalog, ocr, vlm
 from app.services.scan.rate_window import gemini_rate
 from app.services.scan.resolver import resolve_one, resolve_reads
 from app.services.tcgdex import is_allowed_image_url
@@ -56,7 +56,7 @@ def _gemini_config(db: Session) -> tuple[str, str]:
 # unterscheiden sich nur in der base_url. Gemini spricht seine eigene REST-API.
 _OPENAI_BASE = "https://api.openai.com/v1"
 _OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-_READER_PROVIDERS = {"gemini", "openai", "openrouter", "ocr"}
+_READER_PROVIDERS = {"gemini", "openai", "openrouter", "local", "ocr"}
 
 
 def _reader_config(db: Session) -> tuple[str, str, str, str | None]:
@@ -80,6 +80,8 @@ def _reader_config(db: Session) -> tuple[str, str, str, str | None]:
     if provider == "gemini":
         key, model = _gemini_config(db)
         return provider, key, model, None
+    if provider == "local":  # Bild-Abgleich-Dienst im selben Stack, kein Key
+        return provider, "", "", settings.matcher_url
     return "ocr", "", "", None
 
 
@@ -143,6 +145,8 @@ def scan_status(db: Session = Depends(get_db)):
         reader_on = gemini.is_enabled(key)
     elif provider in ("openai", "openrouter"):
         reader_on = vlm.is_enabled(key)
+    elif provider == "local":
+        reader_on = local_match.is_ready(_base)
     else:  # "ocr": bewusst nur lokale Erkennung
         reader_on = False
     active = provider if reader_on else ("ocr" if ocr_on else "none")
@@ -244,7 +248,16 @@ async def scan(
     # Lese-Stufe B (Issue #57): das in den Einstellungen gewählte Modell liest
     # die Karte; bei fehlendem Key/hartem Fehler/„ocr" greift die lokale OCR.
     provider, reader_key, reader_model, reader_base = _reader_config(db)
-    if provider == "gemini" and gemini.is_enabled(reader_key):
+    local_extras: dict[int, local_match.LocalExtra] = {}
+    if provider == "local":
+        result = await local_match.extract(
+            data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols)
+        if result.reads is not None:
+            reads, local_extras, engine = result.reads, result.extras, "local"
+        else:
+            hinweis_art = result.fehler_art
+            hinweis = "Bild-Abgleich nicht erreichbar – Erkennung über lokale OCR."
+    elif provider == "gemini" and gemini.is_enabled(reader_key):
         if _gemini_limit_reached(db):
             limit_erreicht = True
             hinweis_art = "tageslimit"
@@ -319,6 +332,15 @@ async def scan(
     reads = crop_hints.sanitize_crop_hints(reads, data, mode=mode)
 
     candidates = await resolve_reads(db, reads, default_lang=default_language)
+    # Bild-Abgleich: Alternativen + „bitte wählen" an die Kandidaten hängen
+    # (Zuordnung über das Read-Objekt; resolve_reads sortiert um).
+    for c in candidates:
+        extra = local_extras.get(id(c.raw))
+        if extra:
+            c.alternatives = extra.alternatives
+            c.needs_choice = extra.needs_choice
+            if extra.needs_choice:  # kein eindeutiger Treffer → ehrliche, niedrige Sicherheit
+                c.confidence = min(c.confidence, extra.confidence)
     return ScanResponse(
         engine=engine, mode=mode, candidates=candidates,
         limit_erreicht=limit_erreicht, hinweis=hinweis, hinweis_art=hinweis_art,

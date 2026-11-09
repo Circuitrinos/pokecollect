@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import {
   Collection, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
   cardApi, collectionApi, scanApi,
+  ScanAlternative,
 } from "@/lib/api";
 import { useEnums } from "@/lib/useEnums";
 import { useSets } from "@/lib/useSets";
@@ -25,7 +26,13 @@ type EditableCandidate = ScanCandidate & {
   imPokedex: boolean;       // je Karte: in den Pokédex
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
+  chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
 };
+
+// TCGdex liefert jede Karte auch klein (/low.webp) – reicht für Picker-Vorschauen.
+function thumbUrl(url: string | null): string | null {
+  return url ? url.replace(/\/high\.(webp|png|jpg)$/, "/low.$1") : null;
+}
 
 const LANGS = ["DE", "EN", "CN", "JP", "FR", "ES", "IT"];
 
@@ -219,7 +226,7 @@ export default function ScanPage() {
       });
       const list: EditableCandidate[] = res.data.candidates.map((c) => ({
         ...c,
-        include: true,
+        include: !c.needs_choice,   // ohne eindeutigen Treffer erst nach der Auswahl übernehmen
         usePhoto: !!(c.raw?.bbox || c.raw?.quad),
         cropUrl: null,
         imPokedex: setPokedexRep,
@@ -350,6 +357,40 @@ export default function ScanPage() {
       } : cc));
     } catch { /* Live-Auflösung ist optional */ }
   };
+
+  // Bild-Abgleich: Nutzer wählt einen der Treffer → Karte direkt per ID auflösen.
+  const pickAlternative = async (idx: number, alt: ScanAlternative) => {
+    const c = candidates[idx];
+    if (!c) return;
+    const s = c.suggested as Record<string, unknown>;
+    try {
+      const r = await scanApi.resolve({
+        tcgdex_card_id: alt.tcgdex_card_id,
+        name: alt.name,
+        language: (s.sprache as string) ?? defaultLang,
+      });
+      const nc = r.data;
+      setCandidates((prev) => prev.map((cc, i) => i === idx ? {
+        ...cc,
+        match: nc.match,
+        foil_options: nc.foil_options,
+        uncertain_fields: nc.uncertain_fields,
+        confidence: nc.confidence,
+        needs_choice: false,
+        include: true,
+        chosenId: alt.tcgdex_card_id,
+        suggested: { ...nc.suggested, sprache: s.sprache ?? nc.suggested.sprache, muster: s.muster },
+      } : cc));
+    } catch {
+      toast.error(t.scan_error);
+    }
+  };
+
+  // „Keine davon": Treffer verwerfen, Felder bleiben zum manuellen Korrigieren.
+  const chooseNone = (idx: number) =>
+    setCandidates((prev) => prev.map((c, i) => i === idx ? {
+      ...c, needs_choice: false, include: true, chosenId: null, match: null, uncertain_fields: ["match"],
+    } : c));
 
   const handleSave = async () => {
     const chosen = candidates.filter((c) => c.include);
@@ -577,7 +618,8 @@ export default function ScanPage() {
             return (
               <div key={idx}
                 className={`rounded-lg border p-3 ${
-                  !c.include ? "border-gray-800 opacity-50" : uncertain ? "border-pokemon-red" : "border-gray-700"
+                  c.needs_choice ? "border-pokemon-yellow"
+                  : !c.include ? "border-gray-800 opacity-50" : uncertain ? "border-pokemon-red" : "border-gray-700"
                 } bg-pokemon-card`}>
                 {/* Kopfzeile: Pokédex-Nr. + Übernehmen / Im Pokédex */}
                 <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
@@ -597,6 +639,45 @@ export default function ScanPage() {
                     </label>
                   </div>
                 </div>
+
+                {/* Bild-Abgleich: Treffer zur Auswahl (Pflicht, wenn nicht eindeutig) */}
+                {(c.alternatives?.length ?? 0) > 1 && (
+                  <div className={`mb-2 rounded p-2 ${c.needs_choice ? "border border-pokemon-yellow bg-yellow-500/10" : "bg-gray-800/40"}`}>
+                    <div className={`text-xs mb-1 ${c.needs_choice ? "text-pokemon-yellow" : "text-gray-400"}`}>
+                      {c.needs_choice ? t.scan_pick_title : t.scan_pick_others}
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {c.alternatives!.map((a) => {
+                        const current = c.chosenId ?? (c.needs_choice ? null : c.match?.tcgdex_card_id);
+                        const active = current === a.tcgdex_card_id;
+                        const thumb = thumbUrl(a.image_url);
+                        return (
+                          <button key={a.tcgdex_card_id} type="button" onClick={() => void pickAlternative(idx, a)}
+                            title={`${a.name ?? ""} · ${a.set_name ?? ""} ${a.local_id ?? ""}`}
+                            className={`shrink-0 w-20 text-left rounded border ${
+                              active ? "border-pokemon-yellow ring-2 ring-pokemon-yellow" : "border-gray-700 hover:border-gray-500"}`}>
+                            {thumb ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={thumb} alt="" loading="lazy" className="w-full rounded-t" />
+                            ) : (
+                              <div className="aspect-[63/88] bg-gray-800 rounded-t" />
+                            )}
+                            <div className="px-1 pt-0.5 text-[10px] leading-tight text-gray-200 truncate">{a.name}</div>
+                            <div className="px-1 pb-0.5 text-[9px] leading-tight text-gray-500 truncate">
+                              {a.set_name}{a.local_id ? ` · ${a.local_id}` : ""}{active ? ` · ${t.scan_pick_chosen}` : ""}
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {c.needs_choice && (
+                        <button type="button" onClick={() => chooseNone(idx)}
+                          className="shrink-0 w-20 rounded border border-dashed border-gray-600 text-[10px] text-gray-400 hover:text-white">
+                          {t.scan_pick_none}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-col sm:flex-row gap-3">
                   {/* Bild – eigenes Foto (Zuschnitt) oder TCGdex-Treffer, je nach Wahl. */}
