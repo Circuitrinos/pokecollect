@@ -51,6 +51,9 @@ jobs:
             ghcr.io/${{ env.OWNER }}/pokecollect-${{ matrix.name }}:sha-${{ github.sha }}
           # Only the web image uses these (baked in at build time); the others ignore them.
           # Empty API URL = relative /api calls through the gateway; currency = your choice.
+          # Links the package to this repository (so Actions keeps write access).
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           build-args: |
             NEXT_PUBLIC_API_URL=
             NEXT_PUBLIC_CURRENCY=USD
