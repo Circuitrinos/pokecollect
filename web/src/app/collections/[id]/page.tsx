@@ -250,7 +250,7 @@ export default function CollectionDetailPage() {
           {isGoal && collection ? (
             <>
               <p className="text-gray-500 text-xs mt-1">
-                {zielSet ? `${zielSet.name} (${zielSet.code})` : collection.ziel_set_id}
+                {zielSet ? `${lang === "EN" && zielSet.name_en ? zielSet.name_en : zielSet.name} (${zielSet.code})` : collection.ziel_set_id}
                 {collection.ziel_folierung ? ` · ${collection.ziel_folierung}` : ""}
                 {collection.ziel_sprache ? ` · ${collection.ziel_sprache}` : ""}
                 {` · ${collection.ziel_master_set ? t.soll_master_badge : t.soll_official_badge}`}

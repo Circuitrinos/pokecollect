@@ -155,10 +155,14 @@ def _foil_options(tc) -> list[str]:
     return opts or ["Normal"]
 
 
-def _set_edition(db: Session, set_id: Optional[str], fallback_code: Optional[str]) -> Optional[str]:
+def _set_edition(db: Session, set_id: Optional[str], fallback_code: Optional[str],
+                 lang: Optional[str] = "DE") -> Optional[str]:
+    """„Setname (KÜRZEL)" — deutscher Setname nur für deutsche Karten, sonst
+    der englische (fehlt er, der deutsche). Das Kürzel bleibt der Schlüssel."""
     row = _set_by_set_id(db, set_id)
     if row:
-        return f"{row.name} ({row.code})"
+        name = row.name if (lang or "DE").upper() == "DE" else (row.name_en or row.name)
+        return f"{name} ({row.code})"
     if fallback_code:
         return fallback_code
     return None
@@ -389,7 +393,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
                 and not _norm_name(read.name):
             uncertain.append("name")
 
-        set_edition = _set_edition(db, set_id, read.set_code)
+        set_edition = _set_edition(db, set_id, read.set_code, app_lang)
         knr = _karten_nr(tc.localId, official, read.number)
         foil_options = _foil_options(tc)
 
@@ -448,7 +452,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
             "englischer_name": fallback_en,
             "pokedex_nr": fallback_dex,
             "dex_id": fallback_dex,
-            "set_edition": _set_edition(db, set_id, read.set_code),
+            "set_edition": _set_edition(db, set_id, read.set_code, app_lang),
             "karten_nr": read.number,
             "sprache": app_lang,
             "besessen": True,

@@ -18,7 +18,9 @@ function parseSetEdition(val: string): { code: string; name: string } | null {
 }
 
 export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  // Setname in der Oberflächensprache (englisch, sobald vorhanden und EN aktiv)
+  const label = (s: PokemonSet) => (lang === "EN" && s.name_en ? s.name_en : s.name);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -46,12 +48,13 @@ export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) 
     ? sets.filter(
         (s) =>
           s.code.toLowerCase().includes(query.toLowerCase()) ||
-          s.name.toLowerCase().includes(query.toLowerCase())
+          s.name.toLowerCase().includes(query.toLowerCase()) ||
+          (s.name_en ?? "").toLowerCase().includes(query.toLowerCase())
       )
     : sets;
 
   const select = (s: PokemonSet) => {
-    onChange(`${s.name} (${s.code})`, s);
+    onChange(`${label(s)} (${s.code})`, s);
     setQuery("");
     setOpen(false);
     setShowNew(false);
@@ -103,7 +106,7 @@ export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) 
                 className="px-3 py-2 text-sm text-white hover:bg-gray-700 cursor-pointer flex justify-between"
               >
                 <span className="font-mono text-yellow-400">{s.code}</span>
-                <span className="text-gray-400 truncate ml-2">{s.name}</span>
+                <span className="text-gray-400 truncate ml-2">{label(s)}</span>
               </li>
             ))}
             <li

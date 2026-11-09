@@ -752,20 +752,29 @@ async def refresh_catalog_eur(db: Session, limit: int = 500) -> dict:
     }
 
 
-async def _build_card_from_catalog(db: Session, row: TcgdexCatalog) -> dict:
-    """Karten-Felder aus einem Katalog-Eintrag (lädt bei Bedarf Volldetails nach)."""
+async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Optional[str] = "DE") -> dict:
+    """Karten-Felder aus einem Katalog-Eintrag (lädt bei Bedarf Volldetails nach).
+    Karten- und Setname in der Kartensprache: deutsch nur für deutsche Karten,
+    sonst englisch (fehlt der englische Name, der deutsche)."""
     if not row.enriched:
         tc = await tcgdex.get_card(row.card_id, _catalog_lang(row.region))
         if tc:
             _apply_full(row, tc)
             db.commit()
+    german = (lang or "DE").upper() == "DE"
+    set_name = row.set_name
+    if not german and row.set_id:
+        srow = db.scalars(select(PokemonSet).where(PokemonSet.set_id == row.set_id)).first()
+        if srow and srow.name_en:
+            set_name = srow.name_en
     set_edition = None
-    if row.set_name and row.set_code:
-        set_edition = f"{row.set_name} ({row.set_code})"
+    if set_name and row.set_code:
+        set_edition = f"{set_name} ({row.set_code})"
     elif row.set_code:
         set_edition = row.set_code
+    card_name = (row.name or row.name_en) if german else (row.name_en or row.name)
     return {
-        "kartenname": row.name or row.name_en or row.card_id,
+        "kartenname": card_name or row.card_id,
         "englischer_name": row.name_en,
         "pokedex_nr": row.dex_id,
         "set_edition": set_edition,
@@ -814,10 +823,10 @@ async def add_to_wishlist(
     row = db.get(TcgdexCatalog, card_id)
     if not row:
         return None
-    fields = await _build_card_from_catalog(db, row)
     attrs = _resolve_card_attrs(
         db, sprache=sprache, zustand=zustand, folierung=folierung, erste_edition=erste_edition,
     )
+    fields = await _build_card_from_catalog(db, row, attrs["sprache"])
     card = PokemonCard(**fields, **attrs, besessen=False, wunschliste=True, prioritaet=prioritaet)
     db.add(card)
     db.commit()
@@ -842,10 +851,10 @@ async def add_to_collection(
     coll = db.get(Collection, collection_id)
     if not coll:
         return None
-    fields = await _build_card_from_catalog(db, row)
     attrs = _resolve_card_attrs(
         db, sprache=sprache, zustand=zustand, folierung=folierung, erste_edition=erste_edition,
     )
+    fields = await _build_card_from_catalog(db, row, attrs["sprache"])
     # Domain-Service: Platzhalter-Adoption + Auto-im_pokedex + Bild-Fetch (Issue #4)
     card = create_owned_card(
         db, {**fields, **attrs},
