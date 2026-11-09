@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     images_dir: str = "/app/images"
 
+    # Welche Sprachfassung des Kartenscans der Katalog-Sync bevorzugt ("de" | "en").
+    # Env CATALOG_IMAGE_LANG. Default "de" = bisheriges Verhalten.
+    catalog_image_lang: str = "de"
+
     class Config:
         env_file = ".env"
 

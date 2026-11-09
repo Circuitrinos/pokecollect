@@ -6,8 +6,15 @@ export const SERIES_LABEL: Record<string, string> = {
   gym: "Gym", ecard: "e-Card", col: "Call of Legends", pop: "POP", tk: "Trainer Kits",
 };
 
-export function seriesLabel(id?: string | null): string {
-  return id ? (SERIES_LABEL[id] ?? id.toUpperCase()) : "—";
+export const SERIES_LABEL_EN: Record<string, string> = {
+  sv: "Scarlet & Violet", me: "Mega Evolution", swsh: "Sword & Shield",
+  sm: "Sun & Moon", bw: "Black & White", dp: "Diamond & Pearl", pl: "Platinum",
+};
+
+export function seriesLabel(id?: string | null, lang: "DE" | "EN" = "DE"): string {
+  if (!id) return "—";
+  if (lang === "EN" && SERIES_LABEL_EN[id]) return SERIES_LABEL_EN[id];
+  return SERIES_LABEL[id] ?? id.toUpperCase();
 }
 
 export type FilterCriteria = {

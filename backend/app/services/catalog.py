@@ -21,6 +21,7 @@ from fastapi import BackgroundTasks
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.card import PokemonCard
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
@@ -159,7 +160,10 @@ async def sync_catalog(db: Session) -> dict:
             dec = de_cards.get(cid, {})
             name_en = c.get("name")
             name_de = dec.get("name") or name_en
-            image = dec.get("image") or c.get("image")
+            if settings.catalog_image_lang.lower() == "en":
+                image = c.get("image") or dec.get("image")
+            else:
+                image = dec.get("image") or c.get("image")
             local_id = c.get("localId") or dec.get("localId")
             row = existing.get(cid)
             if not row:
