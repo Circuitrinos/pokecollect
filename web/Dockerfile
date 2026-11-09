@@ -8,6 +8,8 @@ RUN npm ci --no-audit --no-fund
 
 ARG NEXT_PUBLIC_API_URL=http://localhost:3010
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_CURRENCY=EUR
+ENV NEXT_PUBLIC_CURRENCY=$NEXT_PUBLIC_CURRENCY
 
 COPY . .
 RUN mkdir -p public && npm run build
