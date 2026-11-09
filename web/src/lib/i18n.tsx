@@ -1,6 +1,7 @@
 "use client";
 import { createContext, useContext, useState, ReactNode } from "react";
 
+import { CURRENCY_SYMBOL as CUR, USD_MODE } from "@/lib/currency";
 export type Lang = "DE" | "EN";
 
 const DE = {
@@ -289,7 +290,7 @@ const DE = {
   form_language: "Sprache",
   form_condition: "Zustand",
   form_owned: "Besessen (physisch vorhanden)",
-  form_purchase_price: "Kaufpreis (€)",
+  form_purchase_price: `Kaufpreis (${CUR})`,
   form_purchase_date: "Kaufdatum",
   form_notes: "Notizen",
   form_save: "Speichern",
@@ -335,9 +336,9 @@ const DE = {
   // Wert-Label aus der ECHTEN Quelle (statt pauschal „Cardmarket")
   detail_value_from: (quelle: string, variante: string | null, kurs: string | null) =>
     quelle === "tcgplayer"
-      ? `Wert (TCGplayer${variante ? ` ${variante}` : ""}${kurs ? `, $→€ Kurs ${kurs.replace(".", ",")}` : ""})`
-      : quelle === "oauth" ? "Wert (Cardmarket, OAuth)"
-      : quelle === "cardmarket" ? "Wert (Cardmarket 30-Tage-Ø)"
+      ? `Wert (TCGplayer${variante ? ` ${variante}` : ""}${kurs && !USD_MODE ? `, $→€ Kurs ${kurs.replace(".", ",")}` : ""})`
+      : quelle === "oauth" ? `Wert (Cardmarket, OAuth${USD_MODE ? ", €→$" : ""})`
+      : quelle === "cardmarket" ? (USD_MODE ? `Wert (Cardmarket €→$${kurs ? `, Kurs ${kurs.replace(".", ",")}` : ""})` : "Wert (Cardmarket 30-Tage-Ø)")
       : "Wert",
   // Dezente Herkunfts-Zeile "Daten: … · Bild: … · Preis: …" (#47). Anders als
   // detail_usd_variant (Fallback `?? v`) geben die drei Lookups hier `?? null`
@@ -366,9 +367,9 @@ const DE = {
   } as Record<string, string>)[v] ?? null,
   field_pattern: "Muster",
   price_chart_value: "Wert",
-  price_source_cardmarket: "Cardmarket €",
+  price_source_cardmarket: USD_MODE ? "Cardmarket €→$" : "Cardmarket €",
   price_source_oauth: "Cardmarket (OAuth)",
-  price_source_tcgplayer: (kurs: string | null) => `TCGplayer $→€${kurs ? ` · Kurs ${kurs}` : ""}`,
+  price_source_tcgplayer: (kurs: string | null) => USD_MODE ? "TCGplayer $" : `TCGplayer $→€${kurs ? ` · Kurs ${kurs}` : ""}`,
   price_source_unknown: "unbekannt",
   detail_gain_loss: "Unrealisierter G/V",
   detail_placeholder: "Pokédex-Platzhalter",
@@ -441,10 +442,10 @@ const DE = {
   sealed_sets_hint: "Mehrere möglich (z.B. bei Bundles/Kollektionen)",
   sealed_sets_add: "Set hinzufügen …",
   sealed_sets_none: "Keine Sets zugeordnet",
-  sealed_value: "Wert (€, manuell)",
+  sealed_value: `Wert (${CUR}, manuell)`,
   sealed_load_error: "Sealed-Produkte konnten nicht geladen werden — bitte neu laden.",
   sealed_value_hint: "Manuell gepflegt — ohne Katalog-Verknüpfung keine automatische Preisquelle",
-  sealed_value_auto_hint: "Wird täglich automatisch aus dem TCGplayer-Marktpreis aktualisiert ($ → € EZB-Kurs)",
+  sealed_value_auto_hint: USD_MODE ? "Wird täglich automatisch aus dem TCGplayer-Marktpreis aktualisiert" : "Wird täglich automatisch aus dem TCGplayer-Marktpreis aktualisiert ($ → € EZB-Kurs)",
   sealed_catalog_search: "TCGplayer-Produkt verknüpfen",
   sealed_catalog_placeholder: "Produkt suchen (z. B. White Flare Elite Trainer Box) …",
   sealed_catalog_hint: "Echte TCGplayer-Produkte mit Bild + Marktpreis; leer lassen = Freitext-Produkt (manuell bewertet).",
@@ -882,7 +883,7 @@ const EN: typeof DE = {
   form_language: "Language",
   form_condition: "Condition",
   form_owned: "Owned (physically present)",
-  form_purchase_price: "Purchase price (€)",
+  form_purchase_price: `Purchase price (${CUR})`,
   form_purchase_date: "Purchase date",
   form_notes: "Notes",
   form_save: "Save",
@@ -925,9 +926,9 @@ const EN: typeof DE = {
   } as Record<string, string>)[v] ?? v,
   detail_value_from: (quelle: string, variante: string | null, kurs: string | null) =>
     quelle === "tcgplayer"
-      ? `Value (TCGplayer${variante ? ` ${variante}` : ""}${kurs ? `, $→€ rate ${kurs}` : ""})`
-      : quelle === "oauth" ? "Value (Cardmarket, OAuth)"
-      : quelle === "cardmarket" ? "Value (Cardmarket 30-day avg)"
+      ? `Value (TCGplayer${variante ? ` ${variante}` : ""}${kurs && !USD_MODE ? `, $→€ rate ${kurs}` : ""})`
+      : quelle === "oauth" ? `Value (Cardmarket, OAuth${USD_MODE ? ", €→$" : ""})`
+      : quelle === "cardmarket" ? (USD_MODE ? `Value (Cardmarket €→$${kurs ? `, rate ${kurs}` : ""})` : "Value (Cardmarket 30-day avg)")
       : "Value",
   detail_provenance_label_data: "Data",
   detail_provenance_label_image: "Image",
@@ -943,9 +944,9 @@ const EN: typeof DE = {
   } as Record<string, string>)[v] ?? null,
   field_pattern: "Pattern",
   price_chart_value: "Value",
-  price_source_cardmarket: "Cardmarket €",
+  price_source_cardmarket: USD_MODE ? "Cardmarket €→$" : "Cardmarket €",
   price_source_oauth: "Cardmarket (OAuth)",
-  price_source_tcgplayer: (kurs: string | null) => `TCGplayer $→€${kurs ? ` · rate ${kurs}` : ""}`,
+  price_source_tcgplayer: (kurs: string | null) => USD_MODE ? "TCGplayer $" : `TCGplayer $→€${kurs ? ` · rate ${kurs}` : ""}`,
   price_source_unknown: "unknown",
   detail_gain_loss: "Unrealized gain/loss",
   detail_placeholder: "Pokédex placeholder",
@@ -1016,10 +1017,10 @@ const EN: typeof DE = {
   sealed_sets_hint: "Multiple possible (e.g. bundles/collections)",
   sealed_sets_add: "Add set …",
   sealed_sets_none: "No sets assigned",
-  sealed_value: "Value (€, manual)",
+  sealed_value: `Value (${CUR}, manual)`,
   sealed_load_error: "Could not load sealed products — please reload.",
   sealed_value_hint: "Maintained manually — no automatic price source without a catalog link",
-  sealed_value_auto_hint: "Updated daily from the TCGplayer market price ($ → € ECB rate)",
+  sealed_value_auto_hint: USD_MODE ? "Updated daily from the TCGplayer market price" : "Updated daily from the TCGplayer market price ($ → € ECB rate)",
   sealed_catalog_search: "Link TCGplayer product",
   sealed_catalog_placeholder: "Search product (e.g. White Flare Elite Trainer Box) …",
   sealed_catalog_hint: "Real TCGplayer products with image + market price; leave empty for a free-text product (valued manually).",

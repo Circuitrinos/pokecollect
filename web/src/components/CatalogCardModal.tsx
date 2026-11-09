@@ -1,4 +1,5 @@
 "use client";
+import { USD_MODE } from "@/lib/currency";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { CatalogItem, CatalogDetail, Collection, catalogApi } from "@/lib/api";
@@ -133,13 +134,14 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
             {row(t.catalog_illustrator, d.illustrator)}
             {row(t.field_english_name, d.name_en)}
             {row(t.catalog_variants, variantsStr)}
-            {row(t.catalog_price_eur, withStand(eurNode, detail?.price_eur_updated))}
+            {!USD_MODE && row(t.catalog_price_eur, withStand(eurNode, detail?.price_eur_updated))}
             {row(t.catalog_price_usd, withStand(fmtUsd(detail?.price_usd), detail?.price_usd_updated))}
             {/* Varianten-$-Preise (#63): nur zeigen, was der Cache kennt */}
             {row(`${t.catalog_price_usd} · Holo`, fmtUsd(detail?.price_usd_holo))}
             {row(`${t.catalog_price_usd} · Reverse`, fmtUsd(detail?.price_usd_reverse))}
             {row(`${t.catalog_price_usd} · Pokéball`, fmtUsd(detail?.price_usd_pokeball))}
             {row(`${t.catalog_price_usd} · Masterball`, fmtUsd(detail?.price_usd_masterball))}
+            {USD_MODE && row(t.catalog_price_eur, withStand(eurNode, detail?.price_eur_updated))}
           </dl>
         </div>
 

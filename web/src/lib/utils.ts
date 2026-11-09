@@ -1,3 +1,4 @@
+import { CURRENCY, USD_MODE } from "@/lib/currency";
 // Serie-ID → Anzeigename (für geclusterte Set-Dropdowns)
 export const SERIES_LABEL: Record<string, string> = {
   sv: "Karmesin & Purpur", me: "Mega-Entwicklung", swsh: "Schwert & Schild",
@@ -87,9 +88,11 @@ export function generation(pokedexNr: number | null): number | null {
   return null;
 }
 
+// Formatiert einen Betrag in der Instanz-Währung (lib/currency.ts). Name bleibt
+// aus Kompatibilität „formatEur" — alle Wert-/Kaufpreis-Anzeigen laufen hier durch.
 export function formatEur(value: string | null | undefined): string {
   if (!value) return "–";
-  return new Intl.NumberFormat("de-AT", { style: "currency", currency: "EUR" }).format(
+  return new Intl.NumberFormat(USD_MODE ? "en-US" : "de-AT", { style: "currency", currency: CURRENCY }).format(
     parseFloat(value)
   );
 }

@@ -1,4 +1,5 @@
 "use client";
+import { CURRENCY_SYMBOL } from "@/lib/currency";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -44,7 +45,7 @@ export default function PriceChart({ history }: Props) {
           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
           <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 11 }} />
           <YAxis
-            tickFormatter={(v) => `€${v}`}
+            tickFormatter={(v) => `${CURRENCY_SYMBOL}${v}`}
             tick={{ fill: "#9ca3af", fontSize: 11 }}
             width={50}
           />
@@ -52,7 +53,7 @@ export default function PriceChart({ history }: Props) {
             formatter={(v: number, _name, item) => {
               const p = (item as { payload?: { source: SourceKey; kurs: string | null } }).payload;
               const label = p ? sourceLabel(p.source, p.kurs) : "";
-              return [`€${v.toFixed(2)}${label ? ` · ${label}` : ""}`, t.price_chart_value];
+              return [`${CURRENCY_SYMBOL}${v.toFixed(2)}${label ? ` · ${label}` : ""}`, t.price_chart_value];
             }}
             contentStyle={{ background: "#1f2937", border: "none", color: "#fff" }}
           />

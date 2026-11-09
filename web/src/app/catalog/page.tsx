@@ -1,4 +1,5 @@
 "use client";
+import { USD_MODE } from "@/lib/currency";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import toast from "react-hot-toast";
@@ -269,7 +270,9 @@ export default function CatalogPage() {
             const isSelected = selectedIds.has(c.card_id);
             // Datenstand € (#66): nur wenn WIRKLICH ein €-Preis gezeigt wird (nicht
             // beim $-Fallback) — dezenter Kurzstempel, volles Datum im title.
-            const eurStamp = c.price_eur != null ? fmtCatalogEurStamp(c.price_eur_updated) : null;
+            // USD-Modus: TCGplayer-$ zuerst, € nur als Rückfall (dann mit Datenstand).
+            const zeigeUsd = c.price_usd != null && (USD_MODE || c.price_eur == null);
+            const eurStamp = c.price_eur != null && !zeigeUsd ? fmtCatalogEurStamp(c.price_eur_updated) : null;
             return (
               <div key={c.card_id} className={`relative rounded-lg border overflow-hidden bg-pokemon-card ${isSelected ? "border-pokemon-accent ring-2 ring-pokemon-accent" : "border-gray-700"}`}>
                 <button type="button"
@@ -305,9 +308,9 @@ export default function CatalogPage() {
                     {(c.price_eur != null || c.price_usd != null) && (
                       <div className="flex items-center gap-1 text-[10px] text-pokemon-yellow font-medium">
                         <span className="truncate flex-1">
-                          {c.price_eur != null
-                            ? `${c.price_eur.toFixed(2).replace(".", ",")} €`
-                            : `$ ${c.price_usd!.toFixed(2)}`}
+                          {zeigeUsd
+                            ? `$ ${c.price_usd!.toFixed(2)}`
+                            : `${c.price_eur!.toFixed(2).replace(".", ",")} €`}
                         </span>
                         {eurStamp && (
                           <span className="text-gray-500 font-normal shrink-0"

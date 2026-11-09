@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # Env CATALOG_IMAGE_LANG. Default "de" = bisheriges Verhalten.
     catalog_image_lang: str = "de"
 
+    # Währung der Instanz ("EUR" | "USD"), Env CURRENCY. Bestimmt, in welcher
+    # Währung wert_eur/kaufpreis_eur/Preisverlauf GESPEICHERT werden (die
+    # Spaltennamen bleiben aus Kompatibilität „_eur"). USD: TCGplayer-$ zuerst,
+    # sonst Cardmarket-€ zum Tageskurs in $ umgerechnet.
+    currency: str = "EUR"
+
+    @property
+    def usd_mode(self) -> bool:
+        return self.currency.strip().upper() == "USD"
+
     class Config:
         env_file = ".env"
 

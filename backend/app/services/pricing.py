@@ -194,6 +194,19 @@ def convert_usd_eur(usd: Decimal, rate: Decimal) -> Decimal:
         Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def convert_eur_usd(eur: Decimal, usd_eur_rate: Decimal) -> Decimal:
+    """€ → $ mit dem $→€-Tageskurs (€ / Kurs), kaufmännisch auf Cent gerundet."""
+    return (Decimal(str(eur)) / Decimal(str(usd_eur_rate))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _eur_usd_kurs(usd_eur_rate: Optional[Decimal]) -> str:
+    """€→$-Kurs für den Quellen-String (Kehrwert des $→€-Tageskurses)."""
+    if not usd_eur_rate:
+        return ""
+    return str((Decimal(1) / Decimal(str(usd_eur_rate))).quantize(Decimal("0.0001")))
+
+
 # Zulässiger Wertebereich für wert_eur (Numeric(8,2)). Preise außerhalb sind
 # Datenfehler (0/negativ) oder würden den Commit des GANZEN Laufs sprengen
 # (Überlauf → Rollback aller Karten) — beides überspringen (Panel-Fund).
@@ -351,11 +364,54 @@ async def refresh_prices_for_cards(db: Session, card_ids: list[int]) -> None:
             return None
         return kandidat
 
+    async def usd_direkt(card: PokemonCard) -> Optional[Decimal]:
+        """USD-Modus: Varianten-$ der Karte unverändert (TCGplayer-Marktpreis)."""
+        nonlocal variante_zuletzt
+        usd, variante_zuletzt = _usd_from_catalog_mit_variante(db, card)
+        if usd is None or usd <= 0:
+            return None
+        usd = Decimal(str(usd)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return usd if _wert_plausibel(usd) else None
+
+    async def eur_in_usd(eur: Optional[Decimal]) -> Optional[Decimal]:
+        """USD-Modus: Cardmarket-€ zum Tageskurs in $."""
+        nonlocal usd_rate, usd_rate_geholt
+        if eur is None or eur <= 0:
+            return None
+        if not usd_rate_geholt:
+            usd_rate = await fx.usd_eur_rate()
+            usd_rate_geholt = True
+        if not usd_rate:
+            return None
+        kandidat = convert_eur_usd(eur, usd_rate)
+        return kandidat if _wert_plausibel(kandidat) else None
+
     try:
         price_source = get_price_source(db)
         for card_id in card_ids:
             card = db.get(PokemonCard, card_id)
             if not card:
+                continue
+            if settings.usd_mode:
+                # USD-Kette: 1. TCGplayer-$ (varianten-bewusst, frisch)
+                #            2. Cardmarket-€ über TCGdex → $
+                #            3. Cardmarket-OAuth-€ → $
+                price = await usd_direkt(card)
+                # „@" ohne Kurs: direkter $-Preis; Variante hinter „/" (Format wie v1.8.2)
+                quelle = "tcgplayer-usd" + (f"@/{variante_zuletzt}" if variante_zuletzt else "")
+                if price is None:
+                    eur, _ = await _price_for_card(db, card, price_source)
+                    price = await eur_in_usd(eur)
+                    quelle = f"tcgdex-cardmarket@{_eur_usd_kurs(usd_rate)}"
+                if price is None:
+                    price = await eur_in_usd(_cardmarket_oauth_fallback(db, card))
+                    quelle = f"cardmarket-oauth@{_eur_usd_kurs(usd_rate)}"
+                if price is None:
+                    continue
+                card.wert_eur = price
+                card.wert_aktualisiert = datetime.utcnow()
+                db.add(PreisHistorie(karte_id=card.id, wert_eur=price, quelle=quelle))
+                updated += 1
                 continue
             quelle = "tcgdex-cardmarket"
             price: Optional[Decimal] = None
@@ -429,12 +485,15 @@ async def refresh_sealed_prices(db: Session) -> None:
             usd = Decimal(str(row.price_usd))
             if usd <= 0:
                 continue
-            if not usd_rate_geholt:
-                usd_rate = await fx.usd_eur_rate()
-                usd_rate_geholt = True
-            if usd_rate is None:
-                return  # ohne Kurs diesen Lauf auslassen (nächster Lauf holt nach)
-            kandidat = convert_usd_eur(usd, usd_rate)
+            if settings.usd_mode:
+                kandidat = usd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                if not usd_rate_geholt:
+                    usd_rate = await fx.usd_eur_rate()
+                    usd_rate_geholt = True
+                if usd_rate is None:
+                    return  # ohne Kurs diesen Lauf auslassen (nächster Lauf holt nach)
+                kandidat = convert_usd_eur(usd, usd_rate)
             if not _wert_plausibel(kandidat):
                 log.warning("Sealed %s: umgerechneter $-Preis %s außerhalb des "
                             "Wertebereichs – übersprungen.", product.id, kandidat)
