@@ -12,6 +12,7 @@ import GoalProgress from "@/components/GoalProgress";
 import SollView from "@/components/SollView";
 import ViewToggle, { ViewMode } from "@/components/ViewToggle";
 import { useSelection } from "@/lib/useSelection";
+import { GRID_SORTS, GridSort, sortCards } from "@/lib/cardSort";
 import BulkBar, { SelectToggle } from "@/components/BulkBar";
 import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
@@ -36,6 +37,12 @@ export default function CollectionDetailPage() {
   // bei jedem Umschalten. Der Auswahl-Modus schaltet nur vorübergehend aufs Raster.
   const viewFromServer = useRef(false);
   const [binderVisible, setBinderVisible] = useState<number[]>([]);   // Karten der sichtbaren Binder-Seite(n)
+  // Sortierung im Raster (serverseitig je Sammlung); „manual" = Binder-Reihenfolge, umsortierbar
+  const [gridSort, setGridSort] = useState<GridSort>("manual");
+  const changeGridSort = (s: GridSort) => {
+    setGridSort(s);
+    collectionApi.update(id, { grid_sort: s }).catch(() => {});
+  };
   const changeView = (v: ViewMode) => {
     setView(v);
     collectionApi.update(id, { view_mode: v }).catch(() => {});
@@ -83,6 +90,7 @@ export default function CollectionDetailPage() {
       if (!viewFromServer.current) {
         viewFromServer.current = true;
         setView(r.data.view_mode === "binder" ? "binder" : "grid");
+        setGridSort(GRID_SORTS.includes(r.data.grid_sort as GridSort) ? (r.data.grid_sort as GridSort) : "manual");
       }
     }).catch(() => setCollection(null));
   }, [id]);
@@ -137,6 +145,20 @@ export default function CollectionDetailPage() {
   const handleRemoveConfirm = (cardId: number) => {
     if (!confirm(t.collection_remove_confirm)) return;
     handleRemove(cardId);
+  };
+
+  const sortedCards = sortCards(cards, gridSort, lang);
+  // Sortierte Reihenfolge als Binder-Reihenfolge übernehmen (lückenlos ab Tasche 1)
+  const applySortToBinder = async () => {
+    if (!confirm(t.sort_apply_confirm)) return;
+    try {
+      await collectionApi.reorder(id, sortedCards.map((c) => c.id));
+      changeGridSort("manual");
+      toast.success(t.sort_applied);
+      loadCards(true);
+    } catch {
+      toast.error(t.collections_error);
+    }
   };
 
   const handleReorder = async (orderedIds: number[]) => {
@@ -267,6 +289,15 @@ export default function CollectionDetailPage() {
         {!isGoal && (
           <div className="flex items-center gap-2 flex-wrap">
             <ViewToggle value={view} onChange={changeView} />
+            {view === "grid" && !isGoal && cards.length > 1 && (
+              <label className="flex items-center gap-1.5 text-sm text-gray-300">
+                <span className="hidden sm:inline">{t.sort_label}</span>
+                <select value={gridSort} onChange={(e) => changeGridSort(e.target.value as GridSort)} aria-label={t.sort_label}
+                  className="bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-sm text-white">
+                  {GRID_SORTS.map((s) => <option key={s} value={s}>{t.sort_option(s)}</option>)}
+                </select>
+              </label>
+            )}
             {cards.length > 0 && <SelectToggle selection={selection} />}
             <button type="button"
               onClick={() => setShowAssign((v) => !v)}
@@ -367,6 +398,7 @@ export default function CollectionDetailPage() {
               layout={layout}
               binderSlots={collection?.binder_slots ?? null}
               onPagesChange={handlePagesChange}
+              onMoveToSlot={handleMoveToSlot}
             />
           ) : (
             <BinderView
@@ -389,16 +421,28 @@ export default function CollectionDetailPage() {
       ) : cards.length === 0 ? (
         <div className="flex items-center justify-center h-48 text-gray-500 text-center px-4">{t.collection_empty}</div>
       ) : (
+        <>
+        {gridSort !== "manual" && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+            <span>{t.sort_hint(t.sort_option(gridSort))}</span>
+            <button type="button" onClick={() => void applySortToBinder()}
+              className="rounded border border-gray-700 bg-pokemon-card px-2 py-1 text-gray-200 hover:text-white">
+              {t.sort_apply}
+            </button>
+          </div>
+        )}
         <SortableCardGrid
-          cards={cards}
+          cards={sortedCards}
           apiBase={API_BASE}
           onReorder={handleReorder}
           onRemove={handleRemoveConfirm}
           selection={selection}
+          reorderable={gridSort === "manual"}
         />
+        </>
       )}
       {!isGoal && (
-        <BulkBar selection={selection} pageIds={view === "binder" ? binderVisible : cards.map((c) => c.id)} collectionId={id}
+        <BulkBar selection={selection} pageIds={view === "binder" ? binderVisible : sortedCards.map((c) => c.id)} collectionId={id}
           onDone={() => { loadCards(true); loadMeta(); }} />
       )}
       {selection.active && <div className="h-28" />}

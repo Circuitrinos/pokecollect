@@ -26,6 +26,7 @@ from app.schemas.scan import (
     ScanCandidate, ScanCommitRequest, ScanCommitResponse, ScanMode,
     ScanRawRead, ScanResponse,
 )
+from app.services import regulation
 from app.services.card_creation import create_owned_card
 from app.services.catalog_lookup import catalog_row_for
 from app.services.collection_slots import next_free_position
@@ -410,7 +411,18 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
 
     created_ids: list[int] = []
     first_ids: list[int] = []
+    copy_ids: list[list[int]] = []
     for item in payload.items:
+        item_ids: list[int] = []
+        bild_url = item.bild_karte_url if is_allowed_image_url(item.bild_karte_url) else None
+        if bild_url is None and item.tcgdex_card_id:
+            # Ohne Katalogbild im Payload (eigenes Foto gewählt): das Katalogbild
+            # trotzdem als Rückfall setzen. Das Foto hat in der Anzeige Vorrang;
+            # Exemplare ohne Foto zeigen so nicht den Platzhalter, falls der
+            # TCGdex-Abruf im Hintergrund scheitert.
+            row = catalog_row_for(db, item.tcgdex_card_id)
+            if row is not None and is_allowed_image_url(row.image_url):
+                bild_url = row.image_url
         for copy_no in range(1 if is_wishlist else item.copies):
             fields = dict(
                 kartenname=item.kartenname,
@@ -429,7 +441,7 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                 tcgdex_card_id=item.tcgdex_card_id,
                 set_id=item.set_id,
                 dex_id=item.dex_id,
-                bild_karte_url=item.bild_karte_url if is_allowed_image_url(item.bild_karte_url) else None,
+                bild_karte_url=bild_url,
             )
             if is_wishlist:
                 # EN-Namen-Fill wie in create_owned_card (Wunschliste läuft daran
@@ -441,6 +453,7 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                 card = PokemonCard(**fields, besessen=False, wunschliste=True, prioritaet=item.prioritaet)
                 db.add(card)
                 db.flush()  # ID
+                regulation.apply_to_card(db, card)
             else:
                 card = create_owned_card(db, fields, background_tasks=background_tasks, commit=False)
 
@@ -458,8 +471,11 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                 )
 
             created_ids.append(card.id)
+            item_ids.append(card.id)
             if copy_no == 0:
                 first_ids.append(card.id)
+        copy_ids.append(item_ids)
 
     db.commit()
-    return ScanCommitResponse(created=len(created_ids), card_ids=first_ids, all_card_ids=created_ids)
+    return ScanCommitResponse(created=len(created_ids), card_ids=first_ids,
+                              all_card_ids=created_ids, copy_ids=copy_ids)

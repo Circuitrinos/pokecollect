@@ -138,3 +138,4 @@ class ScanCommitResponse(BaseModel):
     created: int
     card_ids: list[int]                    # je Item das erste Exemplar (Reihenfolge = items)
     all_card_ids: list[int] = []           # alle angelegten Exemplare
+    copy_ids: list[list[int]] = []         # je Item alle Exemplare (Foto für jedes Exemplar)

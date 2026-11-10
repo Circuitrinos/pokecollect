@@ -164,6 +164,7 @@ def _run_light_migrations():
         "ALTER TABLE collections ADD COLUMN IF NOT EXISTS binder_slots INTEGER",
         # Ansicht je Sammlung serverseitig merken (statt pro Browser)
         "ALTER TABLE collections ADD COLUMN IF NOT EXISTS view_mode TEXT",
+        "ALTER TABLE collections ADD COLUMN IF NOT EXISTS grid_sort TEXT",
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS im_pokedex BOOLEAN NOT NULL DEFAULT FALSE",
         "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_im_pokedex ON pokemon_cards (im_pokedex)",
         # ── TCGdex-Integration (v0.7.0) ──────────────────────────────────────
@@ -194,6 +195,17 @@ def _run_light_migrations():
         # Ecken des Scan-Zuschnitts im Originalfoto (Scan-Datensatz)
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS bild_quad TEXT",
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS bild_scan_pfad TEXT",
+        # Turnier-Legalität: Regulation Mark je Karte + Katalog (services/regulation.py)
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS regulation_mark TEXT",
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS legal_mark TEXT",
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS basic_energy BOOLEAN NOT NULL DEFAULT FALSE",
+        "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_regulation_mark ON pokemon_cards (regulation_mark)",
+        "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_legal_mark ON pokemon_cards (legal_mark)",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS regulation_mark TEXT",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS energy_type TEXT",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS legal_standard BOOLEAN",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS legal_expanded BOOLEAN",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS regulation_checked BOOLEAN NOT NULL DEFAULT FALSE",
         # Persönlicher Einstand: Kaufpreis + Kaufdatum (#26)
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS kaufpreis_eur NUMERIC(8,2)",
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS kaufdatum DATE",

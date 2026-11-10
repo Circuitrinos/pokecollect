@@ -27,7 +27,7 @@ from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.models.sealed import SealedCatalog
 from app.models.tcgdex_catalog import TcgdexCatalog
-from app.services import tcgcsv, tcgdex
+from app.services import regulation, tcgcsv, tcgdex
 from app.services.card_creation import create_owned_card
 from app.services.collection_slots import next_free_position
 from app.services.scan.resolver import _map_rarity
@@ -81,6 +81,8 @@ def _apply_full(row: TcgdexCatalog, tc) -> None:
     # zöge sie sofort wieder in den Repass (refresh_catalog_eur) und sie würde
     # ein zweites Mal geholt, obwohl der €-Preis gerade erst frisch war.
     row.price_eur_checked = datetime.utcnow()
+    # Turnier-Legalität (Regulation Mark, Energie-Art, Legal-Flags)
+    regulation.apply_to_catalog(row, tc)
 
 
 def catalog_prices(pricing) -> dict:
@@ -829,6 +831,8 @@ async def add_to_wishlist(
     fields = await _build_card_from_catalog(db, row, attrs["sprache"])
     card = PokemonCard(**fields, **attrs, besessen=False, wunschliste=True, prioritaet=prioritaet)
     db.add(card)
+    db.flush()
+    regulation.apply_to_card(db, card)
     db.commit()
     db.refresh(card)
     return card.id

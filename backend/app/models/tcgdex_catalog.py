@@ -58,6 +58,15 @@ class TcgdexCatalog(Base):
     # wieder ganz vorne stehen (Hunger-Effekt für andere Zeilen). NULL heißt
     # „noch nie im Repass geprüft" — sortiert per NULLS FIRST vor jedem Datum.
     price_eur_checked = Column(DateTime, nullable=True)
+    # Turnier-Legalität (services/regulation.py): Regulation Mark ("H"),
+    # Energie-Art ("Basic"/"Special") und TCGdex' Legal-Flags. regulation_checked
+    # = Volldaten mit diesen Feldern schon einmal geholt (der Nachholer für
+    # bereits angereicherte Zeilen läuft daran entlang).
+    regulation_mark = Column(Text, nullable=True)
+    energy_type = Column(Text, nullable=True)
+    legal_standard = Column(Boolean, nullable=True)
+    legal_expanded = Column(Boolean, nullable=True)
+    regulation_checked = Column(Boolean, nullable=False, default=False, server_default="false")
     # Varianten-$-Preise (#63): Subtypen des Basisprodukts (Holofoil/Reverse
     # Holofoil) + Muster-PRODUKTE („(Poke Ball Pattern)"/„(Master Ball Pattern)",
     # eigene TCGplayer-Produkte je Karte). Datenstand teilt price_usd_updated.

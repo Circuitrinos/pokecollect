@@ -1,6 +1,7 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
 import { cardImageSrc } from "@/lib/utils";
 import type { BinderItem } from "@/components/BinderView";
 
@@ -17,6 +18,8 @@ type Props = {
   binderSlots?: number | null;
   placeholderEnabled?: boolean;
   onPagesChange: (payload: PagesChange) => void;
+  /** Karten verschieben (Modus „Karten verschieben"): Slot setzen, belegt = tauschen. */
+  onMoveToSlot?: (cardId: number, slot: number) => Promise<void> | void;
 };
 
 function parseLayout(layout: string): { cols: number; rows: number } {
@@ -26,15 +29,51 @@ function parseLayout(layout: string): { cols: number; rows: number } {
 }
 
 export default function BinderEditor({
-  items, apiBase, layout, binderSlots, placeholderEnabled = true, onPagesChange,
+  items: itemsProp, apiBase, layout, binderSlots, placeholderEnabled = true, onPagesChange, onMoveToSlot,
 }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { cols, rows } = parseLayout(layout);
   const perPage = cols * rows;
   const [dragPage, setDragPage] = useState<number | null>(null);
+  // Handy: Seite halten → aufgenommen, dann die Seite antippen, an deren Stelle sie soll
+  const [pickedPage, setPickedPage] = useState<number | null>(null);
+  // Modus „Karten verschieben": alle Seiten auf einen Blick, Karten per Tippen
+  // (aufnehmen → Ziel antippen) oder Ziehen über den ganzen Binder verschieben.
+  const [cardMode, setCardMode] = useState(false);
+  const [pickedCard, setPickedCard] = useState<number | null>(null);
+  const [dragCard, setDragCard] = useState<number | null>(null);
+  // Sofort sichtbare Verschiebungen, bis die neuen Daten vom Server da sind
+  const [moved, setMoved] = useState<Map<number, number>>(new Map());
+  const serverKey = itemsProp.map((it) => `${it.card.id}:${it.position}`).join(",");
+  useEffect(() => { setMoved(new Map()); }, [serverKey]);   // neue Serverdaten ersetzen die Vorschau
+  const items = useMemo(
+    () => (moved.size ? itemsProp.map((it) => (moved.has(it.card.id) ? { ...it, position: moved.get(it.card.id)! } : it)) : itemsProp),
+    [itemsProp, moved],
+  );
+  const pageHold = useLongPress((p) => setPickedPage(p), !cardMode);
+  const coarse = useCoarsePointer();     // Touch: halten/antippen statt Ziehen
 
   const slotMap = new Map<number, BinderItem["card"]>();
   for (const it of items) slotMap.set(it.position, it.card);
+  const nameOf = (c: BinderItem["card"]) => (lang === "EN" && c.englischer_name ? c.englischer_name : c.kartenname);
+
+  const moveCard = (cardId: number, slot: number) => {
+    const from = items.find((it) => it.card.id === cardId)?.position;
+    if (from == null || from === slot || !onMoveToSlot) return;
+    const next = new Map(moved);
+    next.set(cardId, slot);
+    const occupant = slotMap.get(slot);
+    if (occupant) next.set(occupant.id, from);              // belegt → tauschen (wie der Server)
+    setMoved(next);
+    void onMoveToSlot(cardId, slot);
+  };
+  const tapPocket = (slot: number) => {
+    const card = slotMap.get(slot);
+    if (pickedCard == null) { if (card) setPickedCard(card.id); return; }
+    if (card?.id === pickedCard) { setPickedCard(null); return; }
+    moveCard(pickedCard, slot);
+    setPickedCard(null);
+  };
 
   const maxSlot = items.length ? Math.max(...items.map((i) => i.position)) : -1;
   const contentPages = maxSlot >= 0 ? Math.floor(maxSlot / perPage) + 1 : 1;
@@ -67,11 +106,11 @@ export default function BinderEditor({
     });
   };
 
-  const handleDropPage = (target: number) => {
-    if (dragPage == null || dragPage === target) { setDragPage(null); return; }
+  const handleDropPage = (target: number, source: number | null = dragPage) => {
+    if (source == null || source === target) { setDragPage(null); return; }
     const order = Array.from({ length: totalPages }, (_, i) => i);
-    const [moved] = order.splice(dragPage, 1);
-    order.splice(target, 0, moved);
+    const [movedPage] = order.splice(source, 1);
+    order.splice(target, 0, movedPage);
     // order[k] = alte Seitennummer, die jetzt an Stelle k steht
     const positions: { card_id: number; position: number }[] = [];
     for (const it of items) {
@@ -87,36 +126,66 @@ export default function BinderEditor({
   return (
     <div>
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <p className="text-gray-400 text-sm">{t.binder_editor_hint}</p>
-        <button type="button"
-          onClick={handleAddPage}
-          className="text-sm bg-pokemon-accent text-white rounded px-3 py-1.5 hover:bg-blue-700"
-        >
-          {t.binder_add_page}
-        </button>
+        <p className="text-gray-400 text-sm">{cardMode ? t.binder_editor_cards_hint : t.binder_editor_hint}</p>
+        <div className="flex items-center gap-2">
+          {onMoveToSlot && (
+            <label className={`flex items-center gap-2 text-sm rounded px-3 py-1.5 border cursor-pointer select-none ${
+              cardMode ? "bg-pokemon-accent border-pokemon-accent text-white" : "bg-pokemon-card border-gray-700 text-gray-200"}`}>
+              <input type="checkbox" checked={cardMode}
+                onChange={(e) => { setCardMode(e.target.checked); setPickedCard(null); setPickedPage(null); }} />
+              {t.binder_move_cards}
+            </label>
+          )}
+          {!cardMode && (
+            <button type="button"
+              onClick={handleAddPage}
+              className="text-sm bg-pokemon-accent text-white rounded px-3 py-1.5 hover:bg-blue-700"
+            >
+              {t.binder_add_page}
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+      {(pickedCard != null || pickedPage != null) && (
+        <div className="fixed inset-x-3 z-40 bottom-[calc(4rem_+_env(safe-area-inset-bottom))] md:bottom-4 mx-auto max-w-xl flex items-center justify-center gap-2 rounded bg-pokemon-dark/95 border border-pokemon-yellow/60 px-3 py-2 text-xs text-pokemon-yellow shadow-lg">
+          <span>{pickedCard != null
+            ? t.binder_moving_all((() => { const c = items.find((it) => it.card.id === pickedCard)?.card; return c ? nameOf(c) : ""; })())
+            : t.binder_moving_page(pickedPage! + 1)}</span>
+          <button type="button" onClick={() => { setPickedCard(null); setPickedPage(null); }} className="underline shrink-0">{t.binder_cancel}</button>
+        </div>
+      )}
+
+      <div className={`grid gap-4 ${cardMode ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4" : "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5"}`}>
         {Array.from({ length: totalPages }).map((_, p) => {
           const count = cardsOnPage(p).length;
           return (
             <div
               key={p}
-              draggable
+              draggable={!coarse && !cardMode && pickedPage == null}
               onDragStart={() => setDragPage(p)}
               onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleDropPage(p)}
-              className={`group relative bg-pokemon-card rounded-lg p-2 border cursor-move ${
-                dragPage === p ? "border-pokemon-yellow" : "border-gray-700"
+              onDrop={() => (cardMode ? undefined : handleDropPage(p))}
+              {...(!cardMode ? pageHold.bind(p) : {})}
+              onClick={!cardMode && pickedPage != null ? () => {
+                if (pageHold.suppressed(p)) return;
+                handleDropPage(p, pickedPage);
+                setPickedPage(null);
+              } : undefined}
+              style={{ WebkitTouchCallout: "none" }}
+              className={`group relative bg-pokemon-card rounded-lg p-2 border select-none ${cardMode ? "" : "cursor-move"} ${
+                dragPage === p || pickedPage === p ? "border-pokemon-yellow" : pickedPage != null ? "border-pokemon-yellow/40" : "border-gray-700"
               }`}
             >
+              {!cardMode && (
               <button type="button"
-                onClick={() => handleDeletePage(p)}
+                onClick={(e) => { e.stopPropagation(); handleDeletePage(p); }}
                 title={t.collection_remove}
-                className="absolute -top-2 -right-2 z-10 bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
+                className="absolute -top-2 -right-2 z-10 bg-red-700 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm opacity-100 md:opacity-0 md:group-hover:opacity-100 transition hover:bg-red-600"
               >
                 ✕
               </button>
+              )}
               <div
                 className="grid gap-0.5 mb-1"
                 style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
@@ -124,14 +193,26 @@ export default function BinderEditor({
                 {Array.from({ length: perPage }).map((_, i) => {
                   const slot = p * perPage + i;
                   const card = slotMap.get(slot) ?? null;
+                  const target = cardMode ? {
+                    onClick: () => tapPocket(slot),
+                    onDragOver: (e: React.DragEvent) => e.preventDefault(),
+                    onDrop: (e: React.DragEvent) => { e.stopPropagation(); if (dragCard != null) moveCard(dragCard, slot); setDragCard(null); },
+                  } : {};
                   if (!card) {
-                    return <div key={slot} className="aspect-[63/88] rounded-sm border border-dashed border-gray-700/50 bg-gray-800/30" />;
+                    return <div key={slot} {...target} className={`aspect-[63/88] rounded-sm border border-dashed ${
+                      cardMode && pickedCard != null ? "border-pokemon-yellow/70 bg-pokemon-yellow/10 cursor-pointer" : "border-gray-700/50 bg-gray-800/30"}`} />;
                   }
                   const { src } = cardImageSrc(card, apiBase, placeholderEnabled);
                   return (
                     <div
                       key={slot}
-                      className="aspect-[63/88] rounded-sm bg-gray-800 bg-center bg-cover"
+                      {...target}
+                      draggable={cardMode && !coarse}
+                      onDragStart={cardMode ? (e) => { e.stopPropagation(); setDragCard(card.id); } : undefined}
+                      onDragEnd={cardMode ? () => setDragCard(null) : undefined}
+                      title={cardMode ? nameOf(card) : undefined}
+                      className={`aspect-[63/88] rounded-sm bg-gray-800 bg-center bg-cover ${cardMode ? "cursor-pointer" : ""} ${
+                        pickedCard === card.id || dragCard === card.id ? "ring-2 ring-pokemon-yellow opacity-70" : ""}`}
                       style={src ? { backgroundImage: `url("${src}")` } : undefined}
                     />
                   );

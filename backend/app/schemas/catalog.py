@@ -18,6 +18,7 @@ class CatalogItem(BaseModel):
     rarity: Optional[str] = None
     illustrator: Optional[str] = None
     category: Optional[str] = None
+    regulation_mark: Optional[str] = None   # Turnier-Legalität (services/regulation.py)
     image_url: Optional[str] = None
     variants_normal: Optional[bool] = None
     variants_reverse: Optional[bool] = None

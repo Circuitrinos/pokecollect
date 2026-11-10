@@ -1,4 +1,5 @@
 import { CURRENCY, USD_MODE } from "@/lib/currency";
+import { isStandardLegal, standardStatus } from "@/lib/regulation";
 // Serie-ID → Anzeigename (für geclusterte Set-Dropdowns)
 export const SERIES_LABEL: Record<string, string> = {
   sv: "Karmesin & Purpur", me: "Mega-Entwicklung", swsh: "Schwert & Schild",
@@ -29,12 +30,16 @@ export type FilterCriteria = {
   illustrator?: string;
   search?: string;
   bild_status?: string;
+  // Turnier-Legalität: Standard-Status bzw. Regulation Mark(s) ("H,I"; "-" = ohne)
+  standard?: "legal" | "not_legal" | "unknown";
+  regulation_mark?: string;
 };
 
 export function hasActiveFilters(f: FilterCriteria): boolean {
   return Boolean(
     f.besessen !== undefined || f.erste_edition !== undefined || f.prize_pack !== undefined || f.generation ||
-    f.set || f.seltenheit || f.sprache || f.illustrator || f.search || f.bild_status
+    f.set || f.seltenheit || f.sprache || f.illustrator || f.search || f.bild_status ||
+    f.standard || f.regulation_mark
   );
 }
 
@@ -44,10 +49,11 @@ type MatchCard = {
   seltenheit?: string | null; sprache?: string | null; illustrator?: string | null;
   besessen?: boolean; erste_edition?: boolean | null; prize_pack?: boolean | null;
   bild_karte_pfad?: string | null; bild_pokedex_url?: string | null;
+  regulation_mark?: string | null; legal_mark?: string | null; basic_energy?: boolean;
 };
 
 /** Client-seitiger Filter-Abgleich (für Dimmen im Binder, gleiche Logik wie Backend). */
-export function cardMatchesFilters(card: MatchCard, f: FilterCriteria): boolean {
+export function cardMatchesFilters(card: MatchCard, f: FilterCriteria, minMark?: string | null): boolean {
   if (f.besessen !== undefined && Boolean(card.besessen) !== f.besessen) return false;
   if (f.erste_edition !== undefined && Boolean(card.erste_edition) !== f.erste_edition) return false;
   if (f.prize_pack !== undefined && Boolean(card.prize_pack) !== f.prize_pack) return false;
@@ -70,6 +76,17 @@ export function cardMatchesFilters(card: MatchCard, f: FilterCriteria): boolean 
     if (f.bild_status === "eigenes_foto" && !own) return false;
     if (f.bild_status === "externe_url" && !(!own && url)) return false;
     if (f.bild_status === "platzhalter" && !(!own && !url)) return false;
+  }
+  if (f.standard) {
+    const st = standardStatus(card, minMark);
+    if (f.standard === "legal" && !isStandardLegal(st)) return false;
+    if (f.standard === "not_legal" && st !== "not_legal") return false;
+    if (f.standard === "unknown" && st !== "unknown") return false;
+  }
+  if (f.regulation_mark) {
+    const wanted = f.regulation_mark.split(",").map((m) => m.trim().toUpperCase());
+    const mark = card.regulation_mark ?? (card.legal_mark ? "-" : null);
+    if (!mark || !wanted.includes(mark)) return false;
   }
   return true;
 }

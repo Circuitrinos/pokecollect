@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.card import PokemonCard
+from app.services import regulation
 from app.services.catalog_lookup import catalog_row_for
 from app.services.card_image_service import (
     apply_card_to_model,
@@ -73,6 +74,7 @@ async def _trigger_image_fetch(card_id: int):
             row = catalog_row_for(db, card.tcgdex_card_id)
             if row is not None and row.name_en:
                 card.englischer_name = row.name_en
+        regulation.apply_to_card(db, card)
         db.commit()
     finally:
         db.close()
@@ -143,6 +145,9 @@ def create_owned_card(
         )
         if existing_flag == 0:
             card.im_pokedex = True
+
+    # Turnier-Legalität aus dem Katalog (falls schon bekannt)
+    regulation.apply_to_card(db, card)
 
     if commit:
         db.commit()

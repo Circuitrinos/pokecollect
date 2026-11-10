@@ -68,6 +68,18 @@ class CardBase(BaseModel):
     notizen: Optional[str] = None
     zustand: Optional[str] = None
     bild_pokedex_url: Optional[str] = None
+    # Regulation Mark ("H") — kommt aus TCGdex/Katalog, von Hand nur für
+    # Karten ohne Katalogdaten (services/regulation.py).
+    regulation_mark: Optional[str] = None
+
+
+def _regulation_mark_input(v):
+    """Eingabe: ein Buchstabe A–Z (klein erlaubt) oder leer → None."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    if isinstance(v, str) and len(v.strip()) == 1 and v.strip().isalpha() and v.strip().isascii():
+        return v.strip().upper()
+    raise ValueError("Regulation Mark: ein Buchstabe A–Z")
 
 
 class CardCreate(CardBase):
@@ -79,6 +91,7 @@ class CardCreate(CardBase):
     wert_eur: Optional[Decimal] = MONEY_FIELD
     kaufpreis_eur: Optional[Decimal] = MONEY_FIELD
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
+    _v_reg = field_validator("regulation_mark", mode="after")(_regulation_mark_input)
 
 
 class CardUpdate(BaseModel):
@@ -104,8 +117,10 @@ class CardUpdate(BaseModel):
     notizen: Optional[str] = None
     zustand: Optional[str] = None
     bild_pokedex_url: Optional[str] = None
+    regulation_mark: Optional[str] = None
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
+    _v_reg = field_validator("regulation_mark", mode="after")(_regulation_mark_input)
     # Diese Felder dürfen nie null werden: `kartenname`/`erste_edition` liegen
     # auf NOT-NULL-Spalten, die Flags sind es seit der #55-Light-Migration —
     # und die Antwort typisiert sie als bool. Ein ausdrückliches `null` endete
@@ -121,7 +136,7 @@ class CardResponse(CardBase):
     # ein einziges davon machte die ganze Liste unlesbar. Beim LESEN daher
     # tolerant auf False abbilden statt die Antwort zu sprengen.
     @field_validator("besessen", "wunschliste", "im_pokedex", "erste_edition",
-                     mode="before")
+                     "basic_energy", mode="before")
     @classmethod
     def _null_flag_als_false(cls, v):
         return False if v is None else v
@@ -163,6 +178,12 @@ class CardResponse(CardBase):
     variants_reverse: Optional[bool] = None
     variants_holo: Optional[bool] = None
     variants_firstedition: Optional[bool] = None
+    # Turnier-Legalität (services/regulation.py): legal_mark = für Standard
+    # maßgebliches Zeichen (inkl. Reprint-Regel), "-" = keins, None = unbekannt.
+    legal_mark: Optional[str] = None
+    basic_energy: bool = False
+    # TCGdex' Expanded-Flag aus dem Katalog (nur Einzelkarten-Antworten)
+    legal_expanded: Optional[bool] = None
     hinzugefuegt_am: Optional[datetime] = None
     aktualisiert_am: Optional[datetime] = None
     # TCGplayer-$-Marktpreis aus dem Katalog-Cache (Epic #41): reiner Anzeige-

@@ -7,6 +7,7 @@ import { refreshSettings } from "@/lib/useSettings";
 import { APP_VERSION } from "@/lib/version";
 import { openWhatsNew } from "@/lib/whatsnew";
 import { useI18n } from "@/lib/i18n";
+import { MARK_LETTERS } from "@/lib/regulation";
 import BottomNavSettings from "@/components/BottomNavSettings";
 
 const SECTION = "bg-pokemon-card rounded-lg p-5 space-y-4";
@@ -93,11 +94,13 @@ export default function SettingsPage() {
   const [modelSource, setModelSource] = useState<"live" | "curated" | null>(null);
   // Lokaler Bild-Cache (#43): Katalog-Kennzahlen für Status + Größenschätzung.
   const [catalogMeta, setCatalogMeta] = useState<{ total: number; cached_images: number } | null>(null);
+  const [regStatus, setRegStatus] = useState<{ min_mark: string; pending_owned: number } | null>(null);
 
   useEffect(() => {
     settingsApi.get().then((r) => setS(r.data)).catch(() => toast.error(t.settings_load_error));
     scanApi.usage().then((r) => setUsage(r.data)).catch(() => {});
     catalogApi.meta().then((r) => setCatalogMeta(r.data)).catch(() => {});
+    catalogApi.regulation().then((r) => setRegStatus(r.data)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -692,6 +695,39 @@ export default function SettingsPage() {
       </Section>
 
       )}
+
+      {/* Turnier-Legalität: niedrigstes Standard-Zeichen (Instanz, Admin) + Stand */}
+      <Section title={`⚖️ ${t.settings_reg_title}`}>
+        <Field label={t.settings_reg_min} hint={t.settings_reg_hint}>
+          {isAdmin ? (
+            <select
+              aria-label={t.settings_reg_min}
+              value={s.standard_min_mark ?? "H"}
+              onChange={(e) => { set("standard_min_mark", e.target.value); save({ standard_min_mark: e.target.value }); }}
+              className={INPUT}
+              style={{ width: "auto" }}
+            >
+              {MARK_LETTERS.slice(3, 16).map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          ) : (
+            <span className="text-white text-sm">{s.standard_min_mark ?? "H"}</span>
+          )}
+        </Field>
+        {regStatus && <p className="text-gray-600 text-xs">{t.settings_reg_pending(regStatus.pending_owned)}</p>}
+        {isAdmin && (
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => catalogApi.loadRegulation()
+                .then(() => toast.success(t.settings_reg_started))
+                .catch(() => toast.error(t.form_save_error))}
+              className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600"
+            >
+              {t.settings_reg_load}
+            </button>
+          </div>
+        )}
+      </Section>
 
       {/* Daten: Export (eigene Karten) / Backup + Restore (ganze Instanz, nur Admin) */}
       <Section title={`💾 ${t.settings_section_data}`}>

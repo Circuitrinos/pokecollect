@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.card import PokemonCard
+from app.services import regulation
 from app.services.card_image_service import (
     apply_card_to_model,
     fetch_tcgdex_card,
@@ -345,6 +346,7 @@ async def backfill_images_task(force: bool = False, user_id: int | None = None):
                 continue
             overwrite = force or not (card.bild_karte_pfad or card.bild_pokedex_url)
             apply_card_to_model(card, tc, overwrite_image=overwrite)
+            regulation.apply_to_card(db, card)
             ok += 1
         db.commit()
         log.info(f"Backfill abgeschlossen: {ok}/{len(cards)} Karten angereichert")

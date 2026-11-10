@@ -37,6 +37,7 @@ class CollectionUpdate(BaseModel):
     # #117: integer-Spalte — ohne Grenze 500 aus der Datenbank statt 422
     binder_slots: Optional[PgNichtNegativ] = None
     view_mode: Optional[Literal["grid", "binder"]] = None   # Ansicht (für alle Geräte gemerkt)
+    grid_sort: Optional[Literal["manual", "name", "pokedex", "set", "value", "newest"]] = None
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
     # name liegt auf einer NOT-NULL-Spalte (#55)
@@ -54,6 +55,7 @@ class CollectionResponse(CollectionBase):
     binder_layout: Optional[str] = "3x3"
     binder_slots: Optional[int] = None
     view_mode: str = "grid"
+    grid_sort: str = "manual"
     erstellt_am: Optional[datetime] = None
     karten_anzahl: int = 0
     # Set-Sammlung (Issue #16)

@@ -133,6 +133,7 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
             {row(t.catalog_species, speciesStr)}
             {row(t.field_rarity, d.rarity)}
             {row(t.field_category, d.category)}
+            {row(t.reg_label, d.regulation_mark ?? null)}
             {row(t.catalog_illustrator, d.illustrator)}
             {row(t.field_english_name, d.name_en)}
             {row(t.catalog_variants, variantsStr)}

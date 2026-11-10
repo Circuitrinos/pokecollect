@@ -20,7 +20,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +109,19 @@ class SetRef(BaseModel):
     cardCount: Optional[CardCount] = None
 
 
+class Legal(BaseModel):
+    """TCGdex-Legalität (nur Anzeige/Expanded — Standard rechnet PokéCollect
+    selbst aus dem Regulation Mark, services/regulation.py)."""
+    model_config = {"extra": "ignore"}
+    standard: Optional[bool] = None
+    expanded: Optional[bool] = None
+
+    @field_validator("standard", "expanded", mode="before")
+    @classmethod
+    def _bool_or_none(cls, v):
+        return v if isinstance(v, bool) else None
+
+
 class TcgdexCard(BaseModel):
     """Voll-Kartendaten von /cards/{id} bzw. /sets/{setId}/{localId}."""
     model_config = {"extra": "ignore"}
@@ -124,6 +137,22 @@ class TcgdexCard(BaseModel):
     set: Optional[SetRef] = None
     variants: Optional[Variants] = None
     pricing: Optional[Pricing] = None
+    # Turnier-Legalität: Regulation Mark ("H"), Energie-Art ("Basic"/"Special")
+    # und TCGdex' eigene Legal-Flags. Tolerant geparst — ein kaputter Wert darf
+    # die Anreicherung der Karte nicht kippen (#75).
+    regulationMark: Optional[str] = None
+    energyType: Optional[str] = None
+    legal: Optional[Legal] = None
+
+    @field_validator("regulationMark", "energyType", mode="before")
+    @classmethod
+    def _str_or_none(cls, v):
+        return v if isinstance(v, str) else None
+
+    @field_validator("legal", mode="before")
+    @classmethod
+    def _legal_or_none(cls, v):
+        return v if isinstance(v, dict) else None
 
     @property
     def dex_id(self) -> Optional[int]:

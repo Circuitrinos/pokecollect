@@ -1,5 +1,23 @@
 "use client";
-import { PointerEvent as ReactPointerEvent, useRef } from "react";
+import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+
+/**
+ * Touch-Bildschirm (grober Zeiger)? Dort kein HTML5-Drag&Drop anbieten: der
+ * Browser startet sonst beim Halten einen eigenen Zieh-Vorgang, der mit
+ * „halten → antippen" kollidiert.
+ */
+export function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(pointer: coarse)");
+    if (!mq) return;
+    const update = () => setCoarse(mq.matches);
+    update();
+    mq.addEventListener?.("change", update);
+    return () => mq.removeEventListener?.("change", update);
+  }, []);
+  return coarse;
+}
 
 /**
  * Halten (Finger/Stift, ~0,45 s) → onLong(id). Für Handys, auf denen Ziehen
@@ -11,13 +29,15 @@ export function useLongPress(onLong: (id: number) => void, enabled: boolean, ms 
   const st = useRef<{ id: number; x: number; y: number; t: number; fired: boolean } | null>(null);
   // Nur den Klick auf DIESELBE Karte direkt nach dem Halten verwerfen – ein
   // schnelles Antippen des Ziels gleich danach muss durchgehen.
-  const suppress = useRef<{ id: number; until: number }>({ id: -1, until: 0 });
+  const suppress = useRef<{ id: number; until: number; any: number }>({ id: -1, until: 0, any: 0 });
 
   const end = (fired: boolean) => {
     const s = st.current;
     if (!s) return;
     window.clearTimeout(s.t);
-    if (s.fired || fired) suppress.current = { id: s.id, until: Date.now() + 700 };
+    // Direkt nach dem Loslassen jeden Klick verwerfen (verschiebt sich das Layout,
+    // landet er sonst auf einem Nachbarn), danach nur noch auf der gehaltenen Karte.
+    if (s.fired || fired) suppress.current = { id: s.id, until: Date.now() + 700, any: Date.now() + 200 };
     st.current = null;
   };
 
@@ -41,6 +61,9 @@ export function useLongPress(onLong: (id: number) => void, enabled: boolean, ms 
     onContextMenu: (e: { preventDefault: () => void }) => e.preventDefault(),   // Android-Menü beim Halten
   });
 
-  const suppressed = (id: number) => suppress.current.id === id && Date.now() < suppress.current.until;
+  const suppressed = (id: number) => {
+    const now = Date.now();
+    return now < suppress.current.any || (suppress.current.id === id && now < suppress.current.until);
+  };
   return { bind, suppressed };
 }

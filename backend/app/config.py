@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
 
     images_dir: str = "/app/images"
+    # Regulation Marks eigener Karten kurz nach dem Start nachholen (TCGdex);
+    # die Testsuite schaltet das ab.
+    regulation_backfill_on_start: bool = True
 
     # Welche Sprachfassung des Kartenscans der Katalog-Sync bevorzugt ("de" | "en").
     # Env CATALOG_IMAGE_LANG. Default "de" = bisheriges Verhalten.

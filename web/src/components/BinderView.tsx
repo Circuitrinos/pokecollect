@@ -6,8 +6,9 @@ import { Card, BINDER_LAYOUTS } from "@/lib/api";
 import { cardImageSrc, setCodeFromEdition } from "@/lib/utils";
 import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
+import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
-import { useLongPress } from "@/lib/useLongPress";
+import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
 
 export type BinderItem = { card: Card; position: number };
 
@@ -101,6 +102,7 @@ export default function BinderView({
   const selecting = !!selection?.active;
   const moving = editable && !selecting && (moveMode || picked != null);
   const longPress = useLongPress((id) => setPicked(id), editable && !selecting && !!onMoveToSlot);
+  const coarse = useCoarsePointer();     // Touch: halten/antippen statt Ziehen
   useEffect(() => { if (selecting) { setPicked(null); setMoveMode(false); } }, [selecting]);
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewport, setViewport] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -360,7 +362,7 @@ export default function BinderView({
                 key={slot}
                 {...dropProps}
                 {...longPress.bind(card.id)}
-                draggable={editable && !selecting && !moving}
+                draggable={editable && !selecting && !moving && !coarse}
                 onDragStart={editable ? (e) => { e.dataTransfer.setData("text/plain", String(card.id)); setDragId(card.id); } : undefined}
                 onDragEnd={editable ? () => setDragId(null) : undefined}
                 style={{ WebkitTouchCallout: "none" }}
@@ -410,7 +412,11 @@ export default function BinderView({
                   )}
                   <div className={`absolute bottom-0 inset-x-0 bg-black/60 px-1 py-0.5 grid items-center gap-1 ${compact ? "grid-cols-[1fr_auto]" : "grid-cols-3"}`}>
                     <span className="text-[10px] text-white truncate">{name}</span>
-                    {!compact && <span className="text-[10px] text-gray-400 font-mono text-center truncate">{code}</span>}
+                    {!compact && (
+                      <span className="flex items-center justify-center gap-1 text-[10px] text-gray-400 font-mono truncate">
+                        {code}<RegulationBadge card={card} />
+                      </span>
+                    )}
                     <span className="flex justify-end"><RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" /></span>
                   </div>
                 </Link>

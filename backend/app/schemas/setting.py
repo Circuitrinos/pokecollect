@@ -31,6 +31,9 @@ DEFAULTS: dict[str, str] = {
     # Download) | "owned" (besessene + Wunschlisten-Karten) | "all" (ganzer
     # Katalog, ~3 GB Schätzung). Siehe services/catalog_images.py.
     "catalog_image_cache_level": "urls",
+    # Turnier-Legalität (services/regulation.py): niedrigstes Standard-legales
+    # Regulation Mark. "H" = Saison 2026/27 (H, I, J und alle künftigen).
+    "standard_min_mark": "H",
 }
 
 # Secrets verlassen das Backend nie im Klartext (Issue #1): die Response
@@ -89,6 +92,7 @@ class SettingsResponse(BaseModel):
     openrouter_model: str
     # Lokaler Katalog-Bildcache (#43) — kein Secret, GET maskiert nichts.
     catalog_image_cache_level: str
+    standard_min_mark: str = "H"
 
 
 class SettingsUpdate(BaseModel):
@@ -119,6 +123,7 @@ class SettingsUpdate(BaseModel):
     # #43: nur die drei Stufen — Literal liefert 422 bei jedem anderen Wert,
     # ohne einen eigenen Validator (Muster: CollectionTyp/ScanMode).
     catalog_image_cache_level: Optional[Literal["urls", "owned", "all"]] = None
+    standard_min_mark: Optional[str] = Field(default=None, pattern="^[A-Z]$")
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
     # Alle Einstellungen landen als Text in der DB; ein ausdrückliches `null`

@@ -3,7 +3,7 @@ import math
 from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import func, select, update, or_, and_, cast, String
+from sqlalchemy import func, select, update, or_, and_, cast, false, String
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,7 @@ from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.services.catalog_lookup import catalog_row_for
-from app.services import card_bulk
+from app.services import card_bulk, regulation
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
@@ -56,6 +56,10 @@ def list_cards(
     im_pokedex: Optional[bool] = None,
     erste_edition: Optional[bool] = None,
     prize_pack: Optional[bool] = None,
+    # Turnier-Legalität (services/regulation.py): Regulation Mark(s), kommagetrennt
+    # ("H,I"), bzw. Standard-Status gegen das eingestellte niedrigste Zeichen.
+    regulation_mark: Optional[str] = Query(None, max_length=60),
+    standard: Optional[str] = Query(None, pattern="^(legal|not_legal|unknown)$"),
     pokedex_view: bool = False,
     prioritaet: Optional[str] = None,
     set: Optional[str] = None,
@@ -118,6 +122,23 @@ def list_cards(
         q = q.where(PokemonCard.erste_edition == erste_edition)
     if prize_pack is not None:
         q = q.where(PokemonCard.prize_pack == prize_pack)
+    if regulation_mark:
+        marks = {m for m in (regulation.norm_mark(x) for x in regulation_mark.split(",")) if m}
+        want_none = any(x.strip() == regulation.NO_MARK for x in regulation_mark.split(","))
+        cond = PokemonCard.regulation_mark.in_(marks) if marks else None
+        if want_none:
+            # „ohne Zeichen" = geprüft, aber keins aufgedruckt (unbekannt zählt nicht)
+            none_cond = PokemonCard.regulation_mark.is_(None) & PokemonCard.legal_mark.isnot(None)
+            cond = none_cond if cond is None else (cond | none_cond)
+        q = q.where(cond if cond is not None else false())
+    if standard:
+        legal = regulation.standard_legal_clause(regulation.standard_min_mark(db))
+        if standard == "legal":
+            q = q.where(legal)
+        elif standard == "not_legal":
+            q = q.where(PokemonCard.legal_mark.isnot(None), ~legal)
+        else:
+            q = q.where(PokemonCard.legal_mark.is_(None), PokemonCard.basic_energy == False)  # noqa: E712
     if prioritaet:
         q = q.where(PokemonCard.prioritaet == prioritaet)
     if set:
@@ -212,6 +233,8 @@ def _card_response(db: Session, card: PokemonCard) -> CardResponse:
             resp.katalog_preis_usd = val
             resp.katalog_preis_usd_variante = variante
             resp.katalog_preis_usd_stand = row.price_usd_updated
+        if row.regulation_checked:
+            resp.legal_expanded = row.legal_expanded
     # Herkunft des zuletzt gesetzten Werts (jüngster Verlaufseintrag) — das UI
     # beschriftet den Wert damit statt pauschal „Cardmarket" zu behaupten.
     resp.wert_quelle = db.scalar(
@@ -263,6 +286,8 @@ def create_card(data: CardCreate, background_tasks: BackgroundTasks, db: Session
 
     card = PokemonCard(**data.model_dump())
     db.add(card)
+    db.flush()
+    regulation.apply_to_card(db, card)
     db.commit()
     db.refresh(card)
     return _card_response(db, card)
@@ -272,6 +297,10 @@ def create_card(data: CardCreate, background_tasks: BackgroundTasks, db: Session
 def update_card(card_id: int, data: CardUpdate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     card = _card_or_404(card_id, db)
     updated = data.model_dump(exclude_unset=True)
+    mark_changed = "regulation_mark" in updated and updated["regulation_mark"] != card.regulation_mark
+    # Andere Karte (Set/Nummer wirklich geändert) → Zeichen neu aus TCGdex. Die
+    # Detailseite schickt das ganze Formular, also Werte vergleichen.
+    other_card = any(k in updated and updated[k] != getattr(card, k) for k in ("set_edition", "karten_nr"))
     # Pokédex-Exklusivität: wenn im_pokedex=True gesetzt wird, alle anderen Karten
     # mit gleicher pokedex_nr auf False zurücksetzen (1 Pokédex-Slot pro Pokémon)
     if updated.get("im_pokedex") is True and card.pokedex_nr:
@@ -290,7 +319,10 @@ def update_card(card_id: int, data: CardUpdate, background_tasks: BackgroundTask
     if any(k in updated for k in ("set_edition", "karten_nr", "sprache")):
         card.bild_karte_url = None  # wird neu gesetzt
         card.set_id = None          # erzwingt Neuauflösung aus set_edition
+        if other_card and not mark_changed:
+            card.regulation_mark = None   # andere Karte → Zeichen kommt neu aus TCGdex
         background_tasks.add_task(_trigger_image_fetch, card.id)
+    regulation.apply_to_card(db, card)
     db.commit()
     db.refresh(card)
     return _card_response(db, card)

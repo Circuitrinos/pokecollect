@@ -5,8 +5,9 @@ import Link from "next/link";
 import { CollectionCard } from "@/lib/api";
 import { cardImageSrc } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
+import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
-import { useLongPress } from "@/lib/useLongPress";
+import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
 
 type Props = {
   cards: CollectionCard[];
@@ -15,16 +16,20 @@ type Props = {
   onRemove: (cardId: number) => void;
   /** Auswahl-Modus: Tippen wählt, kein Ziehen/Entfernen. */
   selection?: { active: boolean; ids: Set<number>; toggle: (id: number) => void } | null;
+  /** false = sortierte Ansicht: kein Umordnen (die Reihenfolge ergibt sich aus der Sortierung). */
+  reorderable?: boolean;
 };
 
-export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, selection }: Props) {
-  const selecting = !!selection?.active;
+export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, selection, reorderable = true }: Props) {
+  const selecting = !!selection?.active || !reorderable;   // ohne Umordnen: wie im Auswahl-Modus kein Ziehen/Halten
+  const selectMode = !!selection?.active;
   const { t, lang } = useI18n();
   const [order, setOrder] = useState<CollectionCard[]>(cards);
   const [dragId, setDragId] = useState<number | null>(null);
   // Handy: Karte halten → aufgenommen, dann die Karte antippen, an deren Platz sie soll
   const [picked, setPicked] = useState<number | null>(null);
   const longPress = useLongPress((id) => setPicked(id), !selecting);
+  const coarse = useCoarsePointer();     // Touch: halten/antippen statt Ziehen
 
   useEffect(() => { setOrder(cards); }, [cards]);
   useEffect(() => { if (selecting) setPicked(null); }, [selecting]);
@@ -54,32 +59,32 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, 
         {order.map((card) => {
           const { src, isPlaceholder } = cardImageSrc(card, apiBase);
           const name = lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname;
-          const isSel = selecting && selection!.ids.has(card.id);
+          const isSel = selectMode && selection!.ids.has(card.id);
           return (
             <div
               key={card.id}
-              draggable={!selecting && picked == null}
+              draggable={!selecting && picked == null && !coarse}
               {...longPress.bind(card.id)}
               style={{ WebkitTouchCallout: "none" }}
               onDragStart={() => setDragId(card.id)}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => handleDropOn(card.id)}
-              role={selecting ? "checkbox" : undefined}
-              aria-checked={selecting ? isSel : undefined}
-              tabIndex={selecting ? 0 : undefined}
-              onClick={selecting ? () => selection!.toggle(card.id) : undefined}
-              onKeyDown={selecting ? (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); selection!.toggle(card.id); } } : undefined}
-              className={`relative rounded-lg border-2 overflow-hidden ${selecting ? "cursor-pointer" : "cursor-move"} bg-pokemon-card ${
+              role={selectMode ? "checkbox" : undefined}
+              aria-checked={selectMode ? isSel : undefined}
+              tabIndex={selectMode ? 0 : undefined}
+              onClick={selectMode ? () => selection!.toggle(card.id) : undefined}
+              onKeyDown={selectMode ? (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); selection!.toggle(card.id); } } : undefined}
+              className={`relative rounded-lg border-2 overflow-hidden ${selectMode ? "cursor-pointer" : selecting ? "" : "cursor-move"} bg-pokemon-card ${
                 card.besessen ? "border-gray-600" : "border-gray-700 opacity-60"
               } ${dragId === card.id ? "ring-2 ring-pokemon-yellow" : ""} ${isSel ? "ring-4 ring-pokemon-blue ring-offset-1 ring-offset-pokemon-dark" : ""} ${
                 picked === card.id ? "ring-4 ring-pokemon-yellow scale-95 opacity-80" : picked != null ? "ring-1 ring-pokemon-yellow/40" : ""} select-none`}
             >
-              {selecting && (
+              {selectMode && (
                 <span aria-hidden className={`absolute top-1 right-1 z-20 flex h-6 w-6 items-center justify-center rounded-full border-2 text-sm font-bold ${
                   isSel ? "border-pokemon-blue bg-pokemon-blue text-white" : "border-white/80 bg-black/40 text-transparent"}`}>✓</span>
               )}
               <Link href={`/cards/${card.id}`} draggable={false} onClick={(e) => {
-                if (selecting || longPress.suppressed(card.id)) { e.preventDefault(); return; }
+                if (selectMode || longPress.suppressed(card.id)) { e.preventDefault(); return; }
                 if (picked != null) {
                   e.preventDefault();
                   if (picked !== card.id) handleDropOn(card.id, picked);
@@ -105,9 +110,12 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, 
               </Link>
               <div className="px-1.5 py-1 flex items-center justify-between gap-1">
                 <span className="text-xs text-white truncate">{name}</span>
-                <RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" />
+                <span className="flex shrink-0 items-center gap-1">
+                  <RegulationBadge card={card} />
+                  <RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" />
+                </span>
               </div>
-              {!selecting && <button type="button"
+              {!selectMode && <button type="button"
                 onClick={() => onRemove(card.id)}
                 title={t.collection_remove}
                 className="absolute top-1 right-1 bg-black/60 text-red-300 hover:text-red-100 rounded-full w-5 h-5 flex items-center justify-center text-xs"

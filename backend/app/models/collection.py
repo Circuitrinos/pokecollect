@@ -27,6 +27,7 @@ class Collection(Base):
     binder_layout = Column(Text, nullable=True, default="3x3")  # cols x rows, z.B. "3x3"
     binder_slots = Column(Integer, nullable=True)  # persistierte Binder-Größe (Slot-Kapazität inkl. leerer Seiten)
     view_mode = Column(Text, nullable=True)        # Anzeige der Sammlung: "grid" | "binder" (NULL = grid)
+    grid_sort = Column(Text, nullable=True)        # Sortierung im Raster (NULL/"manual" = Binder-Reihenfolge)
     erstellt_am = Column(DateTime, default=datetime.utcnow)
     # ── Set-Sammlung / Sammelziel (Issue #16, additiv) ───────────────────────
     # typ = "frei" (klassischer Binder) | "set_ziel" (Set-Sammlung mit Soll-Liste)

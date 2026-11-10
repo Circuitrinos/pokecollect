@@ -5,10 +5,12 @@ import { Card, Enums, PokemonSet, cardApi } from "@/lib/api";
 import RarityBadge from "@/components/RarityBadge";
 import FirstEditionBadge from "@/components/FirstEditionBadge";
 import PrizePackBadge from "@/components/PrizePackBadge";
+import RegulationBadge from "@/components/RegulationBadge";
 import SetPicker from "@/components/SetPicker";
 import { CardNrField, CurrencyField, DateField, PokedexNrField, SelectField, TextareaField, TextField } from "@/components/CardFormFields";
 import { useCardForm } from "@/lib/useCardForm";
 import { formatEur } from "@/lib/utils";
+import { MARK_LETTERS } from "@/lib/regulation";
 import { useI18n } from "@/lib/i18n";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
 import { priceSourceKey, priceSourceRate, priceSourceVariant } from "@/lib/priceSource";
@@ -283,6 +285,31 @@ export default function EditForm({
         {field("besessen", t.field_owned, "boolean")}
         {field("erste_edition", t.first_edition_label, "boolean")}
         {field("prize_pack", t.prize_pack_label, "boolean")}
+        {/* Turnier-Legalität: Zeichen + Standard-Status (+ Expanded laut TCGdex) */}
+        {editing ? (
+          <div key="regulation_mark">
+            <SelectField
+              fieldKey="regulation_mark"
+              label={t.reg_label}
+              value={(form as Record<string, unknown>).regulation_mark}
+              onChange={(v) => setForm((f) => ({ ...f, regulation_mark: v }))}
+              options={MARK_LETTERS}
+              dense
+            />
+            <p className="text-gray-500 text-[11px] mt-0.5">{t.reg_manual_hint}</p>
+          </div>
+        ) : (
+          <div key="regulation_mark">
+            <dt className="text-gray-500 text-xs">{t.reg_label}</dt>
+            <dd className="text-white text-sm" data-testid="regulation-detail">
+              {!card.regulation_mark && <span className="mr-2">{card.legal_mark || card.basic_energy ? t.reg_none : "–"}</span>}
+              <RegulationBadge card={card} withText className="text-xs" />
+              {card.legal_expanded != null && (
+                <span className="block text-gray-400 text-xs">{t.reg_expanded(card.legal_expanded)}</span>
+              )}
+            </dd>
+          </div>
+        )}
         {/* Kaufpreis + Kaufdatum nur im Edit-Modus; die Anzeige läuft über den
             G/V-Kasten unten (Kaufpreis / aktueller Wert / G/V), Issue #26 */}
         {editing && (

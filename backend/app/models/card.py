@@ -65,6 +65,13 @@ class PokemonCard(Base):
     variants_reverse = Column(Boolean, nullable=True)
     variants_holo = Column(Boolean, nullable=True)
     variants_firstedition = Column(Boolean, nullable=True)
+    # Turnier-Legalität (services/regulation.py). regulation_mark = aufgedrucktes
+    # Zeichen ("H"); legal_mark = für Standard maßgebliches Zeichen (eigenes
+    # oder — Trainer/Spezial-Energie — das jüngste gleichnamige Reprint);
+    # "-" = geprüft, kein Zeichen; NULL = (noch) unbekannt. basic_energy: immer legal.
+    regulation_mark = Column(Text, nullable=True, index=True)
+    legal_mark = Column(Text, nullable=True, index=True)
+    basic_energy = Column(Boolean, nullable=False, server_default=false(), default=False)
     hinzugefuegt_am = Column(DateTime, default=datetime.utcnow)
     aktualisiert_am = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -98,9 +98,9 @@ export default function HomePage() {
   const highlightIds = useMemo(() => {
     if (view !== "binder" || !data || !hasActiveFilters(filters)) return null;
     const s = new Set<number>();
-    for (const c of data.items) if (cardMatchesFilters(c, filters)) s.add(c.id);
+    for (const c of data.items) if (cardMatchesFilters(c, filters, appSettings?.standard_min_mark)) s.add(c.id);
     return s;
-  }, [view, data, filters]);
+  }, [view, data, filters, appSettings?.standard_min_mark]);
 
   const placeholderEnabled = appSettings?.placeholder_images_enabled ?? true;
 

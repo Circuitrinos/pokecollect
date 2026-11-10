@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.models.card import PokemonCard
 from app.models.pokemon_set import PokemonSet
 from app.services import tcgdex
+from app.services.regulation import norm_mark
 from app.services.tcgdex import TcgdexCard
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,9 @@ def apply_species_image(card: PokemonCard, tc: TcgdexCard, *, overwrite_image: b
     (Spezies-Ebene, zuverlässig). Lässt set_id/tcgdex_card_id/Varianten in Ruhe,
     um keine womöglich falsche konkrete Karte zu erzwingen.
     """
+    mark = norm_mark(getattr(tc, "regulationMark", None))
+    if mark:
+        card.regulation_mark = mark
     if overwrite_image:
         url = tcgdex.image_url(tc.image)
         if url:

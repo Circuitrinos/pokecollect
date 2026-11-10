@@ -8,6 +8,7 @@ import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
 import FirstEditionBadge from "@/components/FirstEditionBadge";
 import PrizePackBadge from "@/components/PrizePackBadge";
+import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
 
 type Props = {
@@ -146,6 +147,7 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
                 {/* Zeile 2: Set-Kürzel (links) | Karten-Nr. (mitte) | Seltenheit-Symbol (rechts) */}
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-gray-400 font-mono shrink-0">{setCode}</span>
+                  <RegulationBadge card={card} className="shrink-0" />
                   <span className="text-xs text-gray-500 flex-1 text-center truncate">
                     {card.karten_nr ?? ""}
                   </span>

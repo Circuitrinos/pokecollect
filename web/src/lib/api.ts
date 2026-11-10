@@ -58,6 +58,13 @@ export type Card = {
   muster: string | null;       // Folierungs-Muster (#63): Pokéball/Masterball/…
   erste_edition: boolean;
   prize_pack: boolean;         // Play! Pokémon-Stempel (Prize Pack Series)
+  // Turnier-Legalität (backend services/regulation.py): aufgedrucktes Zeichen,
+  // für Standard maßgebliches Zeichen (inkl. Reprint-Regel; "-" = keins,
+  // null = unbekannt) und Basis-Energie (immer legal).
+  regulation_mark?: string | null;
+  legal_mark?: string | null;
+  basic_energy?: boolean;
+  legal_expanded?: boolean | null;   // TCGdex-Flag, nur Einzelkarten
   sprache: string;
   besessen: boolean;
   wunschliste: boolean;
@@ -193,6 +200,7 @@ export type Collection = {
   binder_layout: string | null;
   binder_slots: number | null;
   view_mode?: "grid" | "binder";   // Ansicht, serverseitig je Sammlung gemerkt
+  grid_sort?: "manual" | "name" | "pokedex" | "set" | "value" | "newest";   // Sortierung im Raster
   erstellt_am: string | null;
   karten_anzahl: number;
   // Set-Sammlung / Sammelziel (Issue #16)
@@ -341,6 +349,8 @@ export type AppSettings = {
   openrouter_model: string;
   // Lokaler Katalog-Bildcache (#43): "urls" | "owned" | "all"
   catalog_image_cache_level: string;
+  // Niedrigstes Standard-legales Regulation Mark ("H" = Saison 2026/27)
+  standard_min_mark?: string;
 };
 
 export type AppSettingsUpdate = Partial<{
@@ -367,6 +377,7 @@ export type AppSettingsUpdate = Partial<{
   openrouter_model: string;
   // Lokaler Katalog-Bildcache (#43)
   catalog_image_cache_level: string;
+  standard_min_mark: string;
 }>;
 
 export const collectionApi = {
@@ -381,7 +392,7 @@ export const collectionApi = {
     ziel_sprache?: string | null;
     ziel_master_set?: boolean;
   }) => api.post<Collection>("/collections", data),
-  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number; view_mode?: "grid" | "binder" }) =>
+  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number; view_mode?: "grid" | "binder"; grid_sort?: "manual" | "name" | "pokedex" | "set" | "value" | "newest" }) =>
     api.put<Collection>(`/collections/${id}`, data),
   delete: (id: number) => api.delete(`/collections/${id}`),
   cards: (id: number) => api.get<CollectionCard[]>(`/collections/${id}/cards`),
@@ -673,6 +684,7 @@ export type CatalogItem = {
   rarity: string | null;
   illustrator: string | null;
   category: string | null;
+  regulation_mark?: string | null;   // Turnier-Legalität
   image_url: string | null;
   variants_normal: boolean | null;
   variants_reverse: boolean | null;
@@ -735,6 +747,9 @@ export const catalogApi = {
     api.get<CatalogDetail>(`/catalog/${encodeURIComponent(cardId)}/detail`, opts),
   meta: () => api.get<{ total: number; enriched: number; cached_images: number }>("/catalog/meta"),
   sync: () => api.post<{ detail: string }>("/catalog/sync"),
+  // Turnier-Legalität: Stand + Nachholen der Regulation Marks (Admin)
+  regulation: () => api.get<{ min_mark: string; pending_owned: number; pending_catalog: number }>("/catalog/regulation"),
+  loadRegulation: () => api.post<{ detail: string }>("/catalog/regulation"),
   illustrators: () => api.get<string[]>("/catalog/illustrators"),
   addWishlist: (cardId: string, opts: CatalogAddOpts = {}) =>
     api.post<{ card_id: number }>(`/catalog/${encodeURIComponent(cardId)}/wishlist`, {
@@ -773,5 +788,5 @@ export const scanApi = {
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),
   commit: (payload: ScanCommitRequest) =>
-    api.post<{ created: number; card_ids: number[] }>("/scan/commit", payload),
+    api.post<{ created: number; card_ids: number[]; all_card_ids?: number[]; copy_ids?: number[][] }>("/scan/commit", payload),
 };

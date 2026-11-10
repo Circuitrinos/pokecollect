@@ -10,6 +10,7 @@ from app.auth_user import AuthUser
 from app.database import get_db
 from app.models.setting import AppSetting
 from app.models.user import UserSetting
+from app.services.regulation import DEFAULT_MIN_MARK, norm_mark
 from app.schemas.setting import DEFAULTS, SECRET_KEYS, USER_KEYS, PasswordChange, SettingsResponse, SettingsUpdate
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def _to_response(raw: dict[str, str], is_admin: bool = True) -> SettingsResponse
         openai_model=raw["openai_model"] or "gpt-4o-mini",
         openrouter_model=raw["openrouter_model"] or "google/gemini-2.5-flash",
         catalog_image_cache_level=raw["catalog_image_cache_level"] or "urls",
+        standard_min_mark=norm_mark(raw["standard_min_mark"]) or DEFAULT_MIN_MARK,
         **secret_fields,
     )
 

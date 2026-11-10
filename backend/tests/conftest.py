@@ -16,6 +16,7 @@ os.environ.setdefault(
     "postgresql://pokecollect:pokecollect@localhost:5440/pokecollect_test",
 )
 os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ["REGULATION_BACKFILL_ON_START"] = "false"   # kein TCGdex-Abruf beim Teststart
 # StaticFiles verlangt ein existierendes Verzeichnis
 os.environ.setdefault("IMAGES_DIR", tempfile.mkdtemp(prefix="pokecollect-test-images-"))
 

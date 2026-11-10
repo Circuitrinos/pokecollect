@@ -6,11 +6,13 @@ Tägliche Cron-Jobs:
 """
 
 import logging
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import SessionLocal, run_with_session
 from app.models.card import PokemonCard
 from app.models.setting import AppSetting
@@ -78,6 +80,12 @@ async def _daily_catalog_sync(db: Session):
     # Vorrang, aber der €-Repass läuft NEBENHER mit; sonst kämen die schon
     # angereicherten ~11,8k Zeilen erst nach Abschluss der Anreicherung dran.
     await schritt("€-Repass", refresh_catalog_eur(db, limit=1000))
+    # Regulation Marks für vor dieser Version angereicherte Zeilen nachholen
+    # (eigene Karten zuerst) und die Legalität eigener Karten neu rechnen —
+    # neue gleichnamige Reprints machen alte Trainer wieder Standard-legal.
+    from app.services import regulation
+    await schritt("Regulation Marks", regulation.backfill_catalog(db, limit=3000))
+    await schritt("Legalität", _sync(regulation.refresh_cards, db))
     # #43: eigenes, noch kleineres Budget — ein Bild-Download ist teurer als
     # ein JSON-Preis-Abruf (echter Dateidownload + Schreiben + PIL-Validierung).
     # Lädt nur, wenn die Einstellung catalog_image_cache_level das erlaubt
@@ -89,6 +97,27 @@ async def _daily_catalog_sync(db: Session):
     # vergleichbarem Katalogumfang analog limit=1000, ein Bild-Download ist
     # aber teurer je Zeile (echter Dateidownload statt JSON-Abruf).
     await schritt("Bild-Cache", run_catalog_image_cache(db, limit=500))
+
+
+async def _sync(fn, *args):
+    """Synchronen Schritt in schritt() einhängen (der erwartet ein Awaitable)."""
+    return fn(*args)
+
+
+async def _regulation_startup(db: Session):
+    """Einmal kurz nach dem Start: Regulation Marks eigener Karten nachholen,
+    falls deren Katalogzeilen sie noch nicht haben (Update auf diese Version)."""
+    from app.services import regulation
+    try:
+        await regulation.backfill_catalog(db, limit=5000, owned_only=True)
+        await regulation.backfill_catalog(db, limit=3000)
+    except Exception as exc:  # noqa: BLE001 — nie den Betrieb stören
+        db.rollback()
+        log.warning("Regulation-Nachholer beim Start fehlgeschlagen: %s", exc)
+
+
+async def _regulation_startup_job():
+    await run_with_session(_regulation_startup)
 
 
 def _price_update_hour(db: Session) -> int:
@@ -118,5 +147,8 @@ def start_scheduler():
         db.close()
     scheduler.add_job(_price_update_job, "cron", hour=hour, minute=0)
     scheduler.add_job(_catalog_sync_job, "cron", hour=4, minute=0)
+    if settings.regulation_backfill_on_start:
+        scheduler.add_job(_regulation_startup_job, "date",
+                          run_date=datetime.now() + timedelta(seconds=60))
     scheduler.start()
     log.info("Cron-Scheduler gestartet (Preise %02d:00, Katalog 04:00)", hour)

@@ -19,6 +19,8 @@ export type Filters = {
   search?: string;
   sort?: string;
   bild_status?: string;
+  standard?: "legal" | "not_legal" | "unknown";
+  regulation_mark?: string;
 };
 
 type Props = {
@@ -33,6 +35,8 @@ type Props = {
 };
 
 const GENERATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+// Regulation Marks gibt es seit Schwert & Schild (D); neueste zuerst
+const REG_FILTER_MARKS = ["L", "K", "J", "I", "H", "G", "F", "E", "D"];
 
 export default function FilterSidebar({ filters, onChange, enums, sets, open, onOpenChange }: Props) {
   const { t } = useI18n();
@@ -52,7 +56,7 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
   const update = (key: keyof Filters, value: unknown) =>
     onChange({ ...filters, [key]: value === "" ? undefined : value });
 
-  const activeCount = (["besessen", "erste_edition", "prize_pack", "generation", "set", "seltenheit", "sprache", "illustrator", "search", "bild_status"] as const)
+  const activeCount = (["besessen", "erste_edition", "prize_pack", "generation", "set", "seltenheit", "sprache", "illustrator", "search", "bild_status", "standard", "regulation_mark"] as const)
     .filter((k) => filters[k] !== undefined && filters[k] !== "").length;
 
   const illuOptions: SelectOption[] = useMemo(
@@ -119,6 +123,35 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
         >
           <option value="">{t.filter_all}</option>
           <option value="true">{t.filter_prize_pack_only}</option>
+        </select>
+      </div>
+
+      <div>
+        <label htmlFor="filter_standard" className="block text-gray-400 mb-1">{t.filter_standard}</label>
+        <select
+          id="filter_standard"
+          value={filters.standard ?? ""}
+          onChange={(e) => update("standard", e.target.value)}
+          className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
+        >
+          <option value="">{t.filter_all}</option>
+          <option value="legal">{t.filter_standard_legal}</option>
+          <option value="not_legal">{t.filter_standard_not}</option>
+          <option value="unknown">{t.filter_standard_unknown}</option>
+        </select>
+      </div>
+
+      <div>
+        <label htmlFor="filter_regulation_mark" className="block text-gray-400 mb-1">{t.filter_reg_mark}</label>
+        <select
+          id="filter_regulation_mark"
+          value={filters.regulation_mark ?? ""}
+          onChange={(e) => update("regulation_mark", e.target.value)}
+          className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
+        >
+          <option value="">{t.filter_all}</option>
+          {REG_FILTER_MARKS.map((m) => <option key={m} value={m}>{m}</option>)}
+          <option value="-">{t.filter_reg_none}</option>
         </select>
       </div>
 

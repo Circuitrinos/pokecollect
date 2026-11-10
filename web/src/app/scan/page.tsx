@@ -28,7 +28,7 @@ type EditableCandidate = ScanCandidate & {
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — vom Nutzer angehakt
-  copies: number;           // so viele gleiche Exemplare anlegen (Foto nur am ersten)
+  copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
   chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
@@ -554,8 +554,12 @@ export default function ScanPage() {
       });
       // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
       // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
-      // Abgleich (die Karte zeigt das Katalogbild). Nur das erste Exemplar.
+      // Abgleich (die Karte zeigt das Katalogbild). Das erste Exemplar bekommt
+      // Zuschnitt + Original (lernt mit); weitere Exemplare mit „eigenes Foto"
+      // nur den Zuschnitt — sonst zeigten sie den Platzhalter, wenn es kein
+      // Katalogbild gibt.
       const ids = res.data.card_ids;
+      const copyIds = res.data.copy_ids ?? [];
       await Promise.all(chosen.map(async (c, k) => {
         const blob = sourceBlobRef.current;
         const hasCrop = !!(c.editedQuad || c.raw?.quad || c.raw?.bbox);
@@ -569,6 +573,11 @@ export default function ScanPage() {
             ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
           if (c.usePhoto) await cardApi.uploadImage(ids[k], file, original, quad);
           else await cardApi.uploadScanPhoto(ids[k], file, original, quad);  // nur zum Lernen
+          if (c.usePhoto) {
+            for (const extra of (copyIds[k] ?? []).filter((id) => id !== ids[k])) {
+              await cardApi.uploadImage(extra, file).catch(() => {});
+            }
+          }
         } catch { /* Foto-Upload optional */ }
       }));
       toast.success(t.scan_saved(res.data.created));

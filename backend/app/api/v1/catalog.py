@@ -17,7 +17,7 @@ from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
-from app.services import catalog as catalog_svc, catalog_images, tcgdex
+from app.services import catalog as catalog_svc, catalog_images, regulation, tcgdex
 from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
 from app.services.settings import get_setting
@@ -158,6 +158,23 @@ async def trigger_catalog_sync(background_tasks: BackgroundTasks):
     return {"detail": "Katalog-Sync gestartet (Sets + Katalog-Basis) – läuft im Hintergrund."}
 
 
+@router.get("/regulation")
+def regulation_status(db: Session = Depends(get_db)):
+    """Stand der Regulation Marks: niedrigstes Standard-Zeichen + offene Zeilen."""
+    return regulation.status(db)
+
+
+@router.post("/regulation", dependencies=[Depends(require_admin)])
+async def trigger_regulation_backfill(background_tasks: BackgroundTasks):
+    """Regulation Marks für eigene Karten jetzt nachholen (Hintergrund), danach
+    einen Schwung Trainer/Energie für die Reprint-Regel."""
+    async def _job(db: Session):
+        await regulation.backfill_catalog(db, limit=5000, owned_only=True)
+        await regulation.backfill_catalog(db, limit=3000)
+    background_tasks.add_task(run_with_session, _job)
+    return {"detail": "Regulation Marks werden im Hintergrund geladen."}
+
+
 # Das Enrichment (Volldetails) läuft täglich im Katalog-Cron in Etappen —
 # die manuellen POST /catalog/enrich(-all)-Endpoints wurden entfernt (Issue #12).
 
@@ -216,6 +233,7 @@ async def catalog_card_detail(
         detail.rarity = detail.rarity or tc.rarity
         detail.illustrator = detail.illustrator or tc.illustrator
         detail.category = detail.category or tc.category
+        detail.regulation_mark = detail.regulation_mark or regulation.norm_mark(tc.regulationMark)
         if tc.variants:
             if detail.variants_normal is None:
                 detail.variants_normal = tc.variants.normal

@@ -58,3 +58,35 @@ def test_ohne_anzahl_wie_bisher(client):
     r = client.post(f"{API}/scan/commit", json={"items": [_item()]})
     assert r.status_code == 200 and r.json()["created"] == 1 and r.json()["card_ids"] == r.json()["all_card_ids"]
     client.delete(f"{API}/cards/{r.json()['card_ids'][0]}")
+
+
+def test_copy_ids_und_katalogbild_fuer_alle_exemplare(client):
+    """Eigenes Foto gewählt (kein bild_karte_url im Payload): alle Exemplare
+    bekommen das Katalogbild als Rückfall, copy_ids nennt jedes Exemplar."""
+    from app.models.tcgdex_catalog import TcgdexCatalog
+
+    url = "https://assets.tcgdex.net/en/sv/sv01/copytest/high.webp"
+    db = SessionLocal()
+    db.add(TcgdexCatalog(card_id="copytest-1", region="west", name="Copytest", image_url=url))
+    db.commit()
+    body = {}
+    try:
+        r = client.post(f"{API}/scan/commit", json={"items": [
+            _item(tcgdex_card_id="copytest-1", copies=3, bild_karte_url=None),
+            _item(kartenname="Evoli", karten_nr="1", tcgdex_card_id=None),
+        ]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["copy_ids"]) == 2 and len(body["copy_ids"][0]) == 3 and len(body["copy_ids"][1]) == 1
+        assert body["copy_ids"][0][0] == body["card_ids"][0]
+        assert sorted(sum(body["copy_ids"], [])) == sorted(body["all_card_ids"])
+        cards = [db.get(PokemonCard, cid, execution_options={"all_users": True}) for cid in body["copy_ids"][0]]
+        assert {c.bild_karte_url for c in cards} == {url}
+        evoli = db.get(PokemonCard, body["copy_ids"][1][0], execution_options={"all_users": True})
+        assert evoli.bild_karte_url is None
+    finally:
+        for cid in body.get("all_card_ids", []):
+            client.delete(f"{API}/cards/{cid}")
+        db.execute(TcgdexCatalog.__table__.delete().where(TcgdexCatalog.card_id == "copytest-1"))
+        db.commit()
+        db.close()
