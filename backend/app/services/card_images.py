@@ -56,7 +56,7 @@ _MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12 MB, analog Scan-Endpoint
 # generisch JEDE Tabelle auf Spalten aus dieser Menge, ein neuer Eintrag hier
 # deckt die neue Spalte also ohne weitere Änderung am Restore-Code ab.
 MEDIA_PATH_COLUMNS = frozenset(
-    {"bild_karte_pfad", "bild_thumbnail_pfad", "bild_original_pfad", "bild_pfad", "image_pfad"}
+    {"bild_karte_pfad", "bild_thumbnail_pfad", "bild_original_pfad", "bild_scan_pfad", "bild_pfad", "image_pfad"}
 )
 
 
@@ -272,9 +272,36 @@ def store_card_image(
     return card
 
 
+def store_scan_photo(
+    db: Session,
+    card: PokemonCard,
+    file: UploadFile,
+    original: UploadFile,
+    quad: Optional[list[list[float]]] = None,
+) -> PokemonCard:
+    """
+    Scan-Foto nur für die Bilderkennung ablegen: Zuschnitt + Originalfoto +
+    Ecken. Die Anzeige bleibt beim Katalogbild (bild_karte_pfad unverändert).
+    """
+    suffix = _validated_suffix(file)
+    osuffix = _validated_suffix(original)
+    images_dir = Path(settings.images_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    scan_path = images_dir / f"card_{card.id}_scan{suffix}"
+    orig_path = images_dir / f"card_{card.id}_orig{osuffix}"
+    _save_upright(file, scan_path)
+    _save_upright(original, orig_path)
+    card.bild_scan_pfad = str(scan_path.relative_to(images_dir.parent))
+    card.bild_original_pfad = str(orig_path.relative_to(images_dir.parent))
+    card.bild_quad = json.dumps(quad) if quad else None
+    db.commit()
+    db.refresh(card)
+    return card
+
+
 def remove_card_images(db: Session, card: PokemonCard) -> PokemonCard:
     """Löscht alle lokalen Bilddateien einer Karte und leert die Pfadfelder."""
-    for path_field in ("bild_karte_pfad", "bild_thumbnail_pfad", "bild_original_pfad"):
+    for path_field in ("bild_karte_pfad", "bild_thumbnail_pfad", "bild_original_pfad", "bild_scan_pfad"):
         p = getattr(card, path_field)
         full = safe_media_path(p)  # None bei leer/unsicher → kein unlink (#37)
         if full:

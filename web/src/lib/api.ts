@@ -251,6 +251,15 @@ export const cardApi = {
     return api.post<Card>(`/cards/${id}/image`, form);
   },
 
+  // Scan-Foto nur für die Bilderkennung – die Karte zeigt weiter das Katalogbild
+  uploadScanPhoto: (id: number, file: File, original: File, quad?: number[][] | null) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("original", original);
+    if (quad && quad.length === 4) form.append("quad", JSON.stringify(quad));
+    return api.post<Card>(`/cards/${id}/scan-photo`, form);
+  },
+
   deleteImage: (id: number) => api.delete<Card>(`/cards/${id}/image`),
 
   stats: () => api.get<StatsResponse>("/cards/meta/stats"),
@@ -611,6 +620,7 @@ export type ScanCommitItem = {
   position?: number | null;
   im_pokedex?: boolean;
   prioritaet?: string | null;
+  copies?: number;          // gleiche Exemplare (1 = nur diese Karte)
 };
 
 export type ScanCommitRequest = {

@@ -24,10 +24,11 @@ type Step = "setup" | "review";
 
 type EditableCandidate = ScanCandidate & {
   include: boolean;
-  usePhoto: boolean;        // eigenes Foto (true) vs. API-Bild (false)
+  usePhoto: boolean;        // eigenes Foto als Kartenbild (true) vs. Katalogbild (false; Foto lernt trotzdem mit)
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — vom Nutzer angehakt
+  copies: number;           // so viele gleiche Exemplare anlegen (Foto nur am ersten)
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
   chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
@@ -190,13 +191,14 @@ export default function ScanPage() {
   const gAspect = guideAspect(mode, layoutCols, layoutRows);
   const handleCaptureRef = useRef<() => void>(() => {});
 
-  // Auto-Aufnahme: sucht ~7×/s vier gerade Kanten am Rahmen (Karte bzw.
-  // Kartenraster liegt drin) und löst aus, sobald der Fund ~½ s ruhig steht.
+  // Kartensuche im Live-Bild: ~7×/s vier gerade Kanten am Rahmen (Karte bzw.
+  // Kartenraster liegt drin) → grüne Kontur, auch ohne Auto-Aufnahme. Mit
+  // Auto-Aufnahme löst sie aus, sobald der Fund ~½ s ruhig steht.
   // Verwacklungstolerant; nur der Auslöser – die Erkennung macht der Server.
   useEffect(() => {
     setLockQuad(null);
     setLockSteady(false);
-    if (!cameraOn || !autoCapture || gAspect === null || step !== "setup") return;
+    if (!cameraOn || gAspect === null || step !== "setup") return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
@@ -216,6 +218,7 @@ export default function ScanPage() {
       prev = lock;
       setLockQuad(lock ? lock.quad.map(([x, y]) => [x / k, y / k] as Pt) : null);
       setLockSteady(steady > 0);
+      if (!autoCapture) return;             // nur anzeigen
       if (needClearRef.current) {           // erst die vorige Karte aus dem Rahmen nehmen
         clear = lock ? 0 : clear + 1;
         if (clear >= 2) { needClearRef.current = false; setWaitingNext(false); }
@@ -265,10 +268,14 @@ export default function ScanPage() {
       const list: EditableCandidate[] = res.data.candidates.map((c) => ({
         ...c,
         include: !c.needs_choice,   // ohne eindeutigen Treffer erst nach der Auswahl übernehmen
-        usePhoto: !!(c.raw?.bbox || c.raw?.quad),
+        // Erkannt → das saubere Katalogbild anzeigen; das Foto wird trotzdem
+        // gespeichert, damit der Bild-Abgleich daraus lernt. Ohne Treffer bleibt
+        // das Foto das einzige Bild.
+        usePhoto: !!(c.raw?.bbox || c.raw?.quad) && !c.match?.image_url,
         cropUrl: null,
         imPokedex: setPokedexRep,
         prizePack: false,
+        copies: 1,
       }));
       const art = res.data.hinweis_art;
       if (art) {
@@ -325,6 +332,8 @@ export default function ScanPage() {
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, usePhoto: !c.usePhoto } : c)));
   const togglePokedex = (idx: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, imPokedex: !c.imPokedex } : c)));
+  const setCopies = (idx: number, n: number) =>
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, copies: Math.min(50, Math.max(1, n)) } : c)));
   const togglePrizePack = (idx: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, prizePack: !c.prizePack } : c)));
 
@@ -365,7 +374,8 @@ export default function ScanPage() {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
       setCandidates((prev) => prev.map((cc, i) =>
-        i === idx ? { ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u, usePhoto: true } : cc));
+        i === idx ? { ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u,
+          usePhoto: cc.usePhoto || !cc.match?.image_url } : cc));
     } catch { /* Entzerrung optional */ }
   };
 
@@ -463,6 +473,7 @@ export default function ScanPage() {
           position: c.position ?? null,
           im_pokedex: target !== "wishlist" && c.imPokedex,
           prioritaet: target === "wishlist" ? (priority || null) : null,
+          copies: target === "wishlist" ? 1 : c.copies,
         };
       });
       const res = await scanApi.commit({
@@ -470,12 +481,14 @@ export default function ScanPage() {
         collection_id: target === "collection" ? collectionId : null,
         items,
       });
-      // Für jede Karte mit „eigenes Foto" die Aufnahme (per bbox zugeschnitten)
-      // als Kartenfoto hochladen – hat in der App Anzeige-Vorrang.
+      // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
+      // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
+      // Abgleich (die Karte zeigt das Katalogbild). Nur das erste Exemplar.
       const ids = res.data.card_ids;
       await Promise.all(chosen.map(async (c, k) => {
         const blob = sourceBlobRef.current;
-        if (!c.usePhoto || !blob || ids[k] == null) return;
+        const hasCrop = !!(c.editedQuad || c.raw?.quad || c.raw?.bbox);
+        if (!blob || ids[k] == null || (!c.usePhoto && !hasCrop)) return;
         try {
           const file = await cropToCardPhoto(blob, cropOptsFor(c));
           // Originalfoto (ganze Aufnahme) mitspeichern → spätere Nachbearbeitung
@@ -483,7 +496,8 @@ export default function ScanPage() {
           const b = c.raw?.bbox;
           const quad = c.editedQuad ?? c.raw?.quad
             ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
-          await cardApi.uploadImage(ids[k], file, original, quad);
+          if (c.usePhoto) await cardApi.uploadImage(ids[k], file, original, quad);
+          else await cardApi.uploadScanPhoto(ids[k], file, original, quad);  // nur zum Lernen
         } catch { /* Foto-Upload optional */ }
       }));
       toast.success(t.scan_saved(res.data.created));
@@ -714,6 +728,17 @@ export default function ScanPage() {
                       <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} />
                       {t.scan_prize_pack}
                     </label>
+                    {target !== "wishlist" && (
+                      <div className="flex items-center gap-1 text-gray-300" title={t.scan_copies_hint}>
+                        <span>{t.scan_copies}</span>
+                        <button type="button" aria-label="−1" onClick={() => setCopies(idx, c.copies - 1)} disabled={c.copies <= 1}
+                          className="h-6 w-6 rounded bg-gray-700 text-white leading-none hover:bg-gray-600 disabled:opacity-40">−</button>
+                        <span className={`w-5 text-center tabular-nums ${c.copies > 1 ? "text-white font-semibold" : ""}`}
+                          aria-live="polite">{c.copies}</span>
+                        <button type="button" aria-label="+1" onClick={() => setCopies(idx, c.copies + 1)} disabled={c.copies >= 50}
+                          className="h-6 w-6 rounded bg-gray-700 text-white leading-none hover:bg-gray-600 disabled:opacity-40">+</button>
+                      </div>
+                    )}
                     <label className="flex items-center gap-1 text-gray-300">
                       <input type="checkbox" checked={c.include} onChange={() => toggleInclude(idx)} />
                       {t.scan_include}

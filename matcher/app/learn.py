@@ -47,10 +47,13 @@ LEARN_MINUTES = float(os.getenv("LEARN_MINUTES", "15"))
 SEGMENT = "learned"
 
 # Photos from scans: an original exists only for uploads made by the scan page.
+# bild_scan_pfad = scan photo kept only for recognition (the card shows the
+# catalog image); older scans used their photo as the card image.
 _SQL = """
-SELECT id, tcgdex_card_id, bild_karte_pfad
+SELECT id, tcgdex_card_id, COALESCE(bild_scan_pfad, bild_karte_pfad)
 FROM pokemon_cards
-WHERE tcgdex_card_id IS NOT NULL AND bild_karte_pfad IS NOT NULL AND bild_original_pfad IS NOT NULL
+WHERE tcgdex_card_id IS NOT NULL AND bild_original_pfad IS NOT NULL
+  AND COALESCE(bild_scan_pfad, bild_karte_pfad) IS NOT NULL
 """
 
 

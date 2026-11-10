@@ -18,6 +18,7 @@ from app.services.card_images import (
     backfill_images_task,
     remove_card_images,
     store_card_image,
+    store_scan_photo,
 )
 from app.services.stats import collect_stats
 from app.domain.search import parse_kurzcode
@@ -363,6 +364,29 @@ async def upload_image(
     # Scan-Foto mit Original: der Bild-Abgleich nimmt es als zusätzliche
     # Referenz für diese Karte auf (matcher/app/learn.py).
     if card.bild_original_pfad and card.tcgdex_card_id:
+        background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return _card_response(db, card)
+
+
+@router.post("/{card_id}/scan-photo", response_model=CardResponse)
+async def upload_scan_photo(
+    card_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    original: UploadFile = File(...),
+    quad: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Scan-Foto nur für die Bilderkennung (die Karte zeigt weiter das
+    Katalogbild): Zuschnitt + Original + Ecken; der Bild-Abgleich lernt es.
+    """
+    card = _card_or_404(card_id, db)
+    try:
+        card = store_scan_photo(db, card, file, original, quad=_parse_quad(quad))
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    if card.tcgdex_card_id:
         background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
     return _card_response(db, card)
 

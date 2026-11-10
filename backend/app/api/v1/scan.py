@@ -391,52 +391,57 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
             raise HTTPException(status_code=404, detail="Sammlung nicht gefunden")
 
     created_ids: list[int] = []
+    first_ids: list[int] = []
     for item in payload.items:
-        fields = dict(
-            kartenname=item.kartenname,
-            pokedex_nr=item.pokedex_nr,
-            englischer_name=item.englischer_name,
-            set_edition=item.set_edition,
-            karten_nr=item.karten_nr,
-            seltenheit=item.seltenheit,
-            kartenversion=item.kartenversion,
-            folierung=item.folierung,
-            muster=item.muster,
-            prize_pack=item.prize_pack,
-            sprache=item.sprache or "DE",
-            zustand=item.zustand,
-            notizen=item.notizen,
-            tcgdex_card_id=item.tcgdex_card_id,
-            set_id=item.set_id,
-            dex_id=item.dex_id,
-            bild_karte_url=item.bild_karte_url if is_allowed_image_url(item.bild_karte_url) else None,
-        )
-        if is_wishlist:
-            # EN-Namen-Fill wie in create_owned_card (Wunschliste läuft daran
-            # vorbei; typisch JP: TCGdex kennt keinen EN-Namen, v1.7.3).
-            if not fields.get("englischer_name") and fields.get("tcgdex_card_id"):
-                row = catalog_row_for(db, fields["tcgdex_card_id"])
-                if row is not None and row.name_en:
-                    fields["englischer_name"] = row.name_en
-            card = PokemonCard(**fields, besessen=False, wunschliste=True, prioritaet=item.prioritaet)
-            db.add(card)
-            db.flush()  # ID
-        else:
-            card = create_owned_card(db, fields, background_tasks=background_tasks, commit=False)
-
-        # Sammlung + Binder-Slot. Binder-Scan liefert den Slot mit; sonst den
-        # nächsten freien Slot vergeben (nie None → keine Kompaktierung, #30).
-        if collection:
-            slot = item.position if item.position is not None else next_free_position(db, collection.id)
-            db.execute(
-                collection_cards.insert().values(
-                    collection_id=collection.id,
-                    card_id=card.id,
-                    position=slot,
-                )
+        for copy_no in range(1 if is_wishlist else item.copies):
+            fields = dict(
+                kartenname=item.kartenname,
+                pokedex_nr=item.pokedex_nr,
+                englischer_name=item.englischer_name,
+                set_edition=item.set_edition,
+                karten_nr=item.karten_nr,
+                seltenheit=item.seltenheit,
+                kartenversion=item.kartenversion,
+                folierung=item.folierung,
+                muster=item.muster,
+                prize_pack=item.prize_pack,
+                sprache=item.sprache or "DE",
+                zustand=item.zustand,
+                notizen=item.notizen,
+                tcgdex_card_id=item.tcgdex_card_id,
+                set_id=item.set_id,
+                dex_id=item.dex_id,
+                bild_karte_url=item.bild_karte_url if is_allowed_image_url(item.bild_karte_url) else None,
             )
+            if is_wishlist:
+                # EN-Namen-Fill wie in create_owned_card (Wunschliste läuft daran
+                # vorbei; typisch JP: TCGdex kennt keinen EN-Namen, v1.7.3).
+                if not fields.get("englischer_name") and fields.get("tcgdex_card_id"):
+                    row = catalog_row_for(db, fields["tcgdex_card_id"])
+                    if row is not None and row.name_en:
+                        fields["englischer_name"] = row.name_en
+                card = PokemonCard(**fields, besessen=False, wunschliste=True, prioritaet=item.prioritaet)
+                db.add(card)
+                db.flush()  # ID
+            else:
+                card = create_owned_card(db, fields, background_tasks=background_tasks, commit=False)
 
-        created_ids.append(card.id)
+            # Sammlung + Binder-Slot. Binder-Scan liefert den Slot mit (nur für das
+            # erste Exemplar); sonst den nächsten freien Slot (nie None, #30).
+            if collection:
+                slot = item.position if (item.position is not None and copy_no == 0) \
+                    else next_free_position(db, collection.id)
+                db.execute(
+                    collection_cards.insert().values(
+                        collection_id=collection.id,
+                        card_id=card.id,
+                        position=slot,
+                    )
+                )
+
+            created_ids.append(card.id)
+            if copy_no == 0:
+                first_ids.append(card.id)
 
     db.commit()
-    return ScanCommitResponse(created=len(created_ids), card_ids=created_ids)
+    return ScanCommitResponse(created=len(created_ids), card_ids=first_ids, all_card_ids=created_ids)

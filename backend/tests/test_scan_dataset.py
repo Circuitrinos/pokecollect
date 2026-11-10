@@ -133,3 +133,46 @@ def test_export_admin_alle_benutzer_originale_einmal(client, pokes):
         for cid in (a1, a2):
             client.delete(f"{API}/cards/{cid}")
         _drop_user(bob)
+
+
+def test_scanfoto_nur_zum_lernen_aendert_anzeige_nicht(client, pokes):
+    """Erkannte Karte zeigt das Katalogbild; das Scan-Foto liegt nur für den Bild-Abgleich bereit."""
+    from app.database import SessionLocal
+    from app.models.card import PokemonCard
+    cid = _card(client, "sv03-130")
+    try:
+        r = client.post(f"{API}/cards/{cid}/scan-photo",
+                        files={"file": ("crop.jpg", _jpeg((5, 5, 200)), "image/jpeg"),
+                               "original": ("orig.jpg", _jpeg((5, 200, 5)), "image/jpeg")},
+                        data={"quad": json.dumps(QUAD)})
+        assert r.status_code == 200, r.text
+        assert r.json()["bild_karte_pfad"] is None          # Anzeige unverändert (Katalogbild)
+        db = SessionLocal()
+        try:
+            card = db.get(PokemonCard, cid, execution_options={"all_users": True})
+            assert card.bild_scan_pfad and card.bild_original_pfad and json.loads(card.bild_quad) == QUAD
+        finally:
+            db.close()
+        assert len(pokes) == 1
+        z = zipfile.ZipFile(io.BytesIO(client.get(f"{API}/data/scan-dataset").content))
+        mine = [json.loads(x) for x in z.read("labels.jsonl").decode().splitlines() if json.loads(x)["id"] == cid]
+        assert mine and mine[0]["card_id"] == "sv03-130" and mine[0]["crop"] in z.namelist()
+        assert client.delete(f"{API}/cards/{cid}/image").status_code == 200
+        db = SessionLocal()
+        try:
+            card = db.get(PokemonCard, cid, execution_options={"all_users": True})
+            assert card.bild_scan_pfad is None and card.bild_original_pfad is None
+        finally:
+            db.close()
+    finally:
+        client.delete(f"{API}/cards/{cid}")
+
+
+def test_scanfoto_braucht_original(client, pokes):
+    cid = _card(client, "sv03-131")
+    try:
+        r = client.post(f"{API}/cards/{cid}/scan-photo", files={"file": ("crop.jpg", _jpeg((1, 2, 3)), "image/jpeg")})
+        assert r.status_code == 422
+        assert pokes == []
+    finally:
+        client.delete(f"{API}/cards/{cid}")

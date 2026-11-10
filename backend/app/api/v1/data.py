@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import Integer, text
+from sqlalchemy import Integer, func, text
 from starlette.background import BackgroundTask
 
 from app.api.deps import require_admin, require_auth
@@ -332,8 +332,10 @@ def scan_dataset():
             PokemonCard.__table__.select()
             .with_only_columns(c.id, c.tcgdex_card_id, c.kartenname, c.englischer_name, c.set_id,
                                c.set_edition, c.karten_nr, c.sprache, c.prize_pack,
-                               c.bild_karte_pfad, c.bild_original_pfad, c.bild_quad)
-            .where(c.tcgdex_card_id.isnot(None), c.bild_karte_pfad.isnot(None),
+                               func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).label("crop"),
+                               c.bild_original_pfad, c.bild_quad)
+            .where(c.tcgdex_card_id.isnot(None),
+                   func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).isnot(None),
                    c.bild_original_pfad.isnot(None))
             .order_by(c.id)
         ).mappings().all()
@@ -344,7 +346,7 @@ def scan_dataset():
         seen: dict[str, str] = {}
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             for r in rows:
-                crop, orig = safe_media_path(r["bild_karte_pfad"]), safe_media_path(r["bild_original_pfad"])
+                crop, orig = safe_media_path(r["crop"]), safe_media_path(r["bild_original_pfad"])
                 if not (crop and crop.is_file() and orig and orig.is_file()):
                     continue
                 crop_name = f"crops/{r['id']}{crop.suffix.lower()}"

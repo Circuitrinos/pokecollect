@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
 
 from app.schemas._grenzen import PgNichtNegativ  # #117
 from app.schemas._validators import reject_control_chars
@@ -117,6 +117,9 @@ class ScanCommitItem(BaseModel):
     position: Optional[PgNichtNegativ] = None  # Binder-Slot (0-basiert) für die Ablage
     im_pokedex: bool = False               # je Karte: als Pokédex-Vertreter setzen
     prioritaet: Optional[str] = None       # nur für Wunschliste
+    # Gleiche Karte mehrfach besessen: so viele Exemplare anlegen (je eine Zeile;
+    # das eigene Foto bekommt das erste, die übrigen das Katalogbild).
+    copies: int = Field(1, ge=1, le=50)
 
     # Scan-Commit legt Karten an → dieselbe Steuerzeichen-Sperre wie CardBase
     # (ein NUL im erkannten Namen endete sonst als 500, #55).
@@ -132,4 +135,5 @@ class ScanCommitRequest(BaseModel):
 
 class ScanCommitResponse(BaseModel):
     created: int
-    card_ids: list[int]
+    card_ids: list[int]                    # je Item das erste Exemplar (Reihenfolge = items)
+    all_card_ids: list[int] = []           # alle angelegten Exemplare
