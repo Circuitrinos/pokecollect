@@ -22,7 +22,13 @@ function parseSetEdition(val: string, sets: PokemonSet[]): { code: string; name:
   }
   if (best) return { code: best.code, name: val.slice(0, val.length - best.code.length - 2).trim() };
   const m = val.match(/^(.*?)\s*\(([^()]{1,16})\)\s*$/);
-  return m ? { name: m[1], code: m[2] } : null;
+  if (m) return { name: m[1], code: m[2] };
+  // Nur ein Code oder nur ein Name (z. B. von der Erkennung) → Set suchen
+  const v = val.trim().toLowerCase();
+  const hit = sets.find((s) => s.code.toLowerCase() === v || s.name.toLowerCase() === v
+    || (s.name_en ?? "").toLowerCase() === v);
+  if (hit) return { code: hit.code, name: hit.name_en && v === hit.name_en.toLowerCase() ? hit.name_en : hit.name };
+  return { code: "", name: val.trim() };          // unbekannt: wenigstens anzeigen
 }
 
 export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) {

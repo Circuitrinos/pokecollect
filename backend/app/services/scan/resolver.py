@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.pokemon_set import PokemonSet
@@ -79,9 +79,19 @@ def _name_plausibel(raw: Optional[str], *aufgeloest: Optional[str]) -> bool:
 
 
 def _set_by_code(db: Session, code: Optional[str]) -> Optional[PokemonSet]:
-    if not code:
+    """Gedrucktes Kürzel (OCR/Modell: groß) oder ein Code aus der Set-Auswahl.
+    Sets ohne offizielles Kürzel tragen die TCGdex-ID als Code ("swshp",
+    "me02.5") — deshalb auch ohne Groß-/Kleinschreibung und über die set_id."""
+    if not code or not code.strip():
         return None
-    return db.get(PokemonSet, code.strip().upper())
+    c = code.strip()
+    row = db.get(PokemonSet, c.upper()) or db.get(PokemonSet, c)
+    if row is not None:
+        return row
+    return (db.scalars(select(PokemonSet).where(func.upper(PokemonSet.code) == c.upper())
+                       .order_by(PokemonSet.code)).first()
+            or db.scalars(select(PokemonSet).where(func.lower(PokemonSet.set_id) == c.lower())
+                          .order_by(PokemonSet.code)).first())
 
 
 def _set_by_set_id(db: Session, set_id: Optional[str]) -> Optional[PokemonSet]:
