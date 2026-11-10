@@ -49,6 +49,7 @@ def list_cards(
     wunschliste: Optional[bool] = None,
     im_pokedex: Optional[bool] = None,
     erste_edition: Optional[bool] = None,
+    prize_pack: Optional[bool] = None,
     pokedex_view: bool = False,
     prioritaet: Optional[str] = None,
     set: Optional[str] = None,
@@ -109,6 +110,8 @@ def list_cards(
         q = q.where(PokemonCard.im_pokedex == im_pokedex)
     if erste_edition is not None:
         q = q.where(PokemonCard.erste_edition == erste_edition)
+    if prize_pack is not None:
+        q = q.where(PokemonCard.prize_pack == prize_pack)
     if prioritaet:
         q = q.where(PokemonCard.prioritaet == prioritaet)
     if set:

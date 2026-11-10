@@ -28,6 +28,9 @@ class PokemonCard(Base):
     # „besitze diese Karte als 1st Edition" — eigenes Ja/Nein, unabhängig vom
     # TCGdex-variants_firstedition (das nur sagt „gibt es als 1st Edition"), #25.
     erste_edition = Column(Boolean, nullable=False, server_default=false(), default=False)
+    # Play! Pokémon-Stempel (Prize Pack Series): gleiche Karte/Nummer wie im Set,
+    # aber eigene Sammler-Variante mit eigenem Preis.
+    prize_pack = Column(Boolean, nullable=False, server_default=false(), default=False)
     sprache = Column(Text, nullable=True, default="DE", index=True)
     besessen = Column(Boolean, default=False, index=True)
     wunschliste = Column(Boolean, default=False, index=True)

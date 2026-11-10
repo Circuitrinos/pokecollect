@@ -266,10 +266,15 @@ const DE = {
   filter_sort_added: "Hinzugefügt",
   filter_reset: "Filter zurücksetzen",
   filter_first_edition_only: "Nur 1st Edition",
+  filter_prize_pack_only: "Nur Prize Pack (Play!-Stempel)",
 
   // First Edition (#25)
   first_edition_label: "1st Edition",
   first_edition_badge: "1st Ed.",
+  prize_pack_label: "Play!-Stempel (Prize Pack)",
+  prize_pack_badge: "PLAY!",
+  scan_prize_pack: "Prize Pack",
+  prize_pack_hint: "Karte aus einem Play! Pokémon Prize Pack: gleiche Nummer wie im Set, aber mit Play!-Pokémon-Logo im Bild",
 
   // CardForm (new + edit)
   form_new_card: "Neue Karte",
@@ -900,10 +905,15 @@ const EN: typeof DE = {
   filter_sort_added: "Date added",
   filter_reset: "Reset filters",
   filter_first_edition_only: "1st Edition only",
+  filter_prize_pack_only: "Prize Pack (Play! stamp) only",
 
   // First Edition (#25)
   first_edition_label: "1st Edition",
   first_edition_badge: "1st Ed.",
+  prize_pack_label: "Play! stamp (Prize Pack)",
+  prize_pack_badge: "PLAY!",
+  scan_prize_pack: "Prize Pack",
+  prize_pack_hint: "Card from a Play! Pokémon Prize Pack: same number as in the set, but with the Play! Pokémon logo on the artwork",
 
   form_new_card: "New Card",
   form_card_name: "Card name",

@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { Card, Enums, PokemonSet, cardApi } from "@/lib/api";
 import RarityBadge from "@/components/RarityBadge";
 import FirstEditionBadge from "@/components/FirstEditionBadge";
+import PrizePackBadge from "@/components/PrizePackBadge";
 import SetPicker from "@/components/SetPicker";
 import { CardNrField, CurrencyField, DateField, PokedexNrField, SelectField, TextareaField, TextField } from "@/components/CardFormFields";
 import { useCardForm } from "@/lib/useCardForm";
@@ -165,6 +166,7 @@ export default function EditForm({
           <h1 className="text-2xl font-bold text-white flex items-center gap-2 flex-wrap">
             {lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname}
             {card.erste_edition && <FirstEditionBadge className="align-middle" />}
+            {card.prize_pack && <PrizePackBadge className="align-middle" />}
           </h1>
           {card.pokedex_nr && (
             <p className="text-gray-400">
@@ -280,6 +282,7 @@ export default function EditForm({
         {field("zustand", t.field_condition, "select", enums?.zustand)}
         {field("besessen", t.field_owned, "boolean")}
         {field("erste_edition", t.first_edition_label, "boolean")}
+        {field("prize_pack", t.prize_pack_label, "boolean")}
         {/* Kaufpreis + Kaufdatum nur im Edit-Modus; die Anzeige läuft über den
             G/V-Kasten unten (Kaufpreis / aktueller Wert / G/V), Issue #26 */}
         {editing && (

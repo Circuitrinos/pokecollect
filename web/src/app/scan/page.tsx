@@ -24,6 +24,7 @@ type EditableCandidate = ScanCandidate & {
   usePhoto: boolean;        // eigenes Foto (true) vs. API-Bild (false)
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
+  prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — vom Nutzer angehakt
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
   chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
@@ -230,6 +231,7 @@ export default function ScanPage() {
         usePhoto: !!(c.raw?.bbox || c.raw?.quad),
         cropUrl: null,
         imPokedex: setPokedexRep,
+        prizePack: false,
       }));
       const art = res.data.hinweis_art;
       if (art) {
@@ -282,6 +284,8 @@ export default function ScanPage() {
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, usePhoto: !c.usePhoto } : c)));
   const togglePokedex = (idx: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, imPokedex: !c.imPokedex } : c)));
+  const togglePrizePack = (idx: number) =>
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, prizePack: !c.prizePack } : c)));
 
   const updateField = (idx: number, key: string, value: unknown) => {
     setCandidates((prev) =>
@@ -408,6 +412,7 @@ export default function ScanPage() {
           seltenheit: (s.seltenheit as string) ?? c.match?.rarity ?? null,
           folierung: (s.folierung as string) ?? null,
           muster: (s.muster as string) || null,
+          prize_pack: c.prizePack,
           sprache: (s.sprache as string) ?? "DE",
           tcgdex_card_id: c.match?.tcgdex_card_id ?? null,
           set_id: c.match?.set_id ?? null,
@@ -626,13 +631,17 @@ export default function ScanPage() {
                   <span className="text-xs text-gray-400">
                     {pokedexNr != null ? `#${String(pokedexNr).padStart(4, "0")}` : <span className="text-gray-600">{t.scan_no_dex}</span>}
                   </span>
-                  <div className="flex items-center gap-3 text-xs">
+                  <div className="flex items-center gap-3 text-xs flex-wrap justify-end">
                     {target !== "wishlist" && pokedexNr != null && (
                       <label className="flex items-center gap-1 text-gray-300">
                         <input type="checkbox" checked={c.imPokedex} onChange={() => togglePokedex(idx)} />
                         {t.detail_pokedex_flag}
                       </label>
                     )}
+                    <label className="flex items-center gap-1 text-gray-300" title={t.prize_pack_hint}>
+                      <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} />
+                      {t.scan_prize_pack}
+                    </label>
                     <label className="flex items-center gap-1 text-gray-300">
                       <input type="checkbox" checked={c.include} onChange={() => toggleInclude(idx)} />
                       {t.scan_include}

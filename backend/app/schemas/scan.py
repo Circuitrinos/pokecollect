@@ -103,6 +103,7 @@ class ScanCommitItem(BaseModel):
     kartenversion: Optional[str] = None
     folierung: Optional[str] = None
     muster: Optional[str] = None           # Folierungs-Muster (#63)
+    prize_pack: bool = False               # Play! Pokémon-Stempel (Prize Pack), im Scan angehakt
     sprache: Optional[str] = "DE"
     zustand: Optional[str] = None
     notizen: Optional[str] = None

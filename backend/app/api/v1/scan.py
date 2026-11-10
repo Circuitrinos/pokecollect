@@ -388,6 +388,7 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
             kartenversion=item.kartenversion,
             folierung=item.folierung,
             muster=item.muster,
+            prize_pack=item.prize_pack,
             sprache=item.sprache or "DE",
             zustand=item.zustand,
             notizen=item.notizen,

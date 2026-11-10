@@ -7,6 +7,7 @@ import { cardImageSrc, extractSetCode, formatEur } from "@/lib/utils";
 import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
 import FirstEditionBadge from "@/components/FirstEditionBadge";
+import PrizePackBadge from "@/components/PrizePackBadge";
 import { useI18n } from "@/lib/i18n";
 
 type Props = {
@@ -77,9 +78,12 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
             >
               {/* Bild */}
               <div className="aspect-[63/88] relative bg-gray-800">
-                {/* 1st-Edition-Badge dezent oben links (#25) */}
-                {card.erste_edition && (
-                  <FirstEditionBadge className="absolute top-1 left-1 z-10 shadow" />
+                {/* 1st-Edition- und Play!-Badge dezent oben links (#25) */}
+                {(card.erste_edition || card.prize_pack) && (
+                  <div className="absolute top-1 left-1 z-10 flex gap-1">
+                    {card.erste_edition && <FirstEditionBadge className="shadow" />}
+                    {card.prize_pack && <PrizePackBadge className="shadow" />}
+                  </div>
                 )}
                 {imgSrc ? (
                   <>

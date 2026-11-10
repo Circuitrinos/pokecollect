@@ -57,6 +57,7 @@ export type Card = {
   folierung: string | null;
   muster: string | null;       // Folierungs-Muster (#63): Pokéball/Masterball/…
   erste_edition: boolean;
+  prize_pack: boolean;         // Play! Pokémon-Stempel (Prize Pack Series)
   sprache: string;
   besessen: boolean;
   wunschliste: boolean;
@@ -592,6 +593,7 @@ export type ScanCommitItem = {
   kartenversion?: string | null;
   folierung?: string | null;
   muster?: string | null;      // Folierungs-Muster (#63)
+  prize_pack?: boolean;        // Play! Pokémon-Stempel (Prize Pack)
   sprache?: string | null;
   zustand?: string | null;
   notizen?: string | null;

@@ -56,6 +56,7 @@ class CardBase(BaseModel):
     folierung: Optional[str] = None
     muster: Optional[str] = None       # Folierungs-Muster (#63), z. B. Pokéball
     erste_edition: bool = False
+    prize_pack: bool = False           # Play! Pokémon-Stempel (Prize Pack Series)
     sprache: Optional[str] = "DE"
     besessen: bool = False
     wunschliste: bool = False
@@ -91,6 +92,7 @@ class CardUpdate(BaseModel):
     folierung: Optional[str] = None
     muster: Optional[str] = None
     erste_edition: Optional[bool] = None
+    prize_pack: Optional[bool] = None
     sprache: Optional[str] = None
     besessen: Optional[bool] = None
     wunschliste: Optional[bool] = None
@@ -109,7 +111,7 @@ class CardUpdate(BaseModel):
     # und die Antwort typisiert sie als bool. Ein ausdrückliches `null` endete
     # als 500. Weglassen = unverändert bleibt unangetastet.
     _v_null = field_validator(
-        "kartenname", "erste_edition", "besessen", "wunschliste", "im_pokedex",
+        "kartenname", "erste_edition", "prize_pack", "besessen", "wunschliste", "im_pokedex",
     )(reject_explicit_null)
 
 
