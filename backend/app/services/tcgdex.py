@@ -299,6 +299,25 @@ async def search_cards(params: dict, lang: str = "en") -> list[dict]:
 
 # ── Hochsprachige Auflösung ──────────────────────────────────────────────────
 
+# Promo-Sets, deren Nummern ein Präfix tragen ("SWSH300"): oft nur die Zahl
+# eingetragen. svp/mep zählen dreistellig ("001").
+PROMO_PREFIX = {"swshp": "SWSH", "smp": "SM", "xyp": "XY", "bwp": "BW", "dpp": "DP", "hgssp": "HGSS"}
+
+
+def local_id_variants(set_id: Optional[str], local_id: Optional[str]) -> list[str]:
+    """Schreibweisen der Nummer, die TCGdex/pokemon.com kennen könnten:
+    ("swshp", "300") → ["300", "SWSH300"]; ("svp", "1") → ["1", "001"]."""
+    if not local_id:
+        return []
+    out = [local_id]
+    if local_id.isascii() and local_id.isdigit():
+        prefix = PROMO_PREFIX.get((set_id or "").lower())
+        if prefix:
+            out += [f"{prefix}{local_id.zfill(3)}", f"{prefix}{local_id}"]
+        out.append(local_id.zfill(3))
+    return [v for i, v in enumerate(out) if v not in out[:i]]
+
+
 def local_id_from_card_nr(karten_nr: Optional[str]) -> Optional[str]:
     """
     '007/091' → '7', '195/091' → '195', 'TG01/TG30' → 'TG01'.

@@ -153,3 +153,72 @@ def test_naechtlicher_katalog_schritt(client, db, monkeypatch):
     seen.clear()
     asyncio.run(image_fallback.fill_catalog_from_pokemon_com(db, limit=5000))
     assert "pkcom-4" not in [i[0] for i in seen]
+
+
+def test_promo_nummern():
+    from app.services.tcgdex import local_id_variants
+    assert local_id_variants("swshp", "300") == ["300", "SWSH300"]
+    assert local_id_variants("swshp", "5") == ["5", "SWSH005", "SWSH5", "005"]
+    assert local_id_variants("svp", "1") == ["1", "001"]
+    assert local_id_variants("swsh12", "TG05") == ["TG05"]
+    assert pokemon_com.candidate_urls("swshp", "300")[0] == S + "SWSHP/SWSHP_EN_SWSH300.png"
+
+
+def test_tcgdex_findet_promo_ohne_praefix(monkeypatch):
+    from app.services import tcgdex
+    from app.services.card_image_service import fetch_tcgdex_card
+    from app.services.tcgdex import TcgdexCard
+    asked = []
+
+    async def fake(set_id, local_id, lang="en"):
+        asked.append(local_id)
+        return TcgdexCard.model_validate({"id": f"{set_id}-{local_id}", "localId": local_id}) \
+            if local_id == "SWSH300" else None
+
+    monkeypatch.setattr(tcgdex, "get_card_by_set", fake)
+    tc = asyncio.run(fetch_tcgdex_card("swshp", "300", "EN"))
+    assert tc is not None and tc.id == "swshp-SWSH300" and asked[0] == "300"
+
+
+def test_umschalter_sucht_katalogbild(client, db, monkeypatch, png_bytes):
+    """Wie im Screenshot: eigenes Foto, Set swshp, Nummer 300, noch kein Katalogbild."""
+    from app.services import card_image_service, tcgdex
+    from app.services.tcgdex import TcgdexCard
+    from app.models.pokemon_set import PokemonSet
+
+    async def fake_fetch(set_id, nr, sprache):
+        if (set_id, nr) == ("pkcomp", "300"):
+            return TcgdexCard.model_validate({"id": "pkcom-SWSH300", "localId": "SWSH300", "set": {"id": "pkcomp"}})
+        return None
+
+    url = S + "PKCOMP/PKCOMP_EN_SWSH300.png"
+
+    async def fake_find(set_id, local_id, client=None):
+        return url if (set_id, local_id) == ("pkcomp", "SWSH300") else None
+
+    monkeypatch.setattr(card_image_service, "fetch_tcgdex_card", fake_fetch)
+    monkeypatch.setattr(pokemon_com, "find_image", fake_find)
+    if db.get(PokemonSet, "pkcomp") is None:
+        db.add(PokemonSet(code="pkcomp", name="pkcom Promos", set_id="pkcomp"))
+        db.commit()
+    try:
+        r = client.post("/api/v1/cards", json={"kartenname": "pkcom-unown", "besessen": True,
+                                               "set_edition": "pkcom Promos (pkcomp)", "karten_nr": "300"})
+        cid = r.json()["id"]
+        up = client.post(f"/api/v1/cards/{cid}/image", files={"file": ("c.png", png_bytes, "image/png")})
+        assert up.status_code == 200 and up.json()["bild_karte_pfad"]
+        r = client.post(f"/api/v1/cards/{cid}/catalog-image")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["bild_karte_pfad"] is None and body["bild_scan_pfad"] and body["bild_karte_url"] == url
+        assert body["tcgdex_card_id"] == "pkcom-SWSH300"           # dabei richtig verknüpft
+        # ohne Fund: 404, Foto bleibt
+        r2 = client.post("/api/v1/cards", json={"kartenname": "pkcom-none", "besessen": True, "karten_nr": "1"})
+        cid2 = r2.json()["id"]
+        client.post(f"/api/v1/cards/{cid2}/image", files={"file": ("c.png", png_bytes, "image/png")})
+        r3 = client.post(f"/api/v1/cards/{cid2}/catalog-image")
+        assert r3.status_code == 404
+        assert client.get(f"/api/v1/cards/{cid2}").json()["bild_karte_pfad"]
+    finally:
+        db.execute(delete(PokemonSet).where(PokemonSet.code == "pkcomp"))
+        db.commit()

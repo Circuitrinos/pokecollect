@@ -27,7 +27,7 @@ from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.services.catalog_lookup import catalog_row_for
-from app.services import card_bulk, regulation
+from app.services import card_bulk, image_fallback, regulation
 from app.services.tcgdex import is_allowed_image_url
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
@@ -457,6 +457,27 @@ async def upload_image(
     # Referenz für diese Karte auf (matcher/app/learn.py).
     if card.bild_original_pfad and card.tcgdex_card_id:
         background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return _card_response(db, card)
+
+
+@router.post("/{card_id}/catalog-image", response_model=CardResponse)
+async def show_catalog_image(card_id: int, db: Session = Depends(get_db)):
+    """
+    Umschalter auf der Kartenseite: Katalogbild statt eigenem Foto zeigen. Ist
+    noch keins bekannt, wird es gesucht (TCGdex, offizielle Datenbank). Das
+    Foto bleibt als Scan-Foto erhalten (wie die Sammel-Aktion).
+    """
+    card = _card_or_404(card_id, db)
+    if card.bild_karte_pfad:
+        url = await image_fallback.find_catalog_image(db, card)
+        if not url:
+            db.commit()                     # gefundene Verknüpfung behalten
+            raise HTTPException(status_code=404, detail="Kein Katalogbild für diese Karte gefunden")
+        card.bild_karte_url = url
+        card_bulk.use_catalog_image(db, card)
+        regulation.apply_to_card(db, card)
+        db.commit()
+        db.refresh(card)
     return _card_response(db, card)
 
 

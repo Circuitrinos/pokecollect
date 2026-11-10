@@ -69,6 +69,41 @@ async def fallback_image(db: Session, card: PokemonCard, tc=None) -> Optional[st
     return None
 
 
+async def find_catalog_image(db: Session, card: PokemonCard) -> Optional[str]:
+    """
+    Katalogbild für eine Karte suchen, auch wenn ihr eigenes Foto angezeigt
+    wird (Umschalter „Katalogbild"): gespeicherte URL → Katalog → TCGdex
+    (verknüpft die Karte dabei) → pokemon.com → TCGplayer-Foto.
+    """
+    from app.services import tcgdex
+    from app.services.card_image_service import apply_card_to_model, fetch_tcgdex_card, resolve_set_id
+
+    if is_allowed_image_url(card.bild_karte_url):
+        return card.bild_karte_url
+    row = catalog_row_for(db, card.tcgdex_card_id) if card.tcgdex_card_id else None
+    if row is not None and is_allowed_image_url(row.image_url) and row.image_source != "tcgplayer":
+        return row.image_url
+    set_id = card.set_id or resolve_set_id(db, card.set_edition) or (row.set_id if row is not None else None)
+    tc = await fetch_tcgdex_card(set_id, card.karten_nr, card.sprache) if set_id else None
+    if tc is not None:
+        apply_card_to_model(card, tc, overwrite_image=False)     # richtige Karte verknüpfen
+        url = tcgdex.image_url(tc.image)
+        if url:
+            return url
+        row = catalog_row_for(db, card.tcgdex_card_id) if card.tcgdex_card_id else row
+        if row is not None and is_allowed_image_url(row.image_url) and row.image_source != "tcgplayer":
+            return row.image_url
+    local = (tc.localId if tc is not None else None) or local_from_nr(card.karten_nr)
+    url = await pokemon_com.find_image(set_id or (tc.set.id if tc is not None and tc.set else None), local)
+    if url:
+        if row is not None and (not row.image_url or row.image_source == "tcgplayer"):
+            row.image_url, row.image_source, row.image_pfad = url, SOURCE, None
+        return url
+    if row is not None and is_allowed_image_url(row.image_url):
+        return row.image_url
+    return None
+
+
 async def fill_catalog_from_pokemon_com(db: Session, limit: int = 500) -> dict:
     """
     Nächtlich: westliche Katalogzeilen ohne Bild (oder nur mit TCGplayer-Foto)

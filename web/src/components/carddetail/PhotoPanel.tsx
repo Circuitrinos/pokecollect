@@ -172,18 +172,27 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
 
   // Anzeige umschalten: eigenes Foto ↔ Katalogbild (das Foto bleibt dabei
   // erhalten und lernt weiter mit — dieselben Aktionen wie die Sammelauswahl).
+  // Beim eigenen Foto immer anbieten — fehlt ein Katalogbild, sucht der
+  // Server eins (TCGdex, offizielle Datenbank).
   const showsOwn = !!card.bild_karte_pfad;
-  const canShowCatalog = showsOwn && !!card.katalog_bild;
+  const canShowCatalog = showsOwn;
   const canShowOwn = !showsOwn && !!card.bild_scan_pfad;
   const [switching, setSwitching] = useState(false);
   const switchPicture = async (to: "catalog_image" | "own_photo") => {
     setSwitching(true);
     try {
-      await cardApi.bulk(to, [card.id]);
-      const r = await cardApi.get(card.id);
-      onCardUpdated(r.data);
-    } catch {
-      toast.error(t.form_save_error);
+      if (to === "catalog_image") {
+        const r = await cardApi.useCatalogImage(card.id);
+        onCardUpdated(r.data);
+      } else {
+        await cardApi.bulk(to, [card.id]);
+        const r = await cardApi.get(card.id);
+        onCardUpdated(r.data);
+      }
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      toast.error(status === 404 ? t.detail_picture_no_catalog : t.form_save_error);
+      if (status === 404) cardApi.get(card.id).then((r) => onCardUpdated(r.data)).catch(() => {});
     } finally {
       setSwitching(false);
     }

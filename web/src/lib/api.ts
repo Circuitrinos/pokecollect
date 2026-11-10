@@ -280,6 +280,8 @@ export const cardApi = {
   },
 
   deleteImage: (id: number) => api.delete<Card>(`/cards/${id}/image`),
+  // Katalogbild statt eigenem Foto zeigen; sucht eins, falls noch keins bekannt
+  useCatalogImage: (id: number) => api.post<Card>(`/cards/${id}/catalog-image`),
 
   stats: () => api.get<StatsResponse>("/cards/meta/stats"),
 

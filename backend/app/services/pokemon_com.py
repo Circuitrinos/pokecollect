@@ -70,11 +70,16 @@ def _codes(set_id: str) -> list[str]:
     return codes[:4]
 
 
-def _numbers(local_id: str) -> list[str]:
-    """"065" → ["65", "065"]; "SWSH300"/"TG05" bleiben, wie sie sind."""
+def _numbers(local_id: str, set_id: str = "") -> list[str]:
+    """"065" → ["65", "065"]; "SWSH300"/"TG05" bleiben; Promo "300" in swshp →
+    auch "SWSH300"."""
+    from app.services.tcgdex import PROMO_PREFIX
     lid = local_id.strip()
     out = []
     if lid.isascii() and lid.isdigit():
+        prefix = PROMO_PREFIX.get(set_id.strip().lower())
+        if prefix:
+            out += [f"{prefix}{lid.zfill(3)}", f"{prefix}{int(lid)}"]
         out.append(str(int(lid)))
     out.append(lid)
     return [n for i, n in enumerate(out) if n and _SAFE.match(n) and n not in out[:i]]
@@ -87,7 +92,7 @@ def candidate_urls(set_id: Optional[str], local_id: Optional[str]) -> list[str]:
     known = _known.get(set_id.lower())
     pairs = [known] if known else [(b, c) for c in _codes(set_id) for b in _BASES]
     for base, code in pairs:
-        for num in _numbers(local_id):
+        for num in _numbers(local_id, set_id):
             urls.append(f"{base}{code}/{code}_EN_{num}.png")
     return urls
 

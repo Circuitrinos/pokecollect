@@ -77,10 +77,12 @@ async def fetch_tcgdex_card(
 
     primary = tcgdex.normalize_lang(sprache)
     langs: list[str] = [primary] + [l for l in tcgdex.FALLBACK_LANGS if l != primary]
-    for lang in langs:
-        card = await tcgdex.get_card_by_set(set_id, local_id, lang)
-        if card:
-            return card
+    # Promo-Nummern auch mit Präfix ("300" → "SWSH300")
+    for lid in tcgdex.local_id_variants(set_id, local_id):
+        for lang in langs:
+            card = await tcgdex.get_card_by_set(set_id, lid, lang)
+            if card:
+                return card
     return None
 
 
