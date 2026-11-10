@@ -36,10 +36,12 @@ log = logging.getLogger(__name__)
 
 
 def extract_set_code(set_edition: Optional[str]) -> Optional[str]:
-    """'Paldeas Schicksale (PAF)' → 'PAF'. None wenn kein Kürzel erkennbar."""
+    """'Paldeas Schicksale (PAF)' → 'PAF'. None wenn kein Kürzel erkennbar.
+    Sets ohne offizielles Kürzel tragen die TCGdex-ID als Code ('me02.5',
+    'swsh12.5', 'SV2a') — Kleinbuchstaben und Bindestrich gehören dazu."""
     if not set_edition:
         return None
-    m = re.search(r"\(([A-Z0-9.]{1,8})\)\s*$", set_edition)
+    m = re.search(r"\(([A-Za-z0-9][A-Za-z0-9.\-]{0,9})\)\s*$", set_edition)
     return m.group(1) if m else None
 
 

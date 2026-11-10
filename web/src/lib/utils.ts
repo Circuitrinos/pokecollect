@@ -146,7 +146,9 @@ export function spiegelUrl(pfad: string | null | undefined, apiBase: string): st
  */
 export function setCodeFromEdition(setEdition: string | null | undefined): string | null {
   if (!setEdition) return null;
-  const m = setEdition.match(/\(([A-Z0-9.]{1,8})\)\s*$/);
+  // Sets ohne offizielles Kürzel tragen die TCGdex-ID als Code ("me02.5",
+  // "swsh12.5", "SV2a") — Regex-Vertrag mit backend extract_set_code.
+  const m = setEdition.match(/\(([A-Za-z0-9][A-Za-z0-9.-]{0,9})\)\s*$/);
   return m ? m[1] : null;
 }
 

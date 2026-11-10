@@ -249,6 +249,11 @@ def test_extract_set_code_variants():
     assert extract_set_code("ohne Kürzel") is None
     assert extract_set_code(None) is None
     assert extract_set_code("(zulang123456)") is None
+    # Sets ohne offizielles Kürzel: TCGdex-ID als Code
+    assert extract_set_code("Ascended Heroes (me02.5)") == "me02.5"
+    assert extract_set_code("Shining Fates (swsh4.5)") == "swsh4.5"
+    assert extract_set_code("Pokémon Card 151 (SV2a)") == "SV2a"
+    assert extract_set_code("Base Set (1st Edition)") is None
 
 
 # ── resolver.strip_card_suffix (#20) ─────────────────────────────────────────

@@ -11,10 +11,18 @@ type Props = {
   onSetAdded: (set: PokemonSet) => void;
 };
 
-function parseSetEdition(val: string): { code: string; name: string } | null {
-  const m = val.match(/^(.+)\s+\(([A-Z0-9]{1,6})\)$/);
-  if (!m) return null;
-  return { name: m[1], code: m[2] };
+// "Name (CODE)" → Code + Name. Zuerst gegen die bekannten Sets (Codes können
+// die TCGdex-ID sein: "me02.5", "swsh12.5", "SV2a"; der längste passende Code
+// gewinnt), sonst irgendein Klammerinhalt am Ende.
+function parseSetEdition(val: string, sets: PokemonSet[]): { code: string; name: string } | null {
+  if (!val) return null;
+  let best: PokemonSet | null = null;
+  for (const s of sets) {
+    if (val.endsWith(`(${s.code})`) && (!best || s.code.length > best.code.length)) best = s;
+  }
+  if (best) return { code: best.code, name: val.slice(0, val.length - best.code.length - 2).trim() };
+  const m = val.match(/^(.*?)\s*\(([^()]{1,16})\)\s*$/);
+  return m ? { name: m[1], code: m[2] } : null;
 }
 
 export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) {
@@ -29,7 +37,7 @@ export default function SetPicker({ value, onChange, sets, onSetAdded }: Props) 
   const [newMax, setNewMax] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const parsed = parseSetEdition(value);
+  const parsed = parseSetEdition(value, sets);
   const selectedCode = parsed?.code ?? "";
   const selectedName = parsed?.name ?? "";
 
