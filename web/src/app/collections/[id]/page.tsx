@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "@/components/AppImage";
@@ -31,21 +31,15 @@ export default function CollectionDetailPage() {
   const [layout, setLayout] = useState("3x3");
   const [editingPages, setEditingPages] = useState(false);
 
-  // View aus sessionStorage lesen (nach Hydration — kein SSR-Mismatch)
-  useEffect(() => {
-    if (!Number.isNaN(id)) {
-      try {
-        const s = sessionStorage.getItem(`collection_view_${id}`);
-        if (s === "binder" || s === "grid") setView(s);
-      } catch {}
-    }
-  }, [id]);
-
-  useEffect(() => {
-    if (!Number.isNaN(id)) {
-      try { sessionStorage.setItem(`collection_view_${id}`, view); } catch {}
-    }
-  }, [view, id]);
+  // Ansicht (Raster/Binder) merkt sich die Sammlung auf dem Server – gilt auf
+  // allen Geräten. Gelesen beim ersten Laden der Sammlung (loadMeta), gespeichert
+  // bei jedem Umschalten. Der Auswahl-Modus schaltet nur vorübergehend aufs Raster.
+  const viewFromServer = useRef(false);
+  const changeView = (v: ViewMode) => {
+    if (v === "binder") selection.setActive(false);
+    setView(v);
+    collectionApi.update(id, { view_mode: v }).catch(() => {});
+  };
 
   // Karten-Zuweisung (Suche)
   const [showAssign, setShowAssign] = useState(false);
@@ -86,6 +80,10 @@ export default function CollectionDetailPage() {
     collectionApi.get(id).then((r) => {
       setCollection(r.data);
       setLayout(r.data.binder_layout || "3x3");
+      if (!viewFromServer.current) {
+        viewFromServer.current = true;
+        setView(r.data.view_mode === "binder" ? "binder" : "grid");
+      }
     }).catch(() => setCollection(null));
   }, [id]);
 
@@ -268,7 +266,7 @@ export default function CollectionDetailPage() {
         </div>
         {!isGoal && (
           <div className="flex items-center gap-2 flex-wrap">
-            <ViewToggle value={view} onChange={(v) => { if (v === "binder") selection.setActive(false); setView(v); }} />
+            <ViewToggle value={view} onChange={changeView} />
             {cards.length > 0 && <SelectToggle selection={selection} onStart={() => setView("grid")} />}
             <button type="button"
               onClick={() => setShowAssign((v) => !v)}

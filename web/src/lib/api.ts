@@ -192,6 +192,7 @@ export type Collection = {
   beschreibung: string | null;
   binder_layout: string | null;
   binder_slots: number | null;
+  view_mode?: "grid" | "binder";   // Ansicht, serverseitig je Sammlung gemerkt
   erstellt_am: string | null;
   karten_anzahl: number;
   // Set-Sammlung / Sammelziel (Issue #16)
@@ -380,7 +381,7 @@ export const collectionApi = {
     ziel_sprache?: string | null;
     ziel_master_set?: boolean;
   }) => api.post<Collection>("/collections", data),
-  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number }) =>
+  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number; view_mode?: "grid" | "binder" }) =>
     api.put<Collection>(`/collections/${id}`, data),
   delete: (id: number) => api.delete(`/collections/${id}`),
   cards: (id: number) => api.get<CollectionCard[]>(`/collections/${id}/cards`),

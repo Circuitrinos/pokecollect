@@ -40,6 +40,7 @@ def _to_response(db: Session, coll: Collection, count: int) -> CollectionRespons
         beschreibung=coll.beschreibung,
         binder_layout=coll.binder_layout or "3x3",
         binder_slots=coll.binder_slots,
+        view_mode=coll.view_mode or "grid",
         erstellt_am=coll.erstellt_am,
         karten_anzahl=count,
         typ=typ,

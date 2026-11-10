@@ -1,0 +1,19 @@
+"""Ansicht einer Sammlung (Raster/Binder) wird serverseitig gemerkt – gilt auf allen Geräten."""
+API = "/api/v1"
+
+
+def test_ansicht_wird_gemerkt(client):
+    col = client.post(f"{API}/collections", json={"name": "Ansicht-Test"}).json()
+    try:
+        assert col["view_mode"] == "grid"                                  # Standard
+        r = client.put(f"{API}/collections/{col['id']}", json={"view_mode": "binder"})
+        assert r.status_code == 200, r.text
+        assert client.get(f"{API}/collections/{col['id']}").json()["view_mode"] == "binder"
+        assert next(c for c in client.get(f"{API}/collections").json() if c["id"] == col["id"])["view_mode"] == "binder"
+        # andere Felder bleiben unberührt
+        assert client.get(f"{API}/collections/{col['id']}").json()["binder_layout"] == col["binder_layout"]
+        assert client.put(f"{API}/collections/{col['id']}", json={"view_mode": "liste"}).status_code == 422
+        client.put(f"{API}/collections/{col['id']}", json={"view_mode": "grid"})
+        assert client.get(f"{API}/collections/{col['id']}").json()["view_mode"] == "grid"
+    finally:
+        client.delete(f"{API}/collections/{col['id']}")

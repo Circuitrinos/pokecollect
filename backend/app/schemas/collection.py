@@ -36,6 +36,7 @@ class CollectionUpdate(BaseModel):
     binder_layout: Optional[str] = None
     # #117: integer-Spalte — ohne Grenze 500 aus der Datenbank statt 422
     binder_slots: Optional[PgNichtNegativ] = None
+    view_mode: Optional[Literal["grid", "binder"]] = None   # Ansicht (für alle Geräte gemerkt)
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
     # name liegt auf einer NOT-NULL-Spalte (#55)
@@ -52,6 +53,7 @@ class CollectionResponse(CollectionBase):
     id: int
     binder_layout: Optional[str] = "3x3"
     binder_slots: Optional[int] = None
+    view_mode: str = "grid"
     erstellt_am: Optional[datetime] = None
     karten_anzahl: int = 0
     # Set-Sammlung (Issue #16)
