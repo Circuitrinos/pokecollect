@@ -242,10 +242,12 @@ export const cardApi = {
 
   delete: (id: number) => api.delete(`/cards/${id}`),
 
-  uploadImage: (id: number, file: File, original?: File | null) => {
+  uploadImage: (id: number, file: File, original?: File | null, quad?: number[][] | null) => {
     const form = new FormData();
     form.append("file", file);
     if (original) form.append("original", original);
+    // Ecken des Zuschnitts im Original (normiert) – Trainingsdaten für die Erkennung
+    if (original && quad && quad.length === 4) form.append("quad", JSON.stringify(quad));
     return api.post<Card>(`/cards/${id}/image`, form);
   },
 
@@ -501,6 +503,8 @@ export const settingsApi = {
 export const dataApi = {
   exportCsv: () => api.get<Blob>("/data/export.csv", { responseType: "blob" }),
   backup: () => api.get<Blob>("/data/backup", { responseType: "blob" }),
+  // Scan-Fotos + bestätigte Karten als Trainings-/Testdatensatz (Admin)
+  scanDataset: () => api.get<Blob>("/data/scan-dataset", { responseType: "blob" }),
   // Destruktiv — das Backend verlangt confirm="JA_WIRKLICH"; das UI sichert
   // zusätzlich mit Checkbox + Bestätigungsdialog ab.
   restore: (file: File) => {

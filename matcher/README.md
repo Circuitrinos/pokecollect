@@ -35,6 +35,7 @@ Pipeline per photo:
 | `dinov2_vits14_cls.onnx` | DINOv2 shortlist model (optional; `export_matcher.py`) |
 | `dinov2_catalog.npz` | catalog embeddings computed on a PC (optional bootstrap, read once) |
 | `emb/catalog_emb.npz` | the matcher's own embeddings, extended in the background |
+| `learned/` | features + embeddings of users' confirmed scan photos (rebuilt from the app on demand) |
 
 Everything under `segments/` and `emb/` can be deleted and rebuilt.
 
@@ -69,6 +70,10 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 | `EMBED_MIN_COVERAGE` | `0.98` | below this, the full pHash preselection stays on too |
 | `EMBED_THREADS` | `0` | onnxruntime threads (0 = its default) |
 | `BACKGROUND_DELAY_MIN` | `10` | wait before the extension pass + embedding backfill after a start (they then run at low CPU priority, so first scans after a reboot don't compete) |
+| `LEARN` | `1` | use confirmed scan photos as extra references (see below) |
+| `LEARN_MINUTES` | `15` | how often to look for new scan photos (the api also pokes `/learn` after each one) |
+| `API_URL` | `http://api:8000` | where the scan photos are fetched from (`/images/…`) |
+| `LEARNED_TOP` / `LEARNED_MIN_SIM` | `5` / `0.5` | cards added to the shortlist from learned photos |
 | `WARMUP` | `1` | run every stage once on a synthetic photo before reporting ready |
 
 ## Endpoints
@@ -76,9 +81,27 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 - `GET /health`: loading state (`status`, `phase` while starting, `ready_after_s`,
   `warmup_ms`), template counts, pokemontcg→TCGdex mapping report (incl. unmapped
   sets), extension progress, embedding shortlist state.
+- `POST /learn`: index new scan photos soon (the api calls it after each scan photo upload).
 - `POST /match` (multipart): `file`, `mode` = `single|multi|binder`, `rows`, `cols`, `top_k`.
   The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
   `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
   Each match is also logged with that breakdown.
+
+### Learning from scans
+
+Every card saved from a scan with "use photo" keeps the straightened photo, the
+original and the confirmed TCGdex id. `app/learn.py` indexes those photos next
+to the catalog images (ORB template in the `learned` segment + DINOv2
+embedding), so a card you scan again in the same sleeve and lighting is matched
+against your own earlier photo. Nothing is trained. Deleting a card or changing
+its id drops its photo on the next sync.
+
+Reprint guard: the user's photo of e.g. Base Set Charizard matches the Base
+Set 2 reprint just as well. When the winning evidence comes from a learned
+photo and another candidate matches the same art in the catalog, the art alone
+doesn't decide; the printed number (OCR) or the user does.
+
+For offline work (fine-tuning, detector training, evaluation) the app exports
+all scans: Settings → *Scan dataset (ZIP)*.
 
 Thresholds live at the top of `app/matcher.py` (`MIN_ART`, `LEAD`, …).

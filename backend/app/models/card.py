@@ -50,6 +50,9 @@ class PokemonCard(Base):
     bild_karte_pfad = Column(Text, nullable=True)
     bild_thumbnail_pfad = Column(Text, nullable=True)
     bild_original_pfad = Column(Text, nullable=True)   # ungeschnittenes Originalfoto
+    # Ecken des Zuschnitts im Originalfoto (JSON [[x,y]×4], normiert 0..1) –
+    # Trainingsdaten für die Karten-Erkennung (Scan-Datensatz-Export)
+    bild_quad = Column(Text, nullable=True)
     # ── TCGdex-Referenz + Varianten (v0.7.0, additiv) ────────────────────────
     tcgdex_card_id = Column(Text, nullable=True, index=True)   # "swsh3-136"
     set_id = Column(Text, nullable=True)                       # "swsh3"

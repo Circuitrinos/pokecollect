@@ -83,6 +83,7 @@ export default function SettingsPage() {
   const [syncingCatalog, setSyncingCatalog] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [exportingScans, setExportingScans] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreAck, setRestoreAck] = useState(false);
@@ -230,6 +231,18 @@ export default function SettingsPage() {
       toast.error(t.settings_backup_error);
     } finally {
       setBackingUp(false);
+    }
+  };
+
+  const handleScanDataset = async () => {
+    setExportingScans(true);
+    try {
+      const r = await dataApi.scanDataset();
+      triggerBlobDownload(r.data, r.headers["content-disposition"], `pokecollect-scans-${new Date().toISOString().slice(0, 10)}.zip`);
+    } catch {
+      toast.error(t.settings_backup_error);
+    } finally {
+      setExportingScans(false);
     }
   };
 
@@ -687,6 +700,17 @@ export default function SettingsPage() {
             className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-50"
           >
             {backingUp ? t.settings_data_busy : t.settings_backup_download}
+          </button>
+          )}
+          {isAdmin && (
+          <button
+            type="button"
+            onClick={handleScanDataset}
+            disabled={exportingScans}
+            title={t.settings_scan_dataset_hint}
+            className="bg-gray-700 text-white text-sm px-4 py-1.5 rounded hover:bg-gray-600 disabled:opacity-50"
+          >
+            {exportingScans ? t.settings_data_busy : t.settings_scan_dataset}
           </button>
           )}
         </div>

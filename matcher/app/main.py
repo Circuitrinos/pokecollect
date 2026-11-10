@@ -18,7 +18,7 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from . import detect, embedding, matcher, numocr, timing
+from . import detect, embedding, learn, matcher, numocr, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -50,6 +50,7 @@ _match_lock = threading.Lock()   # one photo at a time; each match already uses 
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
 shortlist = embedding.Shortlist()
+learner = learn.Learner(store, shortlist, DATABASE_URL)
 
 
 def _load_catalog_with_retry() -> dict[str, CatalogCard]:
@@ -96,6 +97,7 @@ def _startup() -> None:
         shortlist.load()
         shortlist.update_coverage(store.known_card_ids())
         log.info("Startup: shortlist %s (%s)", "DINOv2 + pHash" if shortlist.active else "pHash", _since(t))
+        learner.load_cached(catalog)
         if WARMUP:
             state["phase"] = "warm-up"
             state["warmup_ms"] = _warm_up()
@@ -107,6 +109,8 @@ def _startup() -> None:
         log.exception("Startup failed")
         state.update(status="error", phase=None, error=str(exc))
         return
+    if learn.LEARN:
+        threading.Thread(target=_learn_loop, name="learn", daemon=True).start()
     if not (EXTEND or shortlist.engine is not None):
         return
     _lower_priority()
@@ -119,6 +123,17 @@ def _startup() -> None:
         shortlist.backfill(catalog, store.known_card_ids())   # embed cards that have none yet
         time.sleep(REFRESH_HOURS * 3600)
         catalog = _load_catalog_with_retry()
+
+
+def _learn_loop() -> None:
+    """Index users' confirmed scan photos (first pass a minute after start)."""
+    _lower_priority()
+    time.sleep(60)
+    try:
+        learner.sync(catalog)
+    except Exception:
+        log.exception("Learning from scans failed")
+    learner.loop(lambda: catalog)
 
 
 def _lower_priority() -> None:
@@ -170,8 +185,15 @@ def _on_startup() -> None:
 @app.get("/health")
 def health() -> dict:
     return {**state, "uptime_s": round(time.monotonic() - _T0), "store": store.stats(),
-            "extension": extender.status, "embedding": shortlist.status, "ocr": numocr.available(),
-            "catalog": len(catalog)}
+            "extension": extender.status, "embedding": shortlist.status, "learned": learner.status,
+            "ocr": numocr.available(), "catalog": len(catalog)}
+
+
+@app.post("/learn")
+def learn_now() -> dict:
+    """The api saved a scan photo: index it soon (debounced)."""
+    learner.poke()
+    return {"ok": True, "enabled": learn.LEARN}
 
 
 # ── matching ────────────────────────────────────────────────────────────────

@@ -58,6 +58,16 @@ def is_ready(base_url: str) -> bool:
     return status(base_url).get("status") == "ready"
 
 
+def poke_learn(base_url: str) -> None:
+    """Neues Scan-Foto gespeichert → der matcher lernt es zeitnah (best effort)."""
+    if not base_url:
+        return
+    try:
+        httpx.post(f"{base_url.rstrip('/')}/learn", timeout=2.0)
+    except Exception as exc:
+        log.debug("matcher /learn nicht erreichbar: %s", exc)
+
+
 def state(base_url: str) -> dict:
     """Kurzform für /scan/status: {"status": ready|loading|converting|error|unreachable, "phase": …}."""
     st = status(base_url)

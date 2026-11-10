@@ -52,6 +52,8 @@ class Candidate:
     H: np.ndarray | None = None          # query-crop -> template-crop homography
     template_wh: tuple[int, int] | None = None
     geo_ok: bool = False                 # homography is a plausible card-to-card mapping
+    learned: bool = False                # best template is a user's own scan photo (learn.py)
+    catalog_art: int = 0                 # best art inliers on this card's catalog templates
 
 
 @dataclass
@@ -144,14 +146,20 @@ def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: 
     geo = dict(zip(ranked, _pool.map(lambda t: geometry(t, goods[t]), ranked)))
 
     best: dict[str, Candidate] = {}
+    cat_art: dict[str, int] = {}
+    learned = snap.learned if len(snap.learned) == len(snap.card_id) else np.zeros(len(snap.card_id), bool)
     for t, good in goods.items():
         inliers, art, upside, H, twh, geo_ok = geo.get(t, (0, 0, False, None, None, False))
         pd = int(dist[t])
         c = Candidate(snap.card_id[t], art * 4.0 + inliers + len(good) * 0.5 + (64 - pd) * 0.5,
-                      inliers, art, len(good), pd, upside, H, twh, geo_ok)
+                      inliers, art, len(good), pd, upside, H, twh, geo_ok, bool(learned[t]))
+        if not c.learned:
+            cat_art[c.card_id] = max(cat_art.get(c.card_id, 0), art)
         prev = best.get(c.card_id)
         if prev is None or c.score > prev.score:
             best[c.card_id] = c
+    for c in best.values():
+        c.catalog_art = cat_art.get(c.card_id, 0)
     return sorted(best.values(), key=lambda c: c.score, reverse=True)[:top_k]
 
 
@@ -182,7 +190,15 @@ def art_clear(cands: list[Candidate]) -> bool:
         return False
     top = cands[0]
     rival = max((c.art_inliers for c in cands[1:]), default=0)
-    return top.geo_ok and top.art_inliers >= MIN_ART and top.art_inliers >= LEAD * max(rival, 1)
+    if not (top.geo_ok and top.art_inliers >= MIN_ART and top.art_inliers >= LEAD * max(rival, 1)):
+        return False
+    if not top.learned:
+        return True
+    # The lead comes from the user's own photo of this card. A reprint with the
+    # same art would match that photo just as well, so only trust it when no
+    # rival shares the art in the catalog (else the printed number decides).
+    rival_cat = max((c.catalog_art for c in cands[1:]), default=0)
+    return rival_cat < MIN_ART_NUMBER or top.catalog_art >= LEAD * rival_cat
 
 
 def _number_matches(card: CatalogCard | None, num: str, total: str) -> bool:

@@ -1,13 +1,15 @@
+import json
 import math
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select, update, or_, and_, cast, String
 from sqlalchemy.orm import Session
 
 from app.schemas._grenzen import PG_INTEGER_MAX
 from app.api.deps import require_auth
 from app.auth_user import AuthUser
+from app.config import settings
 from app.database import get_db
 from app.domain.pokedex import GEN_RANGES
 from app.services.card_creation import _trigger_image_fetch, create_owned_card
@@ -23,6 +25,7 @@ from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.services.catalog_lookup import catalog_row_for
+from app.services.scan import local_match
 from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
 from app.schemas.card import (
@@ -329,18 +332,39 @@ def delete_card(card_id: int, db: Session = Depends(get_db)):
 # Verarbeitung (Validierung, EXIF-Aufrichtung, Ablage) lebt in
 # services/card_images.py — der Router mappt nur Fehler auf HTTP (Issue #14).
 
+def _parse_quad(raw: Optional[str]) -> Optional[list[list[float]]]:
+    """Ecken des Zuschnitts (JSON, 4×[x,y] normiert); Unplausibles → None."""
+    if not raw:
+        return None
+    try:
+        q = json.loads(raw)
+        pts = [[round(float(x), 5), round(float(y), 5)] for x, y in q]
+    except (ValueError, TypeError):
+        return None
+    if len(pts) != 4 or not all(-0.5 <= v <= 1.5 for p in pts for v in p):
+        return None
+    return pts
+
+
 @router.post("/{card_id}/image", response_model=CardResponse)
 async def upload_image(
     card_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     original: Optional[UploadFile] = File(None),
+    quad: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     card = _card_or_404(card_id, db)
     try:
-        return _card_response(db, store_card_image(db, card, file, original))
+        card = store_card_image(db, card, file, original, quad=_parse_quad(quad))
     except ImageValidationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    # Scan-Foto mit Original: der Bild-Abgleich nimmt es als zusätzliche
+    # Referenz für diese Karte auf (matcher/app/learn.py).
+    if card.bild_original_pfad and card.tcgdex_card_id:
+        background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return _card_response(db, card)
 
 
 @router.delete("/{card_id}/image", response_model=CardResponse)

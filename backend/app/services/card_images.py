@@ -11,6 +11,7 @@ Fehler werden als ImageValidationError (ValueError) gemeldet; der Router
 mappt sie auf HTTPException (400/413).
 """
 
+import json
 import logging
 import os
 import shutil
@@ -237,6 +238,7 @@ def store_card_image(
     card: PokemonCard,
     file: UploadFile,
     original: Optional[UploadFile] = None,
+    quad: Optional[list[list[float]]] = None,
 ) -> PokemonCard:
     """
     Legt das Upload-Bild (plus Thumbnail, optional Originalfoto) einer Karte
@@ -263,6 +265,7 @@ def store_card_image(
         orig_path = images_dir / f"card_{card.id}_orig{osuffix}"
         _save_upright(original, orig_path)
         card.bild_original_pfad = str(orig_path.relative_to(images_dir.parent))
+        card.bild_quad = json.dumps(quad) if quad else None
 
     db.commit()
     db.refresh(card)
@@ -281,6 +284,7 @@ def remove_card_images(db: Session, card: PokemonCard) -> PokemonCard:
             except OSError:
                 pass  # best-effort — DB ist die Wahrheit, Datei-Leak tolerierbar
         setattr(card, path_field, None)
+    card.bild_quad = None
     db.commit()
     db.refresh(card)
     return card

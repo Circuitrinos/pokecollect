@@ -46,6 +46,8 @@ BOOTSTRAP = Path(os.getenv("EMBED_BOOTSTRAP", str(DATA_DIR / "dinov2_catalog.npz
 EMB_DIR = DATA_DIR / "emb"
 EMB_FILE = EMB_DIR / "catalog_emb.npz"
 EMBED_TOP = int(os.getenv("EMBED_TOP", "30"))         # cards from the embedding shortlist
+LEARNED_TOP = int(os.getenv("LEARNED_TOP", "5"))          # cards added from learned scan photos
+LEARNED_MIN_SIM = float(os.getenv("LEARNED_MIN_SIM", "0.5"))
 PHASH_TOP = int(os.getenv("PHASH_TOP", "10"))         # templates from pHash on top of that
 MIN_COVERAGE = float(os.getenv("EMBED_MIN_COVERAGE", "0.98"))
 THREADS = int(os.getenv("EMBED_THREADS", "0"))        # 0 = onnxruntime default
@@ -168,6 +170,8 @@ class Shortlist:
     def __init__(self) -> None:
         self.engine: Engine | None = None
         self.index = EmbIndex()
+        # embeddings of users' confirmed scan photos (learn.py), several per card allowed
+        self._learned: tuple[list[str], np.ndarray] = ([], np.zeros((0, 0), np.float32))
         self.coverage = 0.0
         self.status = {"active": False, "model": str(MODEL_PATH), "error": None, "cards": 0,
                        "coverage": 0.0, "backfill": {"running": False, "todo": 0, "done": 0, "failed": 0,
@@ -213,6 +217,14 @@ class Shortlist:
         core = autolevel(core)
         return self.engine.embed([core, cv2.rotate(core, cv2.ROTATE_180)])
 
+    def photo_embedding(self, card_bgr: np.ndarray) -> np.ndarray:
+        """Embedding of a straightened scan photo, prepared like a query (upright only)."""
+        return self.engine.embed([autolevel(card_bgr)])[0]   # the app's crop has no white border
+
+    def set_learned(self, ids: list[str], mat: np.ndarray) -> None:
+        self._learned = (list(ids), mat.astype(np.float32) if mat.size else np.zeros((0, 0), np.float32))
+        self.status["learned_photos"] = len(ids)
+
     def shortlist(self, card_bgr: np.ndarray) -> tuple[list[str], int] | None:
         """(card ids, how many pHash templates to add) or None = old behaviour."""
         if not self.active:
@@ -220,7 +232,14 @@ class Shortlist:
         q = self.query(card_bgr)
         if q is None:
             return None
-        return self.index.top(q, EMBED_TOP), (PHASH_TOP if self.coverage >= MIN_COVERAGE else -1)
+        ids = self.index.top(q, EMBED_TOP)
+        l_ids, l_mat = self._learned
+        if l_ids:
+            s = (q @ l_mat.T).max(axis=0)
+            for i in np.argsort(-s)[:LEARNED_TOP]:
+                if s[i] >= LEARNED_MIN_SIM and l_ids[i] not in ids:
+                    ids.append(l_ids[i])
+        return ids, (PHASH_TOP if self.coverage >= MIN_COVERAGE else -1)
 
     # ── backfill: embed catalog cards the index doesn't have yet ──────────────
     def backfill(self, catalog: dict[str, CatalogCard], known_ids: set[str]) -> None:

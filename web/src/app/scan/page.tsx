@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import {
   Collection, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
@@ -19,7 +20,7 @@ import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Loc
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
 
-type Step = "setup" | "review" | "done";
+type Step = "setup" | "review";
 
 type EditableCandidate = ScanCandidate & {
   include: boolean;
@@ -69,6 +70,7 @@ async function downscaleImage(blob: Blob, maxDim = 1600): Promise<Blob> {
 
 export default function ScanPage() {
   const { t } = useI18n();
+  const router = useRouter();
   const [status, setStatus] = useState<ScanStatus | null>(null);
   const { enums } = useEnums();
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -90,7 +92,6 @@ export default function ScanPage() {
   const defaultLang = appSettings?.default_language || "DE";
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<EditableCandidate[]>([]);
-  const [savedCount, setSavedCount] = useState(0);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [editorIdx, setEditorIdx] = useState<number | null>(null);
   const sourceBlobRef = useRef<Blob | null>(null);
@@ -99,6 +100,10 @@ export default function ScanPage() {
   const [vidSize, setVidSize] = useState<{ w: number; h: number } | null>(null);
   const [lockQuad, setLockQuad] = useState<Pt[] | null>(null);   // card found in the guide (video px)
   const [lockSteady, setLockSteady] = useState(false);
+  // Nach einer Aufnahme bleibt die Kamera an; die Auto-Aufnahme wartet, bis
+  // die gescannte Karte aus dem Rahmen ist (sonst nähme sie dieselbe nochmal).
+  const needClearRef = useRef(false);
+  const [waitingNext, setWaitingNext] = useState(false);
   const busyRef = useRef(false);
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
@@ -174,11 +179,11 @@ export default function ScanPage() {
 
   // Stream an das Video hängen, sobald es im DOM ist (sonst bleibt das Bild schwarz)
   useEffect(() => {
-    if (cameraOn && videoRef.current && streamRef.current) {
+    if (cameraOn && step === "setup" && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
       videoRef.current.play().catch(() => {});
     }
-  }, [cameraOn]);
+  }, [cameraOn, step]);
 
   // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten keiner.
   const { cols: layoutCols, rows: layoutRows } = parseLayout(layout);
@@ -191,12 +196,13 @@ export default function ScanPage() {
   useEffect(() => {
     setLockQuad(null);
     setLockSteady(false);
-    if (!cameraOn || !autoCapture || gAspect === null) return;
+    if (!cameraOn || !autoCapture || gAspect === null || step !== "setup") return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
     let prev: Lock | null = null;
     let steady = 0;
+    let clear = 0;
     const id = window.setInterval(() => {
       const v = videoRef.current;
       if (!v || v.videoWidth === 0 || busyRef.current) return;
@@ -210,6 +216,11 @@ export default function ScanPage() {
       prev = lock;
       setLockQuad(lock ? lock.quad.map(([x, y]) => [x / k, y / k] as Pt) : null);
       setLockSteady(steady > 0);
+      if (needClearRef.current) {           // erst die vorige Karte aus dem Rahmen nehmen
+        clear = lock ? 0 : clear + 1;
+        if (clear >= 2) { needClearRef.current = false; setWaitingNext(false); }
+        return;
+      }
       if (steady >= 3) {
         steady = 0;
         prev = null;
@@ -217,7 +228,7 @@ export default function ScanPage() {
       }
     }, 140);
     return () => window.clearInterval(id);
-  }, [cameraOn, autoCapture, gAspect]);
+  }, [cameraOn, autoCapture, gAspect, step]);
 
   const blobFromVideo = (): Promise<Blob | null> =>
     new Promise((resolve) => {
@@ -297,7 +308,9 @@ export default function ScanPage() {
 
   const handleCapture = async () => {
     const blob = await blobFromVideo();
-    stopCamera();
+    // Kamera läuft weiter (Serienscan); Auto-Aufnahme erst nach Kartenwechsel wieder scharf.
+    needClearRef.current = true;
+    setWaitingNext(true);
     if (blob) runScan(blob);
   };
   handleCaptureRef.current = () => { void handleCapture(); };  // Auto-Aufnahme nutzt immer die aktuelle Fassung
@@ -424,7 +437,7 @@ export default function ScanPage() {
       ...c, needs_choice: false, include: true, chosenId: null, match: null, uncertain_fields: ["match"],
     } : c));
 
-  const handleSave = async () => {
+  const handleSave = async (next: boolean) => {
     const chosen = candidates.filter((c) => c.include);
     if (!chosen.length) return;
     setBusy(true);
@@ -467,12 +480,19 @@ export default function ScanPage() {
           const file = await cropToCardPhoto(blob, cropOptsFor(c));
           // Originalfoto (ganze Aufnahme) mitspeichern → spätere Nachbearbeitung
           const original = new File([blob], "orig.jpg", { type: "image/jpeg" });
-          await cardApi.uploadImage(ids[k], file, original);
+          const b = c.raw?.bbox;
+          const quad = c.editedQuad ?? c.raw?.quad
+            ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
+          await cardApi.uploadImage(ids[k], file, original, quad);
         } catch { /* Foto-Upload optional */ }
       }));
-      setSavedCount(res.data.created);
-      setStep("done");
       toast.success(t.scan_saved(res.data.created));
+      if (next) {
+        backToCapture();
+      } else {
+        stopCamera();
+        router.push(backHref);
+      }
     } catch {
       toast.error(t.scan_save_error);
     } finally {
@@ -480,10 +500,11 @@ export default function ScanPage() {
     }
   };
 
-  const reset = () => {
+  // Zurück zur Aufnahme (Kamera ist noch an, falls sie lief) – oben, ohne Scrollen.
+  const backToCapture = () => {
     setCandidates([]);
-    setSavedCount(0);
     setStep("setup");
+    window.scrollTo({ top: 0 });
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -491,18 +512,18 @@ export default function ScanPage() {
 
   return (
     <div className="max-w-3xl mx-auto pb-24">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-1 flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">{t.scan_title}</h1>
         <Link href={backHref} className="text-gray-500 hover:text-white text-sm">{t.scan_back}</Link>
       </div>
-      <p className="text-gray-400 text-sm mb-1">{t.scan_subtitle}</p>
-      <p className={`text-xs ${localState && localState !== "ready" ? "mb-2" : "mb-6"}`}>
+      <p className="hidden sm:block text-gray-400 text-sm mb-1">{t.scan_subtitle}</p>
+      <p className={`text-xs ${localState && localState !== "ready" ? "mb-2" : "mb-3"}`}>
         {engineActive === "none"
           ? <span className="text-red-400">{t.scan_engine_none}</span>
           : <span className="text-gray-500">{t.scan_engine_active(engineActive)}</span>}
       </p>
       {localState && localState !== "ready" && (
-        <p className="text-xs mb-6 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1.5 text-amber-300">
+        <p className="text-xs mb-3 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1.5 text-amber-300">
           {localState === "loading" || localState === "converting"
             ? t.scan_local_starting(status?.local?.phase)
             : t.scan_local_unreachable}
@@ -510,31 +531,88 @@ export default function ScanPage() {
       )}
 
       {step === "setup" && (
-        <div className="space-y-6">
-          {/* Modus */}
+        <div className="space-y-4">
+          {/* Modus – kompakt, damit die Aufnahme ohne Scrollen sichtbar ist */}
           <div>
-            <label className="text-gray-400 text-xs block mb-2">{t.scan_mode}</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-gray-800/70 p-1" role="radiogroup" aria-label={t.scan_mode}>
               {([
                 ["single", t.scan_mode_single, t.scan_mode_single_desc],
                 ["multi", t.scan_mode_multi, t.scan_mode_multi_desc],
                 ["binder", t.scan_mode_binder, t.scan_mode_binder_desc],
               ] as const).map(([m, label, desc]) => (
-                <button type="button"
-                  key={m}
+                <button type="button" key={m} role="radio" aria-checked={mode === m} title={desc}
                   onClick={() => setMode(m)}
-                  className={`rounded-lg border p-3 text-left transition ${
-                    mode === m ? "border-pokemon-blue bg-pokemon-accent" : "border-gray-700 bg-pokemon-card hover:border-gray-500"
+                  className={`rounded-md px-2 py-1.5 text-sm transition ${
+                    mode === m ? "bg-pokemon-blue text-white" : "text-gray-300 hover:bg-gray-700"
                   }`}
                 >
-                  <div className="text-white text-sm font-medium">{label}</div>
-                  <div className="text-gray-400 text-xs mt-0.5">{desc}</div>
+                  {label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Ziel */}
+          {/* Kamera / Datei */}
+          <div className={`rounded-lg border border-gray-700 bg-pokemon-card ${cameraOn ? "p-2" : "p-4"}`}>
+            {cameraOn ? (
+              <div className="space-y-3">
+                <div className="relative mx-auto overflow-hidden rounded"
+                  style={{ maxWidth: vidSize ? `min(480px, calc(64vh * ${(vidSize.w / vidSize.h).toFixed(4)}))` : 480 }}>
+                  <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
+                    onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
+                    onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
+                  {vidSize && (
+                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
+                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} />
+                  )}
+                  {vidSize && gAspect !== null && autoCapture && (
+                    <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-3 py-1 text-xs text-white">
+                      {busy ? t.scan_analyzing : waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching}
+                    </div>
+                  )}
+                  {/* Bedienung auf dem Bild (wie eine Kamera-App) – kein Scrollen nötig */}
+                  <div className="absolute inset-x-0 bottom-0 grid grid-cols-3 items-center bg-gradient-to-t from-black/75 to-transparent px-3 pb-3 pt-10">
+                    <button type="button" onClick={stopCamera}
+                      className="justify-self-start rounded-full bg-black/50 px-3 py-1.5 text-xs text-white hover:bg-black/70">
+                      {t.scan_stop_camera}
+                    </button>
+                    <button type="button" onClick={() => void handleCapture()} disabled={busy} aria-label={t.scan_capture}
+                      title={t.scan_capture}
+                      className="justify-self-center h-16 w-16 rounded-full border-4 border-white bg-white/25 shadow-lg transition hover:bg-white/40 active:scale-95 disabled:opacity-50">
+                      {busy && <span className="block h-full w-full animate-pulse rounded-full bg-white/50" />}
+                    </button>
+                    {gAspect !== null ? (
+                      <label className="justify-self-end flex items-center gap-1 rounded-full bg-black/50 px-3 py-1.5 text-xs text-white">
+                        <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
+                        {t.scan_autocapture}
+                      </label>
+                    ) : <span />}
+                  </div>
+                </div>
+                <p className="text-center text-gray-500 text-xs">
+                  {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 text-center">
+                <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
+                  onChange={handleFile} className="hidden" />
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={busy || engineActive === "none"}
+                  className="bg-pokemon-blue text-white px-5 py-3 rounded-lg hover:bg-blue-500 disabled:opacity-50 w-full sm:w-auto">
+                  {busy ? t.scan_analyzing : t.scan_take_photo}
+                </button>
+                <div>
+                  <button type="button" onClick={startCamera} disabled={engineActive === "none"}
+                    className="text-pokemon-blue hover:underline text-sm disabled:opacity-50">
+                    {t.scan_start_camera}
+                  </button>
+                </div>
+                {camMsg && <p className="text-gray-400 text-xs whitespace-pre-line">{camMsg}</p>}
+              </div>
+            )}
+          </div>
+          {/* Ziel & Optionen (unter der Aufnahme) */}
+          <div className="rounded-lg border border-gray-800 p-3 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-gray-400 text-xs block mb-1">{t.scan_target}</label>
@@ -598,61 +676,6 @@ export default function ScanPage() {
               {t.scan_set_pokedex_rep} <span className="text-gray-500 text-xs">({t.scan_default_all})</span>
             </label>
           )}
-
-          {/* Kamera / Datei */}
-          <div className="rounded-lg border border-gray-700 bg-pokemon-card p-4">
-            {cameraOn ? (
-              <div className="space-y-3">
-                <div className="relative mx-auto overflow-hidden rounded" style={{ maxWidth: 480 }}>
-                  <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
-                    onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
-                    onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
-                  {vidSize && (
-                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
-                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} />
-                  )}
-                  {vidSize && gAspect !== null && autoCapture && (
-                    <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-xs text-white">
-                      {busy ? t.scan_analyzing : lockQuad ? t.scan_cam_hold : t.scan_cam_searching}
-                    </div>
-                  )}
-                </div>
-                <p className="text-center text-gray-500 text-xs">
-                  {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
-                </p>
-                <div className="flex gap-2 justify-center items-center flex-wrap">
-                  <button type="button" onClick={() => void handleCapture()} disabled={busy}
-                    className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
-                    {busy ? t.scan_analyzing : t.scan_capture}
-                  </button>
-                  <button type="button" onClick={stopCamera} className="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-600">
-                    {t.scan_stop_camera}
-                  </button>
-                  {gAspect !== null && (
-                    <label className="flex items-center gap-1 text-xs text-gray-300 ml-2">
-                      <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
-                      {t.scan_autocapture}
-                    </label>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3 text-center">
-                <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
-                  onChange={handleFile} className="hidden" />
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={busy || engineActive === "none"}
-                  className="bg-pokemon-blue text-white px-5 py-3 rounded-lg hover:bg-blue-500 disabled:opacity-50 w-full sm:w-auto">
-                  {busy ? t.scan_analyzing : t.scan_take_photo}
-                </button>
-                <div>
-                  <button type="button" onClick={startCamera} disabled={engineActive === "none"}
-                    className="text-pokemon-blue hover:underline text-sm disabled:opacity-50">
-                    {t.scan_start_camera}
-                  </button>
-                </div>
-                {camMsg && <p className="text-gray-400 text-xs whitespace-pre-line">{camMsg}</p>}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -661,7 +684,7 @@ export default function ScanPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-white font-medium">{t.scan_results_title(candidates.length)}</h2>
-            <button type="button" onClick={reset} className="text-gray-500 hover:text-white text-sm">{t.scan_back}</button>
+            <button type="button" onClick={backToCapture} className="text-gray-500 hover:text-white text-sm">{t.scan_discard}</button>
           </div>
 
           {candidates.map((c, idx) => {
@@ -868,9 +891,13 @@ export default function ScanPage() {
 
           <div className="fixed bottom-0 inset-x-0 bg-pokemon-dark/95 border-t border-gray-800 p-3">
             <div className="max-w-3xl mx-auto flex gap-3">
-              <button type="button" onClick={handleSave} disabled={busy || !candidates.some((c) => c.include)}
-                className="flex-1 bg-green-600 text-white px-4 py-2.5 rounded hover:bg-green-700 disabled:opacity-50">
-                {busy ? t.scan_saving : t.scan_save_all}
+              <button type="button" onClick={() => void handleSave(false)} disabled={busy || !candidates.some((c) => c.include)}
+                className="flex-1 bg-gray-700 text-white px-4 py-2.5 rounded hover:bg-gray-600 disabled:opacity-50">
+                {busy ? t.scan_saving : t.scan_save_stop}
+              </button>
+              <button type="button" onClick={() => void handleSave(true)} disabled={busy || !candidates.some((c) => c.include)}
+                className="flex-[1.4] bg-green-600 text-white px-4 py-2.5 rounded hover:bg-green-700 disabled:opacity-50">
+                {busy ? t.scan_saving : t.scan_save_next}
               </button>
             </div>
           </div>
@@ -886,20 +913,6 @@ export default function ScanPage() {
         />
       )}
 
-      {step === "done" && (
-        <div className="text-center py-16 space-y-4">
-          <div className="text-4xl">✅</div>
-          <p className="text-white text-lg">{t.scan_saved(savedCount)}</p>
-          <div className="flex gap-3 justify-center">
-            <button type="button" onClick={reset} className="bg-pokemon-blue text-white px-4 py-2 rounded hover:bg-blue-500">
-              {t.scan_scan_again}
-            </button>
-            <Link href={backHref} className="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-600">
-              {t.scan_back}
-            </Link>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

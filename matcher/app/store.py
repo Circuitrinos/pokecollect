@@ -79,6 +79,7 @@ class Snapshot:
     idx_in_seg: np.ndarray  # (T,) int32
     card_id: list[str]     # (T,)
     by_card: dict[str, list[int]] = field(default_factory=dict)  # card id -> template rows
+    learned: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))  # (T,) from a user's scan photo
 
     def __len__(self) -> int:
         return len(self.card_id)
@@ -100,6 +101,12 @@ class Store:
     def add(self, seg: Segment) -> None:
         self.add_many([seg])
 
+    def replace(self, name: str, seg: Segment | None) -> None:
+        """Swap the segment called `name` (None: just remove it)."""
+        with self._lock:
+            self._segments = [s for s in self._segments if s.name != name] + ([seg] if seg is not None else [])
+            self._rebuild()
+
     def add_many(self, segs: list[Segment]) -> None:
         """Add segments with one rebuild (startup loads ~80 at once)."""
         with self._lock:
@@ -107,7 +114,7 @@ class Store:
             self._rebuild()
 
     def _rebuild(self) -> None:
-        ph, hi, so, ix, cid = [], [], [], [], []
+        ph, hi, so, ix, cid, lr = [], [], [], [], [], []
         for s_no, seg in enumerate(self._segments):
             keep = [j for j, c in enumerate(seg.card_ids) if c]
             if not keep:
@@ -116,13 +123,14 @@ class Store:
             hi.append(seg.hist[keep])
             so.append(np.full(len(keep), s_no, np.int32))
             ix.append(np.asarray(keep, np.int32))
+            lr.append(np.full(len(keep), seg.name == "learned"))
             cid.extend(seg.card_ids[j] for j in keep)
         if ph:
             by_card: dict[str, list[int]] = {}
             for t, c in enumerate(cid):
                 by_card.setdefault(c, []).append(t)
             self._snap = Snapshot(list(self._segments), np.concatenate(ph), np.concatenate(hi),
-                                  np.concatenate(so), np.concatenate(ix), cid, by_card)
+                                  np.concatenate(so), np.concatenate(ix), cid, by_card, np.concatenate(lr))
         else:
             self._snap = Snapshot(list(self._segments), np.zeros(0, np.uint64),
                                   np.zeros((0, 256), np.float32), np.zeros(0, np.int32),

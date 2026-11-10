@@ -298,6 +298,88 @@ def _restore_images(zf: zipfile.ZipFile) -> int:
     return written
 
 
+_DATASET_README = """PokéCollect scan dataset
+
+Every card saved from a scan with "use photo", for all users:
+
+  labels.jsonl   one JSON object per card photo:
+                   card_id    TCGdex id the user confirmed (e.g. sv03-125)
+                   name, set_id, set, number, language, prize_pack
+                   crop       straightened card photo (what the app shows)
+                   original   the whole photo it was cut from (shared by all cards of one photo)
+                   quad       crop corners in the original, normalised 0..1, or null (older scans)
+  crops/         straightened card photos
+  originals/     whole photos, stored once per photo
+
+Use: evaluation and fine-tuning of the card matcher (embed_experiment:
+`python embed_eval.py import-scans <this zip>`), a learned card detector
+(original + quad), a Prize Pack stamp classifier (crop + prize_pack).
+"""
+
+
+@router.get("/scan-dataset", dependencies=[Depends(require_admin)])
+def scan_dataset():
+    """
+    Scan-Fotos als Trainingsdatensatz (ZIP, alle Benutzer – der Bild-Abgleich
+    ist gemeinsam): entzerrte Karten, Originalfotos (je Inhalt einmal) und
+    labels.jsonl mit der bestätigten TCGdex-ID, Prize Pack und den Ecken.
+    """
+    import hashlib
+
+    c = PokemonCard.__table__.c
+    with engine.connect() as conn:   # Core: bewusst ohne Benutzer-Filter (Admin-Export)
+        rows = conn.execute(
+            PokemonCard.__table__.select()
+            .with_only_columns(c.id, c.tcgdex_card_id, c.kartenname, c.englischer_name, c.set_id,
+                               c.set_edition, c.karten_nr, c.sprache, c.prize_pack,
+                               c.bild_karte_pfad, c.bild_original_pfad, c.bild_quad)
+            .where(c.tcgdex_card_id.isnot(None), c.bild_karte_pfad.isnot(None),
+                   c.bild_original_pfad.isnot(None))
+            .order_by(c.id)
+        ).mappings().all()
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        labels: list[str] = []
+        seen: dict[str, str] = {}
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
+            for r in rows:
+                crop, orig = safe_media_path(r["bild_karte_pfad"]), safe_media_path(r["bild_original_pfad"])
+                if not (crop and crop.is_file() and orig and orig.is_file()):
+                    continue
+                crop_name = f"crops/{r['id']}{crop.suffix.lower()}"
+                zf.write(crop, arcname=crop_name)
+                digest = hashlib.sha1(orig.read_bytes()).hexdigest()[:16]
+                if digest not in seen:
+                    seen[digest] = f"originals/{digest}{orig.suffix.lower()}"
+                    zf.write(orig, arcname=seen[digest])
+                try:
+                    quad = json.loads(r["bild_quad"]) if r["bild_quad"] else None
+                except ValueError:
+                    quad = None
+                labels.append(json.dumps({
+                    "id": r["id"], "card_id": r["tcgdex_card_id"],
+                    "name": r["englischer_name"] or r["kartenname"], "set_id": r["set_id"],
+                    "set": r["set_edition"], "number": r["karten_nr"], "language": r["sprache"],
+                    "prize_pack": bool(r["prize_pack"]), "crop": crop_name, "original": seen[digest],
+                    "quad": quad,
+                }, ensure_ascii=False))
+            zf.writestr("labels.jsonl", "\n".join(labels) + ("\n" if labels else ""))
+            zf.writestr("README.txt", _DATASET_README)
+        tmp.close()
+    except Exception:
+        tmp.close()
+        os.unlink(tmp.name)
+        raise
+    logger.info("Scan-Datensatz: %d Fotos, %d Originale", len(labels), len(seen))
+    return FileResponse(
+        tmp.name,
+        media_type="application/zip",
+        filename=f"pokecollect-scans-{date.today().isoformat()}.zip",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
 @router.post("/restore", dependencies=[Depends(require_admin)])
 async def restore(file: UploadFile = File(...), confirm: str = Form("")):
     """
