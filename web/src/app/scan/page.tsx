@@ -15,6 +15,7 @@ import RaritySelect from "@/components/RaritySelect";
 import CornerEditor from "@/components/CornerEditor";
 import { cropToCardPhoto, loadImg, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { setCodeFromEdition } from "@/lib/utils";
+import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { useI18n } from "@/lib/i18n";
 
 type Step = "setup" | "review" | "done";
@@ -91,6 +92,9 @@ export default function ScanPage() {
   const sourceBlobRef = useRef<Blob | null>(null);
   const [camMsg, setCamMsg] = useState<string | null>(null);
   const [autoCapture, setAutoCapture] = useState(true);
+  const [vidSize, setVidSize] = useState<{ w: number; h: number } | null>(null);
+  const [lockQuad, setLockQuad] = useState<Pt[] | null>(null);   // card found in the guide (video px)
+  const [lockSteady, setLockSteady] = useState(false);
   const busyRef = useRef(false);
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
@@ -157,51 +161,44 @@ export default function ScanPage() {
     }
   }, [cameraOn]);
 
-  // Auto-Aufnahme: löst aus, wenn das Bild ruhig (Kamera still gehalten),
-  // scharf und hell genug ist. Best-effort-Heuristik; manuell geht immer.
+  // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten keiner.
+  const { cols: layoutCols, rows: layoutRows } = parseLayout(layout);
+  const gAspect = guideAspect(mode, layoutCols, layoutRows);
+  const handleCaptureRef = useRef<() => void>(() => {});
+
+  // Auto-Aufnahme: sucht ~7×/s vier gerade Kanten am Rahmen (Karte bzw.
+  // Kartenraster liegt drin) und löst aus, sobald der Fund ~½ s ruhig steht.
+  // Verwacklungstolerant; nur der Auslöser – die Erkennung macht der Server.
   useEffect(() => {
-    if (!cameraOn || !autoCapture) return;
-    const W = 160, H = 224;
+    setLockQuad(null);
+    setLockSteady(false);
+    if (!cameraOn || !autoCapture || gAspect === null) return;
     const canvas = document.createElement("canvas");
-    canvas.width = W; canvas.height = H;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
-    let prev: Float32Array | null = null;
+    let prev: Lock | null = null;
     let steady = 0;
-    const id = setInterval(() => {
+    const id = window.setInterval(() => {
       const v = videoRef.current;
       if (!v || v.videoWidth === 0 || busyRef.current) return;
-      ctx.drawImage(v, 0, 0, W, H);
-      const data = ctx.getImageData(0, 0, W, H).data;
-      const gray = new Float32Array(W * H);
-      let bright = 0;
-      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-        const g = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        gray[p] = g; bright += g;
+      const k = 360 / Math.max(v.videoWidth, v.videoHeight);
+      const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      ctx.drawImage(v, 0, 0, w, h);
+      const guide = guideRect(w, h, gAspect);
+      const lock = findCardInGuide(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h, guide);
+      steady = lock && prev && lockMovement(prev, lock, guide) <= 0.022 ? steady + 1 : 0;
+      prev = lock;
+      setLockQuad(lock ? lock.quad.map(([x, y]) => [x / k, y / k] as Pt) : null);
+      setLockSteady(steady > 0);
+      if (steady >= 3) {
+        steady = 0;
+        prev = null;
+        handleCaptureRef.current();
       }
-      bright /= W * H;
-      let sharp = 0;
-      for (let y = 1; y < H - 1; y++) {
-        for (let x = 1; x < W - 1; x++) {
-          const idx = y * W + x;
-          const lap = 4 * gray[idx] - gray[idx - 1] - gray[idx + 1] - gray[idx - W] - gray[idx + W];
-          sharp += Math.abs(lap);
-        }
-      }
-      sharp /= (W - 2) * (H - 2);
-      let diff = Infinity;
-      if (prev) {
-        let s = 0;
-        for (let i = 0; i < gray.length; i++) s += Math.abs(gray[i] - prev[i]);
-        diff = s / gray.length;
-      }
-      prev = gray;
-      if (diff < 3.5 && sharp > 7 && bright > 30) steady++; else steady = 0;
-      if (steady >= 3) { steady = 0; void handleCapture(); }
-    }, 400);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraOn, autoCapture]);
+    }, 140);
+    return () => window.clearInterval(id);
+  }, [cameraOn, autoCapture, gAspect]);
 
   const blobFromVideo = (): Promise<Blob | null> =>
     new Promise((resolve) => {
@@ -284,6 +281,7 @@ export default function ScanPage() {
     stopCamera();
     if (blob) runScan(blob);
   };
+  handleCaptureRef.current = () => { void handleCapture(); };  // Auto-Aufnahme nutzt immer die aktuelle Fassung
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -586,11 +584,23 @@ export default function ScanPage() {
           <div className="rounded-lg border border-gray-700 bg-pokemon-card p-4">
             {cameraOn ? (
               <div className="space-y-3">
-                <div className="relative mx-auto" style={{ maxWidth: 480 }}>
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full rounded bg-black" />
-                  <div className="pointer-events-none absolute inset-4 border-2 border-pokemon-yellow/70 rounded" />
+                <div className="relative mx-auto overflow-hidden rounded" style={{ maxWidth: 480 }}>
+                  <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
+                    onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
+                    onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
+                  {vidSize && (
+                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
+                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} />
+                  )}
+                  {vidSize && gAspect !== null && autoCapture && (
+                    <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-xs text-white">
+                      {busy ? t.scan_analyzing : lockQuad ? t.scan_cam_hold : t.scan_cam_searching}
+                    </div>
+                  )}
                 </div>
-                <p className="text-center text-gray-500 text-xs">{t.scan_camera_hint}</p>
+                <p className="text-center text-gray-500 text-xs">
+                  {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
+                </p>
                 <div className="flex gap-2 justify-center items-center flex-wrap">
                   <button type="button" onClick={() => void handleCapture()} disabled={busy}
                     className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
@@ -599,10 +609,12 @@ export default function ScanPage() {
                   <button type="button" onClick={stopCamera} className="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-600">
                     {t.scan_stop_camera}
                   </button>
-                  <label className="flex items-center gap-1 text-xs text-gray-300 ml-2">
-                    <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
-                    {t.scan_autocapture}
-                  </label>
+                  {gAspect !== null && (
+                    <label className="flex items-center gap-1 text-xs text-gray-300 ml-2">
+                      <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
+                      {t.scan_autocapture}
+                    </label>
+                  )}
                 </div>
               </div>
             ) : (
@@ -870,5 +882,43 @@ export default function ScanPage() {
         </div>
       )}
     </div>
+  );
+}
+
+
+/**
+ * Rahmen über dem Live-Bild, in Video-Pixeln (viewBox = Videoformat, das Video
+ * wird unverzerrt in voller Breite gezeigt): Bereich außerhalb abgedunkelt,
+ * bei der Mappe das Raster, und die gefundene Karte als grüne Kontur.
+ */
+function CameraGuide({ w, h, aspect, cols, rows, quad, steady }: {
+  w: number; h: number; aspect: number | null; cols: number; rows: number; quad: Pt[] | null; steady: boolean;
+}) {
+  const g = aspect !== null ? guideRect(w, h, aspect) : null;
+  const r = g ? (Math.min(g.w / cols, g.h / rows) * 0.045) : 0;   // Kartenecken ~3 mm von 63 mm
+  const color = quad ? (steady ? "#22c55e" : "#86efac") : "#facc15";
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+      {g && (
+        <>
+          <path fillRule="evenodd" fill="rgba(0,0,0,0.38)"
+            d={`M0 0H${w}V${h}H0Z M${g.x} ${g.y}V${g.y + g.h}H${g.x + g.w}V${g.y}Z`} />
+          {Array.from({ length: cols - 1 }, (_, i) => (
+            <line key={`c${i}`} x1={g.x + (g.w * (i + 1)) / cols} x2={g.x + (g.w * (i + 1)) / cols} y1={g.y} y2={g.y + g.h}
+              stroke={color} strokeOpacity={0.45} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          ))}
+          {Array.from({ length: rows - 1 }, (_, i) => (
+            <line key={`r${i}`} y1={g.y + (g.h * (i + 1)) / rows} y2={g.y + (g.h * (i + 1)) / rows} x1={g.x} x2={g.x + g.w}
+              stroke={color} strokeOpacity={0.45} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          ))}
+          <rect x={g.x} y={g.y} width={g.w} height={g.h} rx={r} ry={r} fill="none" stroke={color}
+            strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
+        </>
+      )}
+      {quad && (
+        <polygon points={quad.map(([x, y]) => `${x},${y}`).join(" ")} fill="rgba(34,197,94,0.12)" stroke="#22c55e"
+          strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      )}
+    </svg>
   );
 }
