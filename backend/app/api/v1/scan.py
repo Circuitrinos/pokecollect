@@ -261,6 +261,9 @@ async def scan(
     if not mime.startswith("image/"):
         raise HTTPException(status_code=400, detail="Content-Type muss image/* sein")
     t0 = time.perf_counter()
+    # „card": entzerrter Zuschnitt aus dem Ecken-Editor. Der Bild-Abgleich
+    # überspringt dafür die Erkennung; alle anderen Leser sehen ein Einzelbild.
+    reader_mode = "single" if mode == "card" else mode
 
     engine = "none"
     reads = None
@@ -273,7 +276,7 @@ async def scan(
     local_extras: dict[int, local_match.LocalExtra] = {}
     if provider == "local":
         result = await local_match.extract(
-            data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols)
+            data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols)  # card → matcher
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
         else:
@@ -317,7 +320,7 @@ async def scan(
             hinweis = _READER_HINWEIS.get(result.fehler_art)
             limit_erreicht = result.fehler_art == vlm.FEHLER_RATE
     if reads is None:
-        reads = ocr.extract(data, mode=mode, rows=rows, cols=cols)
+        reads = ocr.extract(data, mode=reader_mode, rows=rows, cols=cols)
         engine = "ocr"
 
     reads = reads or []
@@ -341,7 +344,7 @@ async def scan(
     # gegen einen winzigen plausiblen Nachbarn, und der GANZE Read der
     # Hauptkarte (Name, Nummer, alles) ging verloren, nicht nur ihr
     # Zuschnitt.
-    if mode == "single" and len(reads) > 1:
+    if reader_mode == "single" and len(reads) > 1:
         def _area(r) -> float:
             return (r.bbox[2] * r.bbox[3]) if (r.bbox and len(r.bbox) == 4) else 0.0
         reads = [max(reads, key=_area)]
@@ -354,7 +357,7 @@ async def scan(
     # auf eine "nächste Stufe" — Details in crop_hints.py). `mode` steuert
     # zusätzlich die Flächen-Kappe (nur multi/binder, Auflage 2). Braucht die
     # echten Bildmaße, die nur der Aufrufer hier hat.
-    reads = crop_hints.sanitize_crop_hints(reads, data, mode=mode)
+    reads = crop_hints.sanitize_crop_hints(reads, data, mode=reader_mode)
 
     candidates = await resolve_reads(db, reads, default_lang=default_language)
     t_end = time.perf_counter()

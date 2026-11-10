@@ -452,6 +452,13 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> 
         for _, q, card, cands in sorted(kept, key=lambda t: (t[1][:, 1].mean(), t[1][:, 0].mean())):
             d, oq = _decide(card, cands, q)
             cards.append(_result(d, oq, img.shape, None))
+    elif mode == "card":
+        # Already a straightened card (the user set its corners in the app):
+        # no detection, match the whole image as the card.
+        quad = detect.whole_image_as_card(img)
+        card = detect.warp(img, quad)
+        d, q = _decide(card, _match(card, store.snapshot(), top_k), quad)
+        cards.append(_result(d, q, img.shape, None))
     else:  # single
         dets = [x for x in _detect(img, max_cards=5, nested=True) if x.area_frac > 0.05]
         opts = [x.quad for x in dets] + [detect.whole_image_as_card(img)]

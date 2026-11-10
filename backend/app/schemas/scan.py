@@ -9,7 +9,8 @@ from pydantic import BaseModel, field_validator, Field
 from app.schemas._grenzen import PgNichtNegativ  # #117
 from app.schemas._validators import reject_control_chars
 
-ScanMode = Literal["single", "multi", "binder"]
+# "card" = bereits entzerrte Karte (Ecken im App-Editor gesetzt) → nur neu abgleichen
+ScanMode = Literal["single", "multi", "binder", "card"]
 
 
 class ScanRawRead(BaseModel):

@@ -533,7 +533,8 @@ export const dataApi = {
 
 // ── Scan ──────────────────────────────────────────────────────────────────
 
-export type ScanMode = "single" | "multi" | "binder";
+// "card": bereits entzerrte Karte (nach dem Ecken-Editor) → nur neu abgleichen
+export type ScanMode = "single" | "multi" | "binder" | "card";
 
 export type ScanMatch = {
   tcgdex_card_id: string | null;

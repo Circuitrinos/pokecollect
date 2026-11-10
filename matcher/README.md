@@ -82,7 +82,8 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   `warmup_ms`), template counts, pokemontcg→TCGdex mapping report (incl. unmapped
   sets), extension progress, embedding shortlist state.
 - `POST /learn`: index new scan photos soon (the api calls it after each scan photo upload).
-- `POST /match` (multipart): `file`, `mode` = `single|multi|binder`, `rows`, `cols`, `top_k`.
+- `POST /match` (multipart): `file`, `mode` = `single|multi|binder|card`, `rows`, `cols`, `top_k`
+  (`card`: the image is already a straightened card, e.g. after the user moved its corners).
   The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
   `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
   Each match is also logged with that breakdown.

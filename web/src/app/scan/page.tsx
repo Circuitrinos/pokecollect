@@ -32,6 +32,7 @@ type EditableCandidate = ScanCandidate & {
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
   chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
+  rematching?: boolean;            // nach dem Ecken-Editor: Abgleich mit dem neuen Zuschnitt läuft
 };
 
 // TCGdex liefert jede Karte auch klein (/low.webp) – reicht für Picker-Vorschauen.
@@ -414,8 +415,39 @@ export default function ScanPage() {
       const u = URL.createObjectURL(f);
       setCandidates((prev) => prev.map((cc, i) =>
         i === idx ? { ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u,
-          usePhoto: cc.usePhoto || !cc.match?.image_url } : cc));
+          usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true } : cc));
+      void rematch(idx, f);
     } catch { /* Entzerrung optional */ }
+  };
+
+  // Neue Ecken = neuer Zuschnitt → die Karte damit neu abgleichen (Modus „card":
+  // der Bild-Abgleich überspringt die Erkennung). Treffer, Alternativen und
+  // Auswahlbedarf kommen neu; Ecken, Foto-Wahl, Anzahl, Prize Pack bleiben.
+  const rematch = async (idx: number, crop: Blob) => {
+    try {
+      const res = await scanApi.scan(crop, { mode: "card", default_language: defaultLang });
+      const n = res.data.candidates[0];
+      setCandidates((prev) => prev.map((c, i) => {
+        if (i !== idx) return c;
+        if (!n) return { ...c, rematching: false };
+        return {
+          ...c, ...n,
+          raw: { ...n.raw, quad: c.raw?.quad ?? null, bbox: c.raw?.bbox ?? null, position: c.raw?.position ?? null },
+          position: c.position,
+          include: !n.needs_choice,
+          chosenId: null,
+          usePhoto: c.usePhoto || !n.match?.image_url,
+          rematching: false,
+        };
+      }));
+      const before = candidates[idx]?.match?.tcgdex_card_id;
+      if (!n) toast(t.scan_rematch_none, { icon: "⚠️" });
+      else if (n.match?.tcgdex_card_id && n.match.tcgdex_card_id === before && !n.needs_choice) toast.success(t.scan_rematch_same);
+      else toast.success(t.scan_rematched(String((n.suggested as Record<string, unknown>)?.kartenname ?? n.raw.name ?? "?")));
+    } catch {
+      setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, rematching: false } : c)));
+      toast.error(t.scan_error);
+    }
   };
 
   // Karte anhand der (geänderten) Set/Nummer neu auflösen → Live-Bild + Treffer.
@@ -837,9 +869,14 @@ export default function ScanPage() {
                       const big = c.usePhoto ? (own ?? c.match?.image_url ?? null)
                                              : (c.match?.image_url ?? own ?? null);
                       return big ? (
-                        <a href={big} target="_blank" rel="noreferrer" title={t.scan_view_large}>
+                        <a href={big} target="_blank" rel="noreferrer" title={t.scan_view_large} className="relative block">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={big} alt="" className="w-full rounded hover:opacity-90" />
+                          {c.rematching && (
+                            <span className="absolute inset-0 flex items-center justify-center rounded bg-black/60 text-xs text-white animate-pulse">
+                              {t.scan_rechecking}
+                            </span>
+                          )}
                         </a>
                       ) : (
                         <div className="aspect-[63/88] bg-gray-800 rounded flex items-center justify-center text-gray-600 text-xs">?</div>
@@ -960,11 +997,11 @@ export default function ScanPage() {
 
           <div className="fixed bottom-0 inset-x-0 bg-pokemon-dark/95 border-t border-gray-800 p-3">
             <div className="max-w-3xl mx-auto flex gap-3">
-              <button type="button" onClick={() => void handleSave(false)} disabled={busy || !candidates.some((c) => c.include)}
+              <button type="button" onClick={() => void handleSave(false)} disabled={busy || !candidates.some((c) => c.include) || candidates.some((c) => c.rematching)}
                 className="flex-1 bg-gray-700 text-white px-4 py-2.5 rounded hover:bg-gray-600 disabled:opacity-50">
                 {busy ? t.scan_saving : t.scan_save_stop}
               </button>
-              <button type="button" onClick={() => void handleSave(true)} disabled={busy || !candidates.some((c) => c.include)}
+              <button type="button" onClick={() => void handleSave(true)} disabled={busy || !candidates.some((c) => c.include) || candidates.some((c) => c.rematching)}
                 className="flex-[1.4] bg-green-600 text-white px-4 py-2.5 rounded hover:bg-green-700 disabled:opacity-50">
                 {busy ? t.scan_saving : t.scan_save_next}
               </button>
