@@ -58,6 +58,26 @@ def is_ready(base_url: str) -> bool:
     return status(base_url).get("status") == "ready"
 
 
+_DETECT_TIMEOUT = httpx.Timeout(4.0, connect=2.0)
+
+
+async def detect(image_bytes: bytes, *, base_url: str, mime_type: str) -> Optional[list[dict]]:
+    """Live-Vorschau: Kartenumrisse im Kamerabild (nur Erkennung). None = nicht verfügbar."""
+    if not base_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_DETECT_TIMEOUT) as client:
+            r = await client.post(f"{base_url.rstrip('/')}/detect",
+                                  files={"file": ("frame", image_bytes, mime_type)})
+    except Exception:
+        return None
+    if r.status_code == 429:
+        return []                   # Dienst rechnet noch am letzten Bild → dieses auslassen
+    if r.status_code != 200:
+        return None
+    return [{"quad": c["quad"]} for c in r.json().get("cards", []) if isinstance(c.get("quad"), list)]
+
+
 def poke_learn(base_url: str) -> None:
     """Neues Scan-Foto gespeichert → der matcher lernt es zeitnah (best effort)."""
     if not base_url:

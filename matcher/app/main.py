@@ -47,6 +47,8 @@ store = Store()
 state: dict = {"status": "loading", "phase": "starting", "error": None, "mapping": None,
                "ready_after_s": None, "warmup_ms": None, "matches": 0}
 _match_lock = threading.Lock()   # one photo at a time; each match already uses every core
+_detect_lock = threading.Lock()  # live preview: one frame at a time, extra frames are dropped
+DETECT_MAX_SIDE = 1280
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
 shortlist = embedding.Shortlist()
@@ -302,6 +304,78 @@ def _result(d: matcher.Decision, quad: np.ndarray, shape, position: int | None) 
                         "art_inliers": c.art_inliers,
                         "good_matches": c.good, "phash_distance": c.phash_dist} for c in d.candidates],
     }
+
+
+@app.post("/detect")
+async def detect_preview(file: UploadFile = File(...)) -> dict:
+    """
+    Live preview for the scan camera: card outlines in a (small) frame, no
+    matching. Same detector as /match, so the boxes show what a capture of
+    this frame would work with. Busy → 429 (the client just sends the next frame).
+    """
+    if state["status"] != "ready":
+        raise HTTPException(503, f"matcher not ready: {state['status']}")
+    data = await file.read()
+    if not data or len(data) > MAX_BYTES:
+        raise HTTPException(400, "empty or oversized image")
+    return await run_in_threadpool(_detect_request, data)
+
+
+def _preview_quads(dets: list, max_err: float = 1.6) -> list[np.ndarray]:
+    """
+    The detector proposes many outlines (card, art frame, half a card, two cards
+    merged, a whole binder page); /match sorts them out by matching. Without
+    matching, keep the card-shaped ones (63:88, square corners) and resolve the
+    look-alikes: half a card and two cards side by side are card-shaped too
+    (88/2 : 63 ≈ 63 : 88), and so is a binder page.
+    """
+    c = [d for d in dets if d.area_frac >= 0.004 and detect._rectangularity(d.quad) <= max_err]
+
+    def inside(a, b):  # a lies within b and is clearly smaller
+        return a is not b and _overlap(a.quad, b.quad) > 0.85 and a.area_frac < 0.75 * b.area_frac
+
+    holds = {id(b): [a for a in c if inside(a, b)] for b in c}
+    c = [b for b in c if len(holds[id(b)]) < 3]                      # binder page / block of cards
+    drop: set[int] = set()
+    for b in c:
+        parts = [a for a in holds[id(b)] if 0.3 <= a.area_frac / b.area_frac <= 0.7]
+        if len(parts) != 2:
+            continue
+        # card + its two halves, or two cards + the outline around both? Ask the
+        # other cards in the frame which size a card has here.
+        others = [o.area_frac for o in c if _overlap(o.quad, b.quad) < 0.1 and not holds[id(o)]]
+        half = sum(a.area_frac for a in parts) / 2
+        if others and abs(np.log(half / np.median(others))) < abs(np.log(b.area_frac / np.median(others))):
+            drop.add(id(b))                                           # two cards
+        else:
+            drop.update(id(a) for a in parts)                         # one card
+    kept: list[tuple[np.ndarray, float]] = []
+    for d in sorted((d for d in c if id(d) not in drop), key=lambda d: -d.area_frac):
+        if all(_overlap(d.quad, k[0]) < 0.3 for k in kept):
+            kept.append((d.quad, d.area_frac))
+    # cards in one photo have similar sizes: a box far smaller than the largest is a detail
+    biggest = max((a for _, a in kept), default=0.0)
+    return [q for q, a in kept if a >= 0.45 * biggest]
+
+
+def _detect_request(data: bytes) -> dict:
+    if not _detect_lock.acquire(blocking=False):
+        raise HTTPException(429, "busy")
+    try:
+        t0 = time.perf_counter()
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(400, "unreadable image")
+        h, w = img.shape[:2]
+        k = min(1.0, DETECT_MAX_SIDE / max(h, w))
+        if k < 1.0:
+            img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+            h, w = img.shape[:2]
+        quads = _preview_quads(detect.detect_cards(img, max_cards=24, nested=True))
+        cards = [{"quad": [[round(float(x) / w, 4), round(float(y) / h, 4)] for x, y in q]} for q in quads]
+        return {"cards": cards, "ms": round((time.perf_counter() - t0) * 1000)}
+    finally:
+        _detect_lock.release()
 
 
 @app.post("/match")

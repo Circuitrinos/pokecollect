@@ -105,6 +105,8 @@ export default function ScanPage() {
   // die gescannte Karte aus dem Rahmen ist (sonst nähme sie dieselbe nochmal).
   const needClearRef = useRef(false);
   const [waitingNext, setWaitingNext] = useState(false);
+  // Mehrere Karten / Mappenseite: Umrisse, die der Bild-Abgleich im Live-Bild findet
+  const [detQuads, setDetQuads] = useState<Pt[][] | null>(null);
   const busyRef = useRef(false);
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
@@ -185,6 +187,43 @@ export default function ScanPage() {
       videoRef.current.play().catch(() => {});
     }
   }, [cameraOn, step]);
+
+  // Live-Umrisse aus dem Bild-Abgleich (mehrere Karten, Mappenseite): ~1–2 Bilder/s
+  // klein an den Server, nacheinander (nie parallel). Ohne matcher-Dienst
+  // (available=false) einfach keine Umrisse; erneuter Versuch nach 5 s.
+  useEffect(() => {
+    setDetQuads(null);
+    if (!cameraOn || step !== "setup" || mode === "single") return;
+    let stop = false;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+    (async () => {
+      while (!stop) {
+        const v = videoRef.current;
+        if (!ctx || !v || v.videoWidth === 0 || busyRef.current) { await sleep(400); continue; }
+        const vw = v.videoWidth, vh = v.videoHeight;
+        const k = Math.min(1, 1280 / Math.max(vw, vh));
+        canvas.width = Math.round(vw * k);
+        canvas.height = Math.round(vh * k);
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        const frame = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.7));
+        const t0 = performance.now();
+        try {
+          if (!frame) throw new Error("no frame");
+          const r = await scanApi.detect(frame);
+          if (stop) break;
+          if (!r.data.available) { setDetQuads(null); await sleep(5000); continue; }
+          setDetQuads(r.data.cards.map((c) => c.quad.map(([x, y]) => [x * vw, y * vh] as Pt)));
+        } catch {
+          await sleep(3000);
+          continue;
+        }
+        await sleep(Math.max(0, 650 - (performance.now() - t0)));
+      }
+    })();
+    return () => { stop = true; };
+  }, [cameraOn, step, mode]);
 
   // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten keiner.
   const { cols: layoutCols, rows: layoutRows } = parseLayout(layout);
@@ -577,13 +616,18 @@ export default function ScanPage() {
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
                   {vidSize && (
                     <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
-                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} />
+                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads} />
                   )}
-                  {vidSize && gAspect !== null && autoCapture && (
-                    <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-3 py-1 text-xs text-white">
-                      {busy ? t.scan_analyzing : waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching}
-                    </div>
-                  )}
+                  {vidSize && (() => {
+                    const chip = busy ? t.scan_analyzing
+                      : gAspect !== null && autoCapture ? (waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching)
+                      : detQuads ? t.scan_cam_found(detQuads.length) : null;
+                    return chip && (
+                      <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-3 py-1 text-xs text-white">
+                        {chip}
+                      </div>
+                    );
+                  })()}
                   {/* Bedienung auf dem Bild (wie eine Kamera-App) – kein Scrollen nötig */}
                   <div className="absolute inset-x-0 bottom-0 grid grid-cols-3 items-center bg-gradient-to-t from-black/75 to-transparent px-3 pb-3 pt-10">
                     <button type="button" onClick={stopCamera}
@@ -948,8 +992,9 @@ export default function ScanPage() {
  * wird unverzerrt in voller Breite gezeigt): Bereich außerhalb abgedunkelt,
  * bei der Mappe das Raster, und die gefundene Karte als grüne Kontur.
  */
-function CameraGuide({ w, h, aspect, cols, rows, quad, steady }: {
+function CameraGuide({ w, h, aspect, cols, rows, quad, steady, boxes }: {
   w: number; h: number; aspect: number | null; cols: number; rows: number; quad: Pt[] | null; steady: boolean;
+  boxes?: Pt[][] | null;   // vom Bild-Abgleich gefundene Karten (mehrere Karten / Mappe)
 }) {
   const g = aspect !== null ? guideRect(w, h, aspect) : null;
   const r = g ? (Math.min(g.w / cols, g.h / rows) * 0.045) : 0;   // Kartenecken ~3 mm von 63 mm
@@ -976,6 +1021,10 @@ function CameraGuide({ w, h, aspect, cols, rows, quad, steady }: {
         <polygon points={quad.map(([x, y]) => `${x},${y}`).join(" ")} fill="rgba(34,197,94,0.12)" stroke="#22c55e"
           strokeWidth={2} vectorEffect="non-scaling-stroke" />
       )}
+      {boxes?.map((b, i) => (
+        <polygon key={i} points={b.map(([x, y]) => `${x},${y}`).join(" ")} fill="rgba(56,189,248,0.14)" stroke="#38bdf8"
+          strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      ))}
     </svg>
   );
 }

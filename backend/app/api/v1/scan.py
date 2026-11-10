@@ -137,6 +137,21 @@ async def scan_models(provider: str = "openrouter"):
     return await model_catalog.list_models(provider)
 
 
+@router.post("/detect")
+async def scan_detect(file: UploadFile = File(...)):
+    """
+    Live-Vorschau der Kamera (mehrere Karten / Mappenseite): Umrisse, die der
+    Bild-Abgleich in diesem Bild findet. available=false, wenn der matcher-
+    Dienst fehlt oder noch lädt – das UI zeigt dann einfach keine Umrisse.
+    """
+    data = await file.read()
+    if not data or len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Leeres oder zu großes Vorschaubild")
+    cards = await local_match.detect(data, base_url=settings.matcher_url,
+                                     mime_type=(file.content_type or "image/jpeg").lower())
+    return {"available": cards is not None, "cards": cards or []}
+
+
 @router.get("/status")
 def scan_status(db: Session = Depends(get_db)):
     """Welche Erkennungs-Engine ist aktiv? (provider-bewusste Anzeige im UI)"""

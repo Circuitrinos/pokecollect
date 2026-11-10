@@ -751,6 +751,12 @@ export type ScanModelList = { models: ScanModelSuggestion[]; source: "live" | "c
 
 export const scanApi = {
   status: () => api.get<ScanStatus>("/scan/status"),
+  // Live-Vorschau: Kartenumrisse im Kamerabild (normiert 0..1)
+  detect: (frame: Blob) => {
+    const form = new FormData();
+    form.append("file", frame, "frame.jpg");
+    return api.post<{ available: boolean; cards: { quad: number[][] }[] }>("/scan/detect", form);
+  },
   usage: () => api.get<ScanUsage>("/scan/usage"),
   models: (provider: string) =>
     api.get<ScanModelList>("/scan/models", { params: { provider } }),
