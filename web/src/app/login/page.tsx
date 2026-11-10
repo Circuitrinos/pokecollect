@@ -9,7 +9,7 @@ import { APP_VERSION } from "@/lib/version";
 const INPUT = "w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500";
 
 export default function LoginPage() {
-  const { t } = useI18n();
+  const { t, lang, setLang } = useI18n();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -59,7 +59,16 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-[70vh] flex items-center justify-center">
-      <div className="bg-pokemon-card rounded-lg p-6 w-full max-w-sm space-y-4">
+      <div className="relative bg-pokemon-card rounded-lg p-6 w-full max-w-sm space-y-4">
+        {/* Sprachumschalter auch vor dem Login (die Navbar ist hier ausgeblendet) */}
+        <button
+          type="button"
+          onClick={() => setLang(lang === "DE" ? "EN" : "DE")}
+          className="absolute top-3 right-3 text-gray-400 hover:text-white text-xs border border-gray-700 rounded px-2 py-1"
+          title={lang === "DE" ? "Switch to English" : "Zu Deutsch wechseln"}
+        >
+          {lang === "DE" ? "EN" : "DE"}
+        </button>
         <div className="text-center space-y-1">
           <h1 className="text-xl font-bold text-pokemon-yellow">PokéCollect</h1>
           <p className="text-gray-500 text-xs">v{APP_VERSION}</p>

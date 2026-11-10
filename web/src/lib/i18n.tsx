@@ -1270,9 +1270,21 @@ const I18nContext = createContext<I18nCtx>({
   setLang: () => {},
 });
 
+/**
+ * Startsprache: gespeicherte Wahl (Umschalter) → sonst die Browsersprache
+ * (Deutsch nur bei de-*, alles andere Englisch). Vorher fest "DE" — ein frischer
+ * Browser bzw. jeder neue Benutzer sah Login und App erst einmal auf Deutsch.
+ */
+function initialLang(): Lang {
+  if (typeof window === "undefined") return "DE";
+  const stored = localStorage.getItem("lang");
+  if (stored === "DE" || stored === "EN") return stored;
+  const first = (navigator.languages?.[0] ?? navigator.language ?? "").toLowerCase();
+  return first.startsWith("de") ? "DE" : "EN";
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const stored = typeof window !== "undefined" ? (localStorage.getItem("lang") as Lang | null) : null;
-  const [lang, setLangState] = useState<Lang>(stored ?? "DE");
+  const [lang, setLangState] = useState<Lang>(initialLang);
 
   const setLang = (l: Lang) => {
     setLangState(l);
