@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from . import detect, matcher, numocr
+from . import detect, embedding, matcher, numocr
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -40,6 +40,7 @@ store = Store()
 state: dict = {"status": "loading", "error": None, "mapping": None}
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
+shortlist = embedding.Shortlist()
 
 
 def _load_catalog_with_retry() -> dict[str, CatalogCard]:
@@ -69,14 +70,19 @@ def _startup() -> None:
             state["mapping"] = report.as_dict()
             store.add(seg)
         n_ext = extender.load_existing(catalog)
-        log.info("Ready: %s (+%d from earlier extension runs)", store.stats(), n_ext)
+        shortlist.load()
+        shortlist.update_coverage(store.known_card_ids())
+        log.info("Ready: %s (+%d from earlier extension runs), shortlist: %s", store.stats(), n_ext,
+                 "DINOv2 + pHash" if shortlist.active else "pHash")
         state["status"] = "ready"
     except Exception as exc:
         log.exception("Startup failed")
         state.update(status="error", error=str(exc))
         return
-    while EXTEND:
-        extender.run_once(catalog)
+    while EXTEND or shortlist.engine is not None:
+        if EXTEND:
+            extender.run_once(catalog)
+        shortlist.backfill(catalog, store.known_card_ids())   # embed cards that have none yet
         time.sleep(REFRESH_HOURS * 3600)
         catalog = _load_catalog_with_retry()
 
@@ -89,7 +95,7 @@ def _on_startup() -> None:
 @app.get("/health")
 def health() -> dict:
     return {**state, "store": store.stats(), "extension": extender.status,
-            "ocr": numocr.available(), "catalog": len(catalog)}
+            "embedding": shortlist.status, "ocr": numocr.available(), "catalog": len(catalog)}
 
 
 # ── matching ────────────────────────────────────────────────────────────────
@@ -113,9 +119,13 @@ def _decide(card: np.ndarray, cands: list[matcher.Candidate], quad: np.ndarray) 
     return decision, q
 
 
+def _match(card: np.ndarray, snap, top_k: int) -> list[matcher.Candidate]:
+    return matcher.match_card(card, snap, top_k=top_k, shortlist=shortlist.shortlist(card))
+
+
 def _identify(img: np.ndarray, quad: np.ndarray, top_k: int) -> tuple[matcher.Decision, np.ndarray]:
     card = detect.warp(img, quad)
-    return _decide(card, matcher.match_card(card, store.snapshot(), top_k=top_k), quad)
+    return _decide(card, _match(card, store.snapshot(), top_k), quad)
 
 
 def _best_of(img: np.ndarray, quads: list[np.ndarray], top_k: int) -> tuple[matcher.Decision, np.ndarray]:
@@ -127,7 +137,7 @@ def _best_of(img: np.ndarray, quads: list[np.ndarray], top_k: int) -> tuple[matc
     best = None
     for q in quads:
         card = detect.warp(img, q)
-        cands = matcher.match_card(card, snap, top_k=top_k)
+        cands = _match(card, snap, top_k)
         key = (cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers) if cands else (False, -1, -1)
         if best is None or key > best[0]:
             best = (key, card, cands, q)
@@ -155,7 +165,7 @@ def _refine(img, card, cands, q, snap, top_k):
         if not detect.plausible_quad(q2, img.shape):
             break
         card2 = detect.warp(img, q2)
-        cands2 = matcher.match_card(card2, snap, top_k=top_k)
+        cands2 = _match(card2, snap, top_k)
         if not cands2 or (cands2[0].geo_ok, cands2[0].art_inliers, cands2[0].inliers) <= \
                 (cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers):
             break
@@ -221,7 +231,7 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
         scored = []
         for det in detect.detect_cards(img, max_cards=24, nested=True):
             card = detect.warp(img, det.quad)
-            cands = matcher.match_card(card, snap, top_k=top_k)
+            cands = _match(card, snap, top_k)
             if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
                 continue
             q = det.quad
@@ -245,4 +255,5 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
         d, q = _best_of(img, opts, top_k)
         cards.append(_result(d, q, img.shape, None))
 
-    return {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000)}
+    return {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
+            "shortlist": "dinov2" if shortlist.active else "phash"}

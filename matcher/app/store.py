@@ -78,6 +78,7 @@ class Snapshot:
     seg_of: np.ndarray     # (T,) int32
     idx_in_seg: np.ndarray  # (T,) int32
     card_id: list[str]     # (T,)
+    by_card: dict[str, list[int]] = field(default_factory=dict)  # card id -> template rows
 
     def __len__(self) -> int:
         return len(self.card_id)
@@ -113,8 +114,11 @@ class Store:
             ix.append(np.asarray(keep, np.int32))
             cid.extend(seg.card_ids[j] for j in keep)
         if ph:
+            by_card: dict[str, list[int]] = {}
+            for t, c in enumerate(cid):
+                by_card.setdefault(c, []).append(t)
             self._snap = Snapshot(list(self._segments), np.concatenate(ph), np.concatenate(hi),
-                                  np.concatenate(so), np.concatenate(ix), cid)
+                                  np.concatenate(so), np.concatenate(ix), cid, by_card)
         else:
             self._snap = Snapshot(list(self._segments), np.zeros(0, np.uint64),
                                   np.zeros((0, 256), np.float32), np.zeros(0, np.int32),

@@ -1,6 +1,7 @@
 """
-Identify a straightened card: pHash/histogram prefilter -> ORB + RANSAC
-refine -> decide whether there is a clean choice or the user must pick.
+Identify a straightened card: shortlist (DINOv2 embedding + pHash, or pHash
+alone) -> ORB + RANSAC refine -> decide whether there is a clean choice or the
+user must pick.
 """
 from __future__ import annotations
 
@@ -70,7 +71,13 @@ def _bhattacharyya(q: np.ndarray, hs: np.ndarray) -> np.ndarray:
     return np.sqrt(np.clip(1.0 - bc, 0.0, 1.0))
 
 
-def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: int = 300) -> list[Candidate]:
+def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: int = 300,
+               shortlist: tuple[list[str], int] | None = None) -> list[Candidate]:
+    """
+    shortlist = (card ids from the embedding, n): check those cards' templates
+    plus the n best pHash templates (n < 0: the full pHash preselection, used
+    while embeddings don't cover every card yet). None = pHash only.
+    """
     if len(snap) == 0:
         return []
     f = features.extract(card_bgr)
@@ -82,11 +89,16 @@ def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: 
     d180 = np.bitwise_count(snap.phash ^ q180).astype(np.int32)
     dist = np.minimum(d0, d180)
 
-    pool = min(len(dist), 2 * preselect)
-    near = np.argpartition(dist, pool - 1)[:pool] if pool < len(dist) else np.arange(len(dist))
-    hd = _bhattacharyya(f.hist, snap.hist[near])
-    order = np.lexsort((hd, dist[near]))[:preselect]
-    chosen = near[order]
+    n_phash = preselect if shortlist is None or shortlist[1] < 0 else shortlist[1]
+    chosen = np.zeros(0, np.int64)
+    if n_phash > 0:
+        pool = min(len(dist), 2 * n_phash)
+        near = np.argpartition(dist, pool - 1)[:pool] if pool < len(dist) else np.arange(len(dist))
+        hd = _bhattacharyya(f.hist, snap.hist[near])
+        chosen = near[np.lexsort((hd, dist[near]))[:n_phash]]
+    if shortlist is not None:
+        emb_t = [t for cid in shortlist[0] for t in snap.by_card.get(cid, ())]
+        chosen = np.array(list(dict.fromkeys(emb_t + [int(t) for t in chosen])), np.int64)
 
     def ratio_matches(t: int):
         seg = snap.segments[int(snap.seg_of[t])]
