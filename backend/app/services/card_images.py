@@ -337,17 +337,18 @@ async def backfill_images_task(force: bool = False, user_id: int | None = None):
         cards = db.scalars(q).all()
         log.info(f"Backfill gestartet: {len(cards)} Karten")
         ok = 0
+        from app.services.image_fallback import fallback_image
         for card in cards:
             set_id = card.set_id or resolve_set_id(db, card.set_edition)
-            if not set_id:
-                continue
-            tc = await fetch_tcgdex_card(set_id, card.karten_nr, card.sprache)
-            if not tc:
-                continue
-            overwrite = force or not (card.bild_karte_pfad or card.bild_pokedex_url)
-            apply_card_to_model(card, tc, overwrite_image=overwrite)
-            regulation.apply_to_card(db, card)
-            ok += 1
+            tc = await fetch_tcgdex_card(set_id, card.karten_nr, card.sprache) if set_id else None
+            if tc:
+                overwrite = force or not (card.bild_karte_pfad or card.bild_pokedex_url)
+                apply_card_to_model(card, tc, overwrite_image=overwrite)
+                regulation.apply_to_card(db, card)
+            # kein TCGdex-Bild → offizielle Datenbank (pokemon.com) / Katalog
+            fell_back = await fallback_image(db, card, tc) if not card.bild_karte_url else None
+            if tc or fell_back:
+                ok += 1
         db.commit()
         log.info(f"Backfill abgeschlossen: {ok}/{len(cards)} Karten angereichert")
     finally:

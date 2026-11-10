@@ -80,6 +80,10 @@ async def _daily_catalog_sync(db: Session):
     # Vorrang, aber der €-Repass läuft NEBENHER mit; sonst kämen die schon
     # angereicherten ~11,8k Zeilen erst nach Abschluss der Anreicherung dran.
     await schritt("€-Repass", refresh_catalog_eur(db, limit=1000))
+    # Bilder, die TCGdex fehlen: offizielle Datenbank (pokemon.com), ersetzt
+    # auch TCGplayer-Produktfotos (image_fallback.py)
+    from app.services.image_fallback import fill_catalog_from_pokemon_com
+    await schritt("pokemon.com-Bilder", fill_catalog_from_pokemon_com(db, limit=500))
     # Regulation Marks für vor dieser Version angereicherte Zeilen nachholen
     # (eigene Karten zuerst) und die Legalität eigener Karten neu rechnen —
     # neue gleichnamige Reprints machen alte Trainer wieder Standard-legal.

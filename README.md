@@ -51,7 +51,7 @@ The screenshots are made with `e2e/screenshots.mjs` (see [Updating the screensho
 - **Photo pipeline:** EXIF normalization, perspective correction, 4-corner editor with magnifier, rotate/flip; the original photo is kept for re-cropping.
 
 ### Data & prices
-- **TCGdex as the main data source** — card data, images and Cardmarket prices, free and without an API key.
+- **TCGdex as the main data source** — card data, images and Cardmarket prices, free and without an API key. Cards TCGdex has no image for get the scan from the **official Pokémon card database** (pokemon.com), and only then a TCGplayer product photo.
 - **EUR or USD** per instance: in USD mode card values come from TCGplayer (Japanese cards via TCGCSV), otherwise from Cardmarket (30-day average or daily price).
 - **Daily jobs** — price refresh (hour configurable) plus catalog sync, enrichment, price re-check, regulation marks and the optional local catalog image cache.
 - **Card images through your own server** — images and placeholders of your cards are fetched and cached by the API, so the browser doesn't talk to the image hosts for them (the catalog and scan pages still load images directly).
@@ -77,7 +77,7 @@ The screenshots are made with `e2e/screenshots.mjs` (see [Updating the screensho
                      ┌──► web (Next.js 15)
 browser ──► gateway ─┤
             (:3011)  └──► api (FastAPI) ──► PostgreSQL 16
-                           │   ├──► TCGdex (cards, images, prices), TCGCSV (TCGplayer prices)
+                           │   ├──► TCGdex (cards, images, prices), pokemon.com (fallback images), TCGCSV (TCGplayer)
                            │   ├──► Gemini / OpenAI / OpenRouter (optional scan readers)
                            │   └──► OIDC provider, e.g. Authentik (optional)
                            └──► matcher (image matching; reads the catalog from PostgreSQL)
@@ -87,7 +87,7 @@ browser ──► gateway ─┤
 - **Frontend** `web/` — Next.js 15 App Router, Tailwind CSS, Axios. `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_CURRENCY` are baked in at **build time**. With an empty API URL the browser calls `/api` on its own origin, which the gateway forwards.
 - **Matcher** `matcher/` — optional service for the *Image match* reader; see [matcher/README.md](matcher/README.md).
 - **Gateway** — a small reverse proxy (Caddy) that sends `/api/*`, `/images/*`, `/bild-spiegel/*`, `/health`, `/docs` and `/openapi.json` to the api and everything else to web. Without it, the browser needs the api's own address in `NEXT_PUBLIC_API_URL`.
-- **Images** — card images from TCGdex/TCGplayer/pokemon.com are fetched by the API (`/bild-spiegel`: signed paths, no redirects followed, fixed hosts) and served like own photos, which come from the API's `/images` mount. The web image optimizer (`next/image`) only accepts the API's own origin.
+- **Images** — card images from TCGdex, pokemon.com and TCGplayer are fetched by the API (`/bild-spiegel`: signed paths, no redirects followed, fixed hosts) and served like own photos, which come from the API's `/images` mount. The web image optimizer (`next/image`) only accepts the API's own origin.
 - **Auth** — every API route (except login, `/health`, `/images` and the signed `/bild-spiegel` paths) requires a JWT. There is no built-in default password: the API refuses to start without `APP_PASSWORD_HASH` (or a hash set in the app). External access can additionally be protected by a reverse-proxy login (see [deploy/README.md](deploy/README.md)).
 
 ---

@@ -42,6 +42,7 @@ from app.services.tcgdex import is_allowed_image_url
 _HOST_QUELLE = {
     "assets.tcgdex.net": "tcgdex",
     "tcgplayer-cdn.tcgplayer.com": "tcgplayer",
+    "assets.pokemon.com": "pokemon",
 }
 
 

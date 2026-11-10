@@ -465,7 +465,7 @@ const DE = {
     tcgdex: "TCGdex", manuell: "ohne TCGdex-Verknüpfung",
   } as Record<string, string>)[v] ?? null,
   detail_provenance_image: (v: string): string | null => ({
-    foto: "eigenes Foto", url: "eigene Bild-URL", tcgdex: "TCGdex", tcgplayer: "TCGplayer",
+    foto: "eigenes Foto", url: "eigene Bild-URL", tcgdex: "TCGdex", tcgplayer: "TCGplayer", pokemon: "pokemon.com",
   } as Record<string, string>)[v] ?? null,
   detail_provenance_price: (v: string): string | null => ({
     cardmarket: "Cardmarket", oauth: "Cardmarket (OAuth)", tcgplayer: "TCGplayer",
@@ -1185,7 +1185,7 @@ const EN: typeof DE = {
     tcgdex: "TCGdex", manuell: "not linked to TCGdex",
   } as Record<string, string>)[v] ?? null,
   detail_provenance_image: (v: string): string | null => ({
-    foto: "own photo", url: "custom image URL", tcgdex: "TCGdex", tcgplayer: "TCGplayer",
+    foto: "own photo", url: "custom image URL", tcgdex: "TCGdex", tcgplayer: "TCGplayer", pokemon: "pokemon.com",
   } as Record<string, string>)[v] ?? null,
   detail_provenance_price: (v: string): string | null => ({
     cardmarket: "Cardmarket", oauth: "Cardmarket (OAuth)", tcgplayer: "TCGplayer",

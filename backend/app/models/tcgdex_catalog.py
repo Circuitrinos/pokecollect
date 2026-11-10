@@ -72,6 +72,8 @@ class TcgdexCatalog(Base):
     # Text schon einmal geholt (Nachholer für vorher geprüfte Zeilen).
     effect_key = Column(Text, nullable=True)
     effect_checked = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Bild-Rückfall pokemon.com (image_fallback.py): wann zuletzt nachgesehen
+    pokemon_com_checked = Column(DateTime, nullable=True)
     # Varianten-$-Preise (#63): Subtypen des Basisprodukts (Holofoil/Reverse
     # Holofoil) + Muster-PRODUKTE („(Poke Ball Pattern)"/„(Master Ball Pattern)",
     # eigene TCGplayer-Produkte je Karte). Datenstand teilt price_usd_updated.

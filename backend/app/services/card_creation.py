@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.card import PokemonCard
-from app.services import regulation
+from app.services import image_fallback, regulation
 from app.services.catalog_lookup import catalog_row_for
 from app.services.card_image_service import (
     apply_card_to_model,
@@ -52,6 +52,12 @@ async def _trigger_image_fetch(card_id: int):
         # Exakte Auflösung über Set + aufgedruckte Nummer (sofern Nummer da).
         tc = await fetch_tcgdex_card(set_id, card.karten_nr, card.sprache) if set_id else None
         matched_exact = tc is not None
+        if tc is None and await image_fallback.fallback_image(db, card):
+            # TCGdex kennt die Karte nicht, die offizielle Datenbank (oder der
+            # Katalog) hat aber genau diese Karte — besser als ein Artbild.
+            regulation.apply_to_card(db, card)
+            db.commit()
+            return
         # Issue 2: keine Nummer/kein Treffer → Fallback über Namenssuche
         # (wahrscheinliches Bild der gleichen Spezies).
         if tc is None:
@@ -74,6 +80,9 @@ async def _trigger_image_fetch(card_id: int):
             row = catalog_row_for(db, card.tcgdex_card_id)
             if row is not None and row.name_en:
                 card.englischer_name = row.name_en
+        # TCGdex hat die Karte, aber kein Bild → pokemon.com / Katalog
+        if exact and not card.bild_karte_url:
+            await image_fallback.fallback_image(db, card, tc)
         regulation.apply_to_card(db, card)
         db.commit()
     finally:

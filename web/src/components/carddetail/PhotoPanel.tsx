@@ -64,6 +64,9 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const { src: imgSrc, isPlaceholder } = cardImageSrc(card, API_BASE, true, "full");
   // #120: nach dem, was angezeigt wird (Spiegel), nicht nach den Rohfeldern
   const isAutoCard = !card.bild_karte_pfad && !card.bild_pokedex_spiegel && !!card.bild_karte_spiegel;
+  // Woher das automatische Bild kommt (TCGdex, offizielle Datenbank, TCGplayer)
+  const autoSource = card.bild_karte_url?.includes("assets.pokemon.com") ? "pokemon.com"
+    : card.bild_karte_url?.includes("tcgplayer") ? "TCGplayer" : "TCGdex";
   // Tap/Klick aufs Bild öffnet die Lightbox — außer direkt nach einem Wisch.
   const handleImageClick = () => {
     if (swipeSuppressClick.current) { swipeSuppressClick.current = false; return; }
@@ -218,7 +221,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
             />
             {isAutoCard && (
               <div className="absolute bottom-0 inset-x-0 bg-black/60 text-center text-blue-400 text-xs py-1">
-                TCGdex
+                {autoSource}
               </div>
             )}
             {isPlaceholder && (
