@@ -20,6 +20,9 @@ class CatalogItem(BaseModel):
     category: Optional[str] = None
     regulation_mark: Optional[str] = None   # Turnier-Legalität (services/regulation.py)
     image_url: Optional[str] = None
+    # Ohne TCGdex-Bild: wahrscheinliche URL in der offiziellen Datenbank
+    # (pokemon.com, ungeprüft — die Anzeige blendet sie bei 404 aus)
+    image_fallback: Optional[str] = None
     variants_normal: Optional[bool] = None
     variants_reverse: Optional[bool] = None
     variants_holo: Optional[bool] = None

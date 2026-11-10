@@ -152,3 +152,70 @@ async def find_many(items: list[tuple[str, str, str]], conc: int = 6) -> dict[st
             if sid.lower() in _known:
                 await asyncio.gather(*(one(k, sid, l) for k, l in rest))
     return found
+
+
+# ── Links von pokemon.com (Nutzer kopiert sie aus seinem Browser) ────────────
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
+_SERIES = re.compile(r"/series?/([A-Za-z0-9.\-]+)/([A-Za-z0-9.\-]+)/?$")
+_IMAGE = re.compile(r"/cards/web/([A-Za-z0-9.\-]+)/\1_([A-Z]{2})_([A-Za-z0-9.\-]+)\.png$")
+
+
+def parse_link(text: Optional[str]) -> Optional[dict]:
+    """
+    Kartenseite oder Bildadresse von pokemon.com (auch eingebettet in einen
+    geteilten Text) → {"code", "number", "image"}. "image" nur, wenn direkt
+    eine Bildadresse kam. None, wenn nichts davon erkennbar ist.
+      …/pokemon-tcg/pokemon-cards/series/swsh12/65/      → ("swsh12", "65")
+      …/cms2/img/cards/web/SWSHP/SWSHP_EN_SWSH300.png     → ("SWSHP", "SWSH300")
+    """
+    from urllib.parse import urlsplit
+    if not text:
+        return None
+    for raw in _URL_IN_TEXT.findall(text.strip()) or [text.strip()]:
+        try:
+            parts = urlsplit(raw)
+        except ValueError:
+            continue
+        host = (parts.hostname or "").lower()
+        if host == HOST:
+            m = _IMAGE.search(parts.path)
+            if m:
+                return {"code": m.group(1), "number": m.group(3),
+                        "image": f"https://{HOST}{parts.path}" if m.group(2) == "EN" else None}
+        if host.endswith("pokemon.com"):
+            m = _SERIES.search(parts.path)
+            if m and _SAFE.match(m.group(1)) and _SAFE.match(m.group(2)):
+                return {"code": m.group(1), "number": m.group(2), "image": None}
+    return None
+
+
+def image_urls_for(code: str, number: str) -> list[str]:
+    c = code.upper()
+    return [f"{base}{c}/{c}_EN_{number}.png" for base in _BASES]
+
+
+async def image_for_link(link: dict) -> Optional[str]:
+    """Bild zur Kartenseite: die Adresse folgt aus Set-Code + Nummer (geprüft)."""
+    urls = [link["image"]] if link.get("image") else image_urls_for(link["code"], link["number"])
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers={"User-Agent": _UA}) as client:
+        for url in urls:
+            if await _exists(client, url):
+                return url
+    return None
+
+
+def tcgdex_set_candidates(code: str) -> list[str]:
+    """pokemon.com-Set-Code → mögliche TCGdex-Set-IDs ("SV8PT5" → "sv08.5",
+    "SWSH45" → "swsh4.5", "SWSHP" → "swshp")."""
+    c = code.strip().lower()
+    out = [sid for sid, codes in _SPECIAL.items() if c.upper() in codes]
+    m = re.match(r"^([a-z]+?)(\d+)(?:pt(\d))?([a-z]?)$", c)
+    if m:
+        prefix, num, half, suffix = m.groups()
+        for n in dict.fromkeys([num.lstrip("0") or "0", num.zfill(2)]):
+            out.append(f"{prefix}{n}.{half}{suffix}" if half else f"{prefix}{n}{suffix}")
+        if not half and len(num) >= 2 and num.endswith("5"):          # SWSH45 → swsh4.5
+            out.append(f"{prefix}{num[:-1]}.5{suffix}")
+    out.append(c)
+    return list(dict.fromkeys(out))

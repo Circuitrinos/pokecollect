@@ -222,3 +222,88 @@ def test_umschalter_sucht_katalogbild(client, db, monkeypatch, png_bytes):
     finally:
         db.execute(delete(PokemonSet).where(PokemonSet.code == "pkcomp"))
         db.commit()
+
+
+def test_richtige_karte_verknuepfen(client, db, png_bytes):
+    """Auswähler: Karte mit eigenem Foto auf eine Katalogkarte ohne TCGdex-Bild
+    umstellen — Bild aus der offiziellen Datenbank, Foto bleibt erhalten."""
+    url = S + "SWSHP/SWSHP_EN_SWSH300.png"
+    db.add(TcgdexCatalog(card_id="pkcom-swshp-SWSH300", region="west", set_id="swshp", local_id="SWSH300",
+                         name="Unown V", name_en="Unown V", rarity="Rare Holo V", enriched=True))
+    db.commit()
+    r = client.post("/api/v1/cards", json={"kartenname": "pkcom-falsch", "besessen": True, "sprache": "EN",
+                                           "set_edition": "Silver Tempest (SIT)", "karten_nr": "065/195"})
+    cid = r.json()["id"]
+    client.post(f"/api/v1/cards/{cid}/image", files={"file": ("c.png", png_bytes, "image/png")})
+    r = client.post(f"/api/v1/cards/{cid}/link-catalog", json={"card_id": "pkcom-swshp-SWSH300", "image_url": url})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["tcgdex_card_id"] == "pkcom-swshp-SWSH300" and b["karten_nr"] == "SWSH300"
+    assert b["kartenname"] == "Unown V" and b["bild_karte_url"] == url
+    assert b["bild_karte_pfad"] is None and b["bild_scan_pfad"]          # Foto → Scan-Foto
+    db.expire_all()
+    assert db.get(TcgdexCatalog, "pkcom-swshp-SWSH300").image_source == "pokemon.com"
+    # fremde Bild-Adressen werden nicht übernommen, unbekannte Katalogkarte → 404
+    r = client.post(f"/api/v1/cards/{cid}/link-catalog", json={"card_id": "pkcom-swshp-SWSH300",
+                                                              "image_url": "https://evil.example/x.png"})
+    assert r.json()["bild_karte_url"] == url
+    assert client.post(f"/api/v1/cards/{cid}/link-catalog", json={"card_id": "gibtsnicht-1"}).status_code == 404
+    # Katalog-Liste schlägt für Karten ohne TCGdex-Bild die offizielle Adresse vor
+    db.add(TcgdexCatalog(card_id="pkcom-sv08-162", region="west", set_id="sv08", local_id="162", name="pkcomlist"))
+    db.commit()
+    item = next(i for i in client.get("/api/v1/catalog", params={"q": "pkcomlist"}).json()["items"]
+                if i["card_id"] == "pkcom-sv08-162")
+    assert item["image_url"] is None and item["image_fallback"] == S + "SV08/SV08_EN_162.png"
+    client.delete(f"/api/v1/cards/{cid}")
+
+
+def test_link_erkennen():
+    p = pokemon_com.parse_link
+    assert p("https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/series/swsh12/65") == \
+        {"code": "swsh12", "number": "65", "image": None}
+    assert p("https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/series/swshp/SWSH300/")["number"] == "SWSH300"
+    # geteilter Text vom Handy: Titel + Link
+    assert p("Unown V | Pokémon TCG https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/series/sv8pt5/117/")["code"] == "sv8pt5"
+    img = S + "SWSHP/SWSHP_EN_SWSH300.png"
+    assert p(img) == {"code": "SWSHP", "number": "SWSH300", "image": img}
+    assert p("https://evil.example/series/swsh12/65") is None
+    assert p("https://www.pokemon.com/us/pokemon-tcg/pokemon-cards?cardName=unown+v") is None
+    assert p("kein link") is None and p(None) is None
+    assert pokemon_com.image_urls_for("swsh12", "65")[0] == S + "SWSH12/SWSH12_EN_65.png"
+
+
+def test_set_code_zurueck_zu_tcgdex():
+    c = pokemon_com.tcgdex_set_candidates
+    assert "sv08.5" in c("SV8PT5") and "sv08" in c("SV08") and "sv08" in c("sv8")
+    assert "swsh4.5" in c("SWSH45") and "swsh12.5" in c("SWSH12PT5")
+    assert c("swshp")[0] == "swshp" and "sv10.5w" in c("RSV10PT5")
+
+
+def test_link_von_pokemon_com_uebernehmen(client, db, monkeypatch, png_bytes):
+    url = S + "SWSHP/SWSHP_EN_SWSH300.png"
+
+    async def fake_image(link):
+        return url if link["code"].lower() == "swshp" else None
+
+    monkeypatch.setattr(pokemon_com, "image_for_link", fake_image)
+    db.add(TcgdexCatalog(card_id="pkcom-lnk-SWSH300", region="west", set_id="swshp", local_id="SWSH300",
+                         name="Unown V", name_en="Unown V", enriched=True))
+    db.commit()
+    r = client.post("/api/v1/cards", json={"kartenname": "pkcom-link", "besessen": True, "sprache": "EN"})
+    cid = r.json()["id"]
+    client.post(f"/api/v1/cards/{cid}/image", files={"file": ("c.png", png_bytes, "image/png")})
+    try:
+        r = client.post(f"/api/v1/cards/{cid}/link-pokemon-com",
+                        json={"url": "Unown V https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/series/swshp/SWSH300/"})
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["bild_karte_url"] == url and b["bild_karte_pfad"] is None and b["bild_scan_pfad"]
+        # catalog row pkcom-lnk-SWSH300 shares set+number with any real swshp row; either is a correct link
+        assert b["karten_nr"] == "SWSH300" and b["kartenname"] == "Unown V"
+        bad = client.post(f"/api/v1/cards/{cid}/link-pokemon-com", json={"url": "https://example.com/nothing"})
+        assert bad.status_code == 422
+        none = client.post(f"/api/v1/cards/{cid}/link-pokemon-com",
+                           json={"url": "https://www.pokemon.com/us/pokemon-tcg/pokemon-cards/series/xx9/1"})
+        assert none.status_code == 404
+    finally:
+        client.delete(f"/api/v1/cards/{cid}")

@@ -1,5 +1,6 @@
 "use client";
 import { USD_MODE } from "@/lib/currency";
+import CatalogCardImage from "@/components/CatalogCardImage";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { CatalogItem, CatalogDetail, Collection, catalogApi } from "@/lib/api";
@@ -119,9 +120,8 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
 
         <div className="flex gap-4">
           <div className="w-40 shrink-0">
-            {card.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={card.image_url} alt={name} className="w-full rounded" />
+            {card.image_url || card.image_fallback ? (
+              <CatalogCardImage url={card.image_url} fallback={card.image_fallback} alt={name} className="w-full rounded" lazy={false} />
             ) : (
               <div className="aspect-[63/88] bg-gray-800 rounded flex items-center justify-center text-gray-600 text-xs text-center p-2">{name}</div>
             )}

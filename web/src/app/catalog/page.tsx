@@ -1,5 +1,6 @@
 "use client";
 import { USD_MODE } from "@/lib/currency";
+import CatalogCardImage from "@/components/CatalogCardImage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import toast from "react-hot-toast";
@@ -284,12 +285,8 @@ export default function CatalogPage() {
                         {c.region}
                       </span>
                     )}
-                    {c.image_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={c.image_url} alt={name} className="w-full h-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-gray-600 text-[11px] text-center p-2">{name}</div>
-                    )}
+                    <CatalogCardImage url={c.image_url} fallback={c.image_fallback} alt={name}
+                      className="w-full h-full object-cover" />
                   </div>
                   <div className="px-1.5 py-1">
                     <div className="flex items-center gap-1">

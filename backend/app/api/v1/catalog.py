@@ -17,7 +17,7 @@ from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
-from app.services import catalog as catalog_svc, catalog_images, regulation, tcgdex
+from app.services import catalog as catalog_svc, catalog_images, pokemon_com, regulation, tcgdex
 from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
 from app.services.settings import get_setting
@@ -122,6 +122,9 @@ def list_catalog(
         # #43: lokal gecachtes Bild bevorzugen, sonst unverändert die CDN-URL
         # (EINE Hilfsfunktion für Liste/Detail/Soll-Slots, DRY).
         ci.image_url = catalog_images.resolve_catalog_image_url(r.image_pfad, r.image_url, base_url)
+        if not ci.image_url and r.region == "west":
+            cands = pokemon_com.candidate_urls(r.set_id, r.local_id)
+            ci.image_fallback = cands[0] if cands else None
         key = r.card_id.upper() if r.card_id else ""
         ci.owned = key in owned_ids
         ci.in_pokedex = key in pokedex_ids

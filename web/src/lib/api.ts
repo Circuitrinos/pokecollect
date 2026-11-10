@@ -282,6 +282,11 @@ export const cardApi = {
   deleteImage: (id: number) => api.delete<Card>(`/cards/${id}/image`),
   // Katalogbild statt eigenem Foto zeigen; sucht eins, falls noch keins bekannt
   useCatalogImage: (id: number) => api.post<Card>(`/cards/${id}/catalog-image`),
+  // Mit einer Katalogkarte verknüpfen („Richtige Karte finden")
+  // Link von pokemon.com (Kartenseite/Bildadresse), im eigenen Browser gefunden
+  linkPokemonCom: (id: number, url: string) => api.post<Card>(`/cards/${id}/link-pokemon-com`, { url }),
+  linkCatalog: (id: number, catalogCardId: string, imageUrl?: string | null) =>
+    api.post<Card>(`/cards/${id}/link-catalog`, { card_id: catalogCardId, image_url: imageUrl ?? null }),
 
   stats: () => api.get<StatsResponse>("/cards/meta/stats"),
 
@@ -693,6 +698,7 @@ export type CatalogItem = {
   category: string | null;
   regulation_mark?: string | null;   // Turnier-Legalität
   image_url: string | null;
+  image_fallback?: string | null;    // offizielle Datenbank, falls TCGdex kein Bild hat
   variants_normal: boolean | null;
   variants_reverse: boolean | null;
   variants_holo: boolean | null;

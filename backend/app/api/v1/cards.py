@@ -1,4 +1,5 @@
 import json
+from urllib.parse import urlparse
 import math
 from typing import Literal, Optional, Union
 
@@ -26,8 +27,9 @@ from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
+from app.models.tcgdex_catalog import TcgdexCatalog
 from app.services.catalog_lookup import catalog_row_for
-from app.services import card_bulk, image_fallback, regulation
+from app.services import card_bulk, image_fallback, pokemon_com, regulation
 from app.services.tcgdex import is_allowed_image_url
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
@@ -478,6 +480,100 @@ async def show_catalog_image(card_id: int, db: Session = Depends(get_db)):
         regulation.apply_to_card(db, card)
         db.commit()
         db.refresh(card)
+    return _card_response(db, card)
+
+
+class LinkCatalogRequest(BaseModel):
+    card_id: str = Field(..., min_length=1, max_length=64)       # TCGdex-ID der gewählten Katalogkarte
+    image_url: Optional[str] = Field(None, max_length=500)       # das im Auswähler gezeigte Bild
+
+
+@router.post("/{card_id}/link-catalog", response_model=CardResponse)
+async def link_catalog(card_id: int, req: LinkCatalogRequest, db: Session = Depends(get_db)):
+    """
+    „Richtige Karte finden": die Karte mit einer Katalogkarte verknüpfen
+    (Set, Nummer, Seltenheit, Namen, TCGdex-ID) und deren Bild anzeigen. Ein
+    eigenes Foto bleibt als Scan-Foto erhalten (Umschalter „Mein Foto").
+    """
+    card = _card_or_404(card_id, db)
+    row = catalog_row_for(db, req.card_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
+    await _link_to_row(db, card, row, req.image_url)
+    db.commit()
+    db.refresh(card)
+    return _card_response(db, card)
+
+
+async def _link_to_row(db: Session, card: PokemonCard, row, image_url: Optional[str]) -> None:
+    """Karte auf eine Katalogkarte umstellen (Set, Nummer, Namen, Seltenheit,
+    TCGdex-ID) und deren Bild zeigen; ein eigenes Foto wird zum Scan-Foto."""
+    from app.services.catalog import _build_card_from_catalog
+
+    fields = await _build_card_from_catalog(db, row, card.sprache)
+    for key in ("kartenname", "englischer_name", "set_edition", "karten_nr", "seltenheit",
+                "tcgdex_card_id", "set_id", "dex_id", "illustrator"):
+        if fields.get(key) is not None:
+            setattr(card, key, fields[key])
+    if not card.pokedex_nr and fields.get("pokedex_nr"):
+        card.pokedex_nr = fields["pokedex_nr"]
+    url = None
+    if image_url and is_allowed_image_url(image_url):
+        url = image_url
+    elif fields.get("bild_karte_url"):
+        url = fields["bild_karte_url"]
+    else:
+        card.bild_karte_url = None
+        url = await image_fallback.find_catalog_image(db, card)
+    if url:
+        _show_image(db, card, url)
+        if (not row.image_url or row.image_source == "tcgplayer") and urlparse(url).hostname == pokemon_com.HOST:
+            row.image_url, row.image_source, row.image_pfad = url, image_fallback.SOURCE, None
+    card.regulation_mark = None                      # neue Karte → Zeichen aus dem Katalog
+    regulation.apply_to_card(db, card)
+
+
+def _show_image(db: Session, card: PokemonCard, url: str) -> None:
+    card.bild_karte_url = url
+    if card.bild_karte_pfad:
+        card_bulk.use_catalog_image(db, card)
+
+
+class PokemonComLinkRequest(BaseModel):
+    url: str = Field(..., min_length=10, max_length=2000)    # Kartenseite/Bildadresse oder geteilter Text
+
+
+@router.post("/{card_id}/link-pokemon-com", response_model=CardResponse)
+async def link_pokemon_com(card_id: int, req: PokemonComLinkRequest, db: Session = Depends(get_db)):
+    """
+    Link von pokemon.com, den der Nutzer in seinem Browser gefunden hat
+    (Kartenseite oder Bildadresse): Bild übernehmen und — wenn die Karte im
+    Katalog steht — die Karte damit verknüpfen. Kein Abruf der Seite selbst:
+    Set und Nummer stehen im Link, das Bild liegt unter fester Adresse.
+    """
+    card = _card_or_404(card_id, db)
+    link = pokemon_com.parse_link(req.url)
+    if link is None:
+        raise HTTPException(status_code=422, detail="Kein Kartenlink von pokemon.com")
+    url = await pokemon_com.image_for_link(link)
+    if url is None:
+        raise HTTPException(status_code=404, detail="Zu diesem Link gibt es kein Kartenbild")
+    sets = pokemon_com.tcgdex_set_candidates(link["code"])
+    num = link["number"]
+    variants = {v.upper() for v in (num, num.lstrip("0"), num.zfill(3))}
+    row = db.scalars(
+        select(TcgdexCatalog)
+        .where(TcgdexCatalog.set_id.in_(sets), TcgdexCatalog.region == "west")
+        .where(or_(func.upper(TcgdexCatalog.local_id).in_(variants),
+                   func.ltrim(TcgdexCatalog.local_id, "0") == (num.lstrip("0") or "0")))
+        .order_by(TcgdexCatalog.card_id)
+    ).first()
+    if row is not None:
+        await _link_to_row(db, card, row, url)
+    else:
+        _show_image(db, card, url)                   # nur das Bild — die Karte kennt der Katalog nicht
+    db.commit()
+    db.refresh(card)
     return _card_response(db, card)
 
 

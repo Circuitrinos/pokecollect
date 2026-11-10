@@ -4,6 +4,7 @@ import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
 import { API_BASE, Card, cardApi } from "@/lib/api";
 import CornerEditor from "@/components/CornerEditor";
+import CardFinder from "@/components/carddetail/CardFinder";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { imageUrl, cardImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -178,6 +179,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const canShowCatalog = showsOwn;
   const canShowOwn = !showsOwn && !!card.bild_scan_pfad;
   const [switching, setSwitching] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
   const switchPicture = async (to: "catalog_image" | "own_photo") => {
     setSwitching(true);
     try {
@@ -267,6 +269,13 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
             {t.detail_picture_catalog}
           </button>
         </div>
+      )}
+      <button type="button" onClick={() => setFinderOpen(true)}
+        className="w-full mt-1 text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5">
+        🔍 {t.finder_open}
+      </button>
+      {finderOpen && (
+        <CardFinder card={card} onClose={() => setFinderOpen(false)} onLinked={(c) => onCardSaved(c)} />
       )}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
