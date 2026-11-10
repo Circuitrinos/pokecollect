@@ -49,14 +49,40 @@ def parse_species_names(text: str) -> dict[int, tuple[str | None, str | None]]:
     return {nr: (de, en) for nr, (de, en) in out.items()}
 
 
+_cache: dict[int, tuple[str | None, str | None]] | None = None
+
+
 async def fetch_species_names() -> dict[int, tuple[str | None, str | None]]:
+    """Namensliste (einmal je Prozess geladen — neue Benutzer bekommen sie auch)."""
+    global _cache
+    if _cache is not None:
+        return _cache
     async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
         r = await client.get(SPECIES_NAMES_URL)
         r.raise_for_status()
     names = parse_species_names(r.text)
     if len(names) < POKEDEX_MAX * 0.9:  # Format geändert? Lieber abbrechen als halb füllen.
         raise ValueError(f"unerwartete Namensliste ({len(names)} Spezies)")
+    _cache = names
     return names
+
+
+def names_from_placeholders(db: Session) -> dict[int, tuple[str | None, str | None]]:
+    """
+    Offline-Ersatz für die PokeAPI-Liste: Namen aus den Pokédex-Platzhaltern
+    ALLER Benutzer (nicht besessen, nicht auf der Wunschliste = Artname).
+    """
+    from sqlalchemy import func
+
+    rows = db.execute(
+        select(PokemonCard.pokedex_nr, func.min(PokemonCard.kartenname), func.min(PokemonCard.englischer_name))
+        .where(PokemonCard.pokedex_nr.isnot(None))
+        .where(PokemonCard.besessen.is_(False))
+        .where(PokemonCard.wunschliste.is_(False))
+        .group_by(PokemonCard.pokedex_nr)
+        .execution_options(all_users=True)
+    ).all()
+    return {nr: (de, en) for nr, de, en in rows}
 
 
 def fill_pokedex(db: Session, names: dict[int, tuple[str | None, str | None]]) -> dict:

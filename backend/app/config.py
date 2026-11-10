@@ -53,6 +53,39 @@ class Settings(BaseSettings):
     # selben Stack als Service „matcher".
     matcher_url: str = "http://matcher:8000"
 
+    # ── Mehrbenutzer / Single Sign-On (OIDC, z. B. Authentik) ────────────────
+    # OIDC ist aktiv, sobald Issuer + Client-ID gesetzt sind. Issuer bei
+    # Authentik: https://<authentik>/application/o/<app-slug>/
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_provider_name: str = "Authentik"   # Beschriftung des Login-Knopfs
+    oidc_scopes: str = "openid profile email"
+    # Wer beim ersten SSO-Login den bestehenden Bestand (Primär-Admin) über-
+    # nimmt und Admin wird: kommagetrennte Benutzernamen/E-Mails des Providers.
+    # Leer → APP_USERNAME.
+    oidc_admin_users: str = ""
+    # Optional: Mitglieder dieser Provider-Gruppe werden (zusätzlich) Admin.
+    oidc_admin_group: str = ""
+    # Neue SSO-Benutzer automatisch anlegen (Zugang regelt der Provider über
+    # die App-Bindung). False → nur bereits bekannte Benutzer dürfen rein.
+    oidc_auto_create: bool = True
+    # Öffentliche Basis-URL der App (z. B. https://tcg.example.com). Bestimmt
+    # die Redirect-URI ({PUBLIC_URL}/api/v1/auth/oidc/callback); ungesetzt wird
+    # sie aus dem Request abgeleitet (Host + Cf-Visitor/X-Forwarded-Proto).
+    public_url: str = ""
+    oidc_redirect_uri: str = ""
+    # Weitere Web-Origins, auf die nach dem Login zurückgeleitet werden darf
+    # (kommagetrennt, z. B. die LAN-Adresse). PUBLIC_URL + CORS_ORIGINS gelten immer.
+    oidc_allowed_origins: str = ""
+    # Lokaler Passwort-Login (Notzugang des Primär-Admins). Nur wirksam, wenn
+    # ein Passwort-Hash konfiguriert ist.
+    password_login: bool = True
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer.strip() and self.oidc_client_id.strip())
+
     @property
     def usd_mode(self) -> bool:
         return self.currency.strip().upper() == "USD"

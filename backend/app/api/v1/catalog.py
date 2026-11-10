@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.schemas._grenzen import PG_INTEGER_MAX
+from app.api.deps import require_admin
 from app.database import get_db, run_with_session
 from app.domain.pokedex import GEN_RANGES
 from app.domain.search import parse_kurzcode
@@ -144,7 +145,7 @@ def catalog_meta(db: Session = Depends(get_db)):
     return {"total": int(total), "enriched": int(enriched), "cached_images": int(cached_images)}
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(require_admin)])
 async def trigger_catalog_sync(background_tasks: BackgroundTasks):
     """Sets voll-syncen + Katalog-Basis aufbauen (Hintergrund). Danach ggf. /enrich."""
     async def _job(db: Session):

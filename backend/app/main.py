@@ -16,6 +16,8 @@ from sqlalchemy.exc import DataError
 
 from app.config import settings
 from app.database import Base, engine, SessionLocal
+import app.models  # noqa: F401 — alle Tabellen (inkl. users) vor create_all
+import app.tenancy  # noqa: F401 — registriert die Mehrbenutzer-Filter (Session-Events)
 from app.api.v1 import router as v1_router
 from app.api.bild_spiegel import router as bild_spiegel_router
 from app.services.cron import start_scheduler
@@ -135,6 +137,15 @@ def _run_light_migrations():
         # damit auch Alt-Installationen vollständig sind (create_all + diese
         # Light-Migrations sind die Quelle der Wahrheit, Issue #12).
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS bild_karte_url TEXT",
+        # Mehrbenutzer: Besitzer je Karte/Sammlung/Sealed-Produkt (users legt
+        # create_all an). Bestandszeilen bleiben zunächst NULL und gehen beim
+        # Start an den Primär-Admin (lifespan → tenancy.adopt_orphans).
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+        "ALTER TABLE collections ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+        "ALTER TABLE sealed_products ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE",
+        "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_user_id ON pokemon_cards (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_collections_user_id ON collections (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_sealed_products_user_id ON sealed_products (user_id)",
         # CHECK-Constraints der früheren migrations/001_initial.sql (Datei
         # inzwischen entfernt) auf Alt-Installationen droppen: Die gültigen Werte
         # pflegt die API (schemas/card.py). Die alten Constraints kennen neuere
@@ -195,6 +206,7 @@ def _run_light_migrations():
         "DELETE FROM tcgdex_catalog WHERE set_id IN (SELECT set_id FROM pokemon_sets WHERE series_id = 'tcgp')",
         "DELETE FROM pokemon_sets WHERE series_id = 'tcgp'",
         # Einmalmigration: erste besessene Karte je Pokédex-Nr. automatisch als Pokédex-Vertreter setzen
+        # (je Benutzer — jeder hat seinen eigenen Pokédex)
         """
         UPDATE pokemon_cards
         SET im_pokedex = TRUE
@@ -202,7 +214,7 @@ def _run_light_migrations():
             SELECT MIN(id)
             FROM pokemon_cards
             WHERE besessen = TRUE AND pokedex_nr IS NOT NULL
-            GROUP BY pokedex_nr
+            GROUP BY user_id, pokedex_nr
             HAVING SUM(CASE WHEN im_pokedex = TRUE THEN 1 ELSE 0 END) = 0
         )
         """,
@@ -341,6 +353,24 @@ def _run_light_migrations():
             conn.execute(text(stmt))
 
 
+def _ensure_users():
+    """
+    Mehrbenutzer-Upgrade: Primär-Admin anlegen (APP_USERNAME), falls es noch
+    keinen Benutzer gibt, und ihm alle Zeilen ohne Besitzer geben (Bestand aus
+    der Einzelbenutzer-Zeit). Idempotent.
+    """
+    from app.tenancy import adopt_orphans, ensure_primary_user
+    db = SessionLocal()
+    try:
+        owner = ensure_primary_user(db, os.getenv("APP_USERNAME", "admin"))
+    finally:
+        db.close()
+    with engine.begin() as conn:
+        counts = adopt_orphans(conn, owner)
+    if any(counts.values()):
+        logging.getLogger(__name__).info("Bestand dem Primär-Admin zugeordnet: %s", counts)
+
+
 def _ensure_password_configured():
     """
     Start-Guard (Issue #1): Ohne Login-Passwort startet die App nicht.
@@ -351,6 +381,8 @@ def _ensure_password_configured():
     """
     if os.getenv("APP_PASSWORD_HASH", "").strip():
         return
+    if settings.oidc_enabled:
+        return   # Anmeldung per SSO — ein lokales Passwort ist dann optional
     from app.models.setting import AppSetting
     db = SessionLocal()
     try:
@@ -361,7 +393,7 @@ def _ensure_password_configured():
         db.close()
     raise RuntimeError(
         "APP_PASSWORD_HASH ist nicht gesetzt (und in der Datenbank liegt kein "
-        "Passwort-Hash). Die App startet aus Sicherheitsgründen nicht ohne "
+        "Passwort-Hash), SSO (OIDC_ISSUER + OIDC_CLIENT_ID) ebenso wenig. Die App startet aus Sicherheitsgründen nicht ohne "
         "Login-Passwort. Abhilfe: bcrypt-Hash erzeugen mit\n"
         "  python -c \"import bcrypt; print(bcrypt.hashpw(b'DEIN_PASSWORT', bcrypt.gensalt()).decode())\"\n"
         "oder ohne lokales Python via Docker:\n"
@@ -375,6 +407,7 @@ def _ensure_password_configured():
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _run_light_migrations()
+    _ensure_users()
     _ensure_password_configured()
     _seed_sets()
     # TCGdex-Brücke offline anwenden (set_id auf bekannten Sets setzen).

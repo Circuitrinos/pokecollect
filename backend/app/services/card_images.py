@@ -286,13 +286,16 @@ def remove_card_images(db: Session, card: PokemonCard) -> PokemonCard:
     return card
 
 
-async def backfill_images_task(force: bool = False):
+async def backfill_images_task(force: bool = False, user_id: int | None = None):
     """
-    Holt TCGdex-Daten (Bild high.webp + Metadaten) für alle besessenen Karten.
+    Holt TCGdex-Daten (Bild high.webp + Metadaten) für alle besessenen Karten
+    (mit user_id: nur die dieses Benutzers).
     force=True überschreibt auch bereits vorhandene bild_karte_url.
     Läuft als Hintergrund-Job (eigene Session, kein Request-Kontext).
     """
     db = SessionLocal()
+    if user_id is not None:
+        db.info["user_id"] = user_id
     try:
         q = select(PokemonCard).where(PokemonCard.besessen == True)
         if not force:

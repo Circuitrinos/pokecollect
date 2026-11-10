@@ -126,7 +126,7 @@ export default function WhatsNewModal() {
   // Vor der Anmeldeseite nichts (wie Navbar.tsx/BottomNav.tsx) — AuthGuard
   // setzt "ready" auf /login SOFORT (kein Token nötig), schließt die Route
   // also NICHT automatisch aus.
-  if (pathname === "/login" || !show) return null;
+  if (pathname === "/login" || pathname === "/auth/callback" || !show) return null;
 
   const body = lang === "EN" ? WHATS_NEW.en : WHATS_NEW.de;
   // Panel-Nacharbeit (#99, beide Stimmen fanden es unabhängig): Der Untertitel

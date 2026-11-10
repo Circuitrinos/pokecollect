@@ -10,6 +10,8 @@ class PokemonCard(Base):
     __tablename__ = "pokemon_cards"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Besitzer (Mehrbenutzer): gefiltert zentral in app/tenancy.py
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     kartenname = Column(Text, nullable=False)
     pokedex_nr = Column(Integer, nullable=True, index=True)
     englischer_name = Column(Text, nullable=True)

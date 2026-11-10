@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { settingsApi, cardApi, scanApi, pricesApi, catalogApi, dataApi, AppSettings, AppSettingsUpdate, ScanUsage, ScanModelSuggestion } from "@/lib/api";
+import { settingsApi, cardApi, scanApi, pricesApi, catalogApi, dataApi, usersApi, logout, AppSettings, AppSettingsUpdate, ScanUsage, ScanModelSuggestion, UserRow } from "@/lib/api";
+import { useMe } from "@/lib/useMe";
 import { refreshSettings } from "@/lib/useSettings";
 import { APP_VERSION } from "@/lib/version";
 import { openWhatsNew } from "@/lib/whatsnew";
@@ -66,6 +67,11 @@ const SCAN_SECRET_KEYS: SecretKey[] = ["gemini_api_key", "openai_api_key", "open
 
 export default function SettingsPage() {
   const { t } = useI18n();
+  // Mehrbenutzer: Instanz-Einstellungen nur für Admins; bis /auth/me da ist,
+  // bleiben die Admin-Abschnitte verborgen (kein Aufblitzen).
+  const me = useMe();
+  const isAdmin = me?.is_admin ?? false;
+  const [users, setUsers] = useState<UserRow[] | null>(null);
   const [s, setS] = useState<AppSettings | null>(null);
   const [secrets, setSecrets] = useState({ ...EMPTY_SECRETS });
   const [saving, setSaving] = useState(false);
@@ -259,6 +265,21 @@ export default function SettingsPage() {
     }
   };
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    usersApi.list().then((r) => setUsers(r.data)).catch(() => setUsers(null));
+  }, [isAdmin]);
+
+  const patchUser = async (id: number, patch: { is_admin?: boolean; is_active?: boolean }) => {
+    try {
+      const r = await usersApi.update(id, patch);
+      setUsers(r.data);
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast.error(msg ?? t.users_update_error);
+    }
+  };
+
   if (!s) return <div className="text-gray-500 p-8">{t.detail_loading}</div>;
 
   return (
@@ -282,6 +303,10 @@ export default function SettingsPage() {
           PokéCollect v{APP_VERSION}
         </button>
       </div>
+
+      {me && !isAdmin && (
+        <p className="text-gray-500 text-xs">{t.settings_admin_only_hint}</p>
+      )}
 
       {/* Anzeige */}
       <Section title={`🖼️ ${t.settings_section_display}`}>
@@ -317,6 +342,8 @@ export default function SettingsPage() {
 
       {/* Preise */}
       <Section title={`💰 ${t.settings_section_prices}`}>
+        {!isAdmin && <p className="text-gray-400 text-xs">{t.settings_prices_personal_hint}</p>}
+        {isAdmin && (<>
         <Field label={t.settings_price_update} hint={t.settings_price_update_hint}>
           <div className="flex items-center gap-3 mt-1">
             <Toggle checked={s.price_update_enabled} onChange={(v) => { set("price_update_enabled", v); save({ price_update_enabled: v }); }} />
@@ -333,10 +360,13 @@ export default function SettingsPage() {
             <option value="daily">{t.settings_price_source_current}</option>
           </select>
         </Field>
+        </>)}
         <div className="pt-1 flex gap-3 flex-wrap">
+          {isAdmin && (
           <button type="button" onClick={() => save({ price_update_hour: s.price_update_hour, price_source: s.price_source === "current" ? "daily" : s.price_source })} disabled={saving} className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-50">
             {t.form_save}
           </button>
+          )}
           <button type="button" onClick={handlePriceRefresh} disabled={refreshingPrices} className="bg-gray-700 text-white text-sm px-4 py-1.5 rounded hover:bg-gray-600 disabled:opacity-50">
             {t.settings_price_refresh_now}
           </button>
@@ -368,7 +398,8 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* API-Keys */}
+      {/* API-Keys (Instanz, nur Admin) */}
+      {isAdmin && (
       <Section title={`🔑 ${t.settings_section_api_keys}`}>
         <p className="text-gray-500 text-xs">{t.settings_api_keys_hint}</p>
         <p className="text-gray-600 text-xs">{t.settings_secret_keep_hint}</p>
@@ -407,7 +438,10 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* Scan: pluggbares Lese-Modell (Issue #57) */}
+      )}
+
+      {/* Scan: pluggbares Lese-Modell (Issue #57) — Instanz, nur Admin */}
+      {isAdmin && (
       <Section title={`📷 ${t.settings_section_scan}`}>
         <Field label={t.settings_scan_provider} hint={t.settings_scan_provider_hint}>
           <select value={s.scan_reader_provider} onChange={(e) => set("scan_reader_provider", e.target.value)} className={INPUT}>
@@ -520,6 +554,8 @@ export default function SettingsPage() {
         )}
       </Section>
 
+      )}
+
       {/* Pokédex auffüllen: Platzhalter für alle Spezies ohne eigene Zeile */}
       <Section title={`📕 ${t.settings_section_pokedex}`}>
         <p className="text-gray-400 text-xs">{t.settings_fill_pokedex_hint}</p>
@@ -573,10 +609,11 @@ export default function SettingsPage() {
             {t.settings_backfill_all}
           </button>
         </div>
-        <p className="text-gray-600 text-xs">{t.settings_backfill_logs_hint} <code>docker logs pokecollect-api-1 -f</code></p>
+        {isAdmin && <p className="text-gray-600 text-xs">{t.settings_backfill_logs_hint} <code>docker logs pokecollect-api-1 -f</code></p>}
       </Section>
 
-      {/* Katalog */}
+      {/* Katalog (Instanz, nur Admin) */}
+      {isAdmin && (
       <Section title={`📚 ${t.settings_section_catalog}`}>
         <p className="text-gray-400 text-xs">{t.settings_catalog_hint}</p>
 
@@ -628,9 +665,11 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* Daten: Export / Backup / Restore (Issue #17) */}
+      )}
+
+      {/* Daten: Export (eigene Karten) / Backup + Restore (ganze Instanz, nur Admin) */}
       <Section title={`💾 ${t.settings_section_data}`}>
-        <p className="text-gray-400 text-xs">{t.settings_data_hint}</p>
+        <p className="text-gray-400 text-xs">{isAdmin ? t.settings_data_hint : t.settings_data_hint_user}</p>
         <div className="flex gap-3 pt-1 flex-wrap">
           <button
             type="button"
@@ -640,6 +679,7 @@ export default function SettingsPage() {
           >
             {exporting ? t.settings_data_busy : t.settings_export_csv}
           </button>
+          {isAdmin && (
           <button
             type="button"
             onClick={handleBackup}
@@ -648,7 +688,9 @@ export default function SettingsPage() {
           >
             {backingUp ? t.settings_data_busy : t.settings_backup_download}
           </button>
+          )}
         </div>
+        {isAdmin && (
         <div className="border-t border-gray-700 pt-3 space-y-3">
           <p className="text-white text-sm font-medium">{t.settings_restore_title}</p>
           <p className="text-gray-500 text-xs">{t.settings_restore_hint}</p>
@@ -676,10 +718,71 @@ export default function SettingsPage() {
             {restoring ? t.settings_restore_running : t.settings_restore_button}
           </button>
         </div>
+        )}
       </Section>
+
+      {/* Benutzer (Mehrbenutzer, nur Admin) */}
+      {isAdmin && users && (
+        <Section title={`👥 ${t.settings_section_users}`}>
+          <p className="text-gray-400 text-xs">{t.settings_users_hint}</p>
+          <ul className="divide-y divide-gray-700">
+            {users.map((u) => {
+              const self = u.id === me?.id;
+              return (
+                <li key={u.id} className="py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-white truncate">
+                      {u.display_name || u.username}
+                      {u.display_name && <span className="text-gray-500"> · {u.username}</span>}
+                      {self && <span className="text-gray-500"> ({t.users_you})</span>}
+                      {u.is_admin && <span className="ml-2 text-[10px] uppercase tracking-wide bg-pokemon-yellow/20 text-pokemon-yellow rounded px-1.5 py-0.5">{t.account_admin_badge}</span>}
+                      {!u.is_active && <span className="ml-2 text-[10px] uppercase tracking-wide bg-red-900/50 text-red-300 rounded px-1.5 py-0.5">{t.users_inactive}</span>}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {t.users_items(u.owned_cards, u.collections, u.sealed)}
+                      {" · "}
+                      {u.last_login_at ? t.users_last_login(new Date(u.last_login_at + "Z").toLocaleDateString(t.date_locale)) : t.users_never}
+                    </div>
+                  </div>
+                  {!self && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => patchUser(u.id, { is_admin: !u.is_admin })}
+                        className="bg-gray-700 text-white text-xs px-3 py-1 rounded hover:bg-gray-600"
+                      >
+                        {u.is_admin ? t.users_remove_admin : t.users_make_admin}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => patchUser(u.id, { is_active: !u.is_active })}
+                        className={`text-white text-xs px-3 py-1 rounded ${u.is_active ? "bg-red-900 hover:bg-red-800" : "bg-green-800 hover:bg-green-700"}`}
+                      >
+                        {u.is_active ? t.users_deactivate : t.users_activate}
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
 
       {/* Konto */}
       <Section title={`👤 ${t.settings_section_account}`}>
+        {me && (
+          <div className="text-sm">
+            <span className="text-gray-400">{t.account_signed_in_as} </span>
+            <span className="text-white">{me.display_name || me.username}</span>
+            {me.display_name && <span className="text-gray-500"> · {me.username}</span>}
+            {me.is_admin && <span className="ml-2 text-[10px] uppercase tracking-wide bg-pokemon-yellow/20 text-pokemon-yellow rounded px-1.5 py-0.5">{t.account_admin_badge}</span>}
+            {me.email && <div className="text-gray-500 text-xs mt-0.5">{me.email}</div>}
+            {me.sso_linked && <div className="text-gray-500 text-xs mt-0.5">{t.account_sso_linked(me.oidc_provider_name)}</div>}
+          </div>
+        )}
+        {isAdmin && me?.password_login && (<>
+        <p className="text-gray-400 text-xs font-medium pt-1">{t.account_local_password}</p>
         <Field label={t.settings_pw_current}>
           <input type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className={INPUT} autoComplete="current-password" />
         </Field>
@@ -694,13 +797,13 @@ export default function SettingsPage() {
             {t.settings_pw_change}
           </button>
         </div>
+        </>)}
         <div className="border-t border-gray-700 pt-3">
           <button
             type="button"
             onClick={() => {
-              // Token verwerfen → Login-Seite (harte Navigation, frischer State)
-              localStorage.removeItem("token");
-              window.location.href = "/login";
+              // Token + Offline-Cache verwerfen → Login-Seite (harte Navigation)
+              logout();
             }}
             className="bg-gray-700 text-white text-sm px-4 py-1.5 rounded hover:bg-gray-600"
           >

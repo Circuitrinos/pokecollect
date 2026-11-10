@@ -36,6 +36,17 @@ DEFAULTS: dict[str, str] = {
 # Secrets verlassen das Backend nie im Klartext (Issue #1): die Response
 # liefert je Secret nur noch <key>_set (bool) + <key>_masked ("•••• " +
 # letzte 4 Zeichen). Ändern geht weiter über PUT mit dem Klartext-Wert.
+# Persönliche Einstellungen (Mehrbenutzer): je Benutzer in user_settings; der
+# Wert in app_settings ist nur noch die Vorgabe für Benutzer ohne eigenen Wert.
+# Alles andere gilt für die ganze Instanz und ist Admins vorbehalten.
+USER_KEYS: tuple[str, ...] = (
+    "placeholder_images_enabled",
+    "cards_per_page",
+    "default_sort",
+    "default_language",
+    "default_condition",
+)
+
 SECRET_KEYS: tuple[str, ...] = (
     "cardmarket_app_token",
     "cardmarket_app_secret",

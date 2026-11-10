@@ -14,7 +14,7 @@ export default function BottomNav() {
 
   // Scan-Seite hat eine eigene fixierte Aktionsleiste → Bottom-Nav ausblenden;
   // vor dem Login (Issue #1) ebenfalls kein App-Chrome
-  if (pathname.startsWith("/scan") || pathname === "/login") return null;
+  if (pathname.startsWith("/scan") || pathname === "/login" || pathname === "/auth/callback") return null;
 
   const items = keys
     .map((k) => NAV_TARGETS.find((target) => target.key === k))

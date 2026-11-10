@@ -10,7 +10,7 @@ export default function Navbar() {
   const pathname = usePathname() ?? "/";
 
   // Vor dem Login kein App-Chrome (Issue #1)
-  if (pathname === "/login") return null;
+  if (pathname === "/login" || pathname === "/auth/callback") return null;
 
   return (
     <nav className="border-b border-gray-800 bg-pokemon-card px-4 sm:px-6 py-3 flex items-center gap-4 sm:gap-6">

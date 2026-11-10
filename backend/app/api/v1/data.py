@@ -24,13 +24,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import Integer, text
 from starlette.background import BackgroundTask
 
+from app.api.deps import require_admin, require_auth
+from app.auth_user import AuthUser
 from app.config import settings
-from app.database import Base, engine
+from app.database import Base, engine, user_session
 from app.models.card import PokemonCard
 from app.services import bild_spiegel
 from app.services.card_images import MEDIA_PATH_COLUMNS, safe_media_path
@@ -75,9 +77,9 @@ def _csv_cell(value) -> str:
 # ── CSV-Export ────────────────────────────────────────────────────────────────
 
 @router.get("/export.csv")
-def export_csv():
+def export_csv(user: AuthUser = Depends(require_auth)):
     """
-    Alle PokemonCard-Felder als CSV. UTF-8 MIT BOM + Semikolon-Delimiter,
+    Alle PokemonCard-Felder des angemeldeten Benutzers als CSV. UTF-8 MIT BOM + Semikolon-Delimiter,
     damit (deutsches) Excel die Datei per Doppelklick korrekt öffnet.
     """
     columns = [c.name for c in PokemonCard.__table__.columns]
@@ -85,8 +87,7 @@ def export_csv():
     # Zeilen VOR dem Response-Bau materialisieren: seit FastAPI 0.106 werden
     # yield-Dependencies (get_db) geschlossen, bevor ein StreamingResponse-
     # Generator läuft — deshalb hier eine eigene, kurze Session.
-    from app.database import SessionLocal
-    db = SessionLocal()
+    db = user_session(user.id)   # nur die eigenen Karten (app/tenancy.py)
     try:
         rows = [
             [_csv_cell(getattr(card, c)) for c in columns]
@@ -131,7 +132,7 @@ def _dump_all_tables() -> dict[str, list[dict]]:
     return dump
 
 
-@router.get("/backup")
+@router.get("/backup", dependencies=[Depends(require_admin)])
 def backup():
     """
     Voll-Backup als ZIP: data.json (alle Tabellen + Versionsfeld) + der
@@ -212,10 +213,18 @@ def _restore_tables(payload: dict) -> dict[str, int]:
     if unknown:
         logger.warning("Restore: unbekannte Tabellen im Backup werden ignoriert: %s", sorted(unknown))
 
+    # Mehrbenutzer: ein Backup aus der Einzelbenutzer-Zeit hat keine Benutzer.
+    # Dann bleiben die bestehenden Benutzer erhalten und der eingespielte
+    # Bestand geht an den Primär-Admin (adopt_orphans unten).
+    keep = set() if "users" in backup_tables else {"users", "user_settings"}
+
     with engine.begin() as conn:
         for table in reversed(tables):
-            conn.execute(table.delete())
+            if table.name not in keep:
+                conn.execute(table.delete())
         for table in tables:
+            if table.name in keep:
+                continue
             rows = backup_tables.get(table.name, [])
             # Auf die Spalten der Tabelle normalisieren: fremde Keys fallen
             # weg, fehlende werden NULL (executemany braucht homogene Dicts).
@@ -251,6 +260,15 @@ def _restore_tables(payload: dict) -> dict[str, int]:
                     f"SELECT setval('{seq}', COALESCE((SELECT MAX({col.name}) FROM {table.name}), 1), "
                     f"(SELECT MAX({col.name}) FROM {table.name}) IS NOT NULL)"
                 ))
+
+        # Zeilen ohne Besitzer → Primär-Admin (Alt-Backup); fehlt jeder Benutzer
+        # (Backup mit leerer users-Tabelle), legt der nächste Start ihn an.
+        from app.tenancy import adopt_orphans
+        owner = conn.execute(text(
+            "SELECT id FROM users ORDER BY is_admin DESC, id LIMIT 1"
+        )).scalar()
+        if owner is not None:
+            adopt_orphans(conn, owner)
     return counts
 
 
@@ -280,7 +298,7 @@ def _restore_images(zf: zipfile.ZipFile) -> int:
     return written
 
 
-@router.post("/restore")
+@router.post("/restore", dependencies=[Depends(require_admin)])
 async def restore(file: UploadFile = File(...), confirm: str = Form("")):
     """
     Backup-ZIP einspielen. DESTRUKTIV: ersetzt ALLE Daten und Bilder.

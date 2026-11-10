@@ -16,7 +16,8 @@ import { Toaster } from "react-hot-toast";
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const isLogin = pathname === "/login";
+  // /auth/callback (SSO-Rückweg) legt das Token erst ab — ebenfalls ausgenommen.
+  const isLogin = pathname === "/login" || pathname === "/auth/callback";
   const [ready, setReady] = useState(false);
 
   useEffect(() => {

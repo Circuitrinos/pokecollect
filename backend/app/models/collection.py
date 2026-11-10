@@ -20,6 +20,8 @@ class Collection(Base):
     __tablename__ = "collections"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Besitzer (Mehrbenutzer): gefiltert zentral in app/tenancy.py
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(Text, nullable=False)
     beschreibung = Column(Text, nullable=True)
     binder_layout = Column(Text, nullable=True, default="3x3")  # cols x rows, z.B. "3x3"

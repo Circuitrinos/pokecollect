@@ -8,8 +8,11 @@ psycopg2-binary==2.9.9
 pydantic==2.14.1
 pydantic-settings==2.16.1
 # #117: PyJWT statt python-jose — python-jose zieht ecdsa mit, für dessen
-# Lücke es keine Korrektur gibt; genutzt wird nur HS256 (api/deps.py, v1/auth.py).
+# Lücke es keine Korrektur gibt; App-Tokens sind HS256 (auth_user.py).
 PyJWT==2.15.1
+# SSO (OIDC): ID-Tokens des Providers sind meist RS256-signiert — PyJWT braucht
+# dafür cryptography (services/oidc.py).
+cryptography==50.0.2
 passlib[bcrypt]==1.7.4
 # passlib 1.7.4 ist mit bcrypt>=4.1 inkompatibel (Login/Passwortwechsel → 500);
 # ohne Pin zog pip bcrypt 5.x. Beim Wechsel auf bcrypt 5 auch passlib ersetzen.

@@ -1,26 +1,22 @@
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import jwt
 
-from app.config import settings
-
-bearer = HTTPBearer(auto_error=False)
+from app.auth_user import AuthState, AuthUser, resolve_auth
 
 
 # Seit Issue #1 auf allen Fach-Routern verdrahtet (api/v1/__init__.py).
-# Auth-frei bleiben nur /auth/login, /health und der /images-StaticFiles-Mount
-# (<img> kann keine Authorization-Header senden).
-def require_auth(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
-    if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Nicht eingeloggt")
-    try:
-        # #117: exp und sub sind Pflicht — ein Token ohne Ablauf liefe sonst nie
-        # ab (unter python-jose genauso; mit dem Wechsel geschlossen).
-        jwt.decode(
-            credentials.credentials,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-            options={"require": ["exp", "sub"]},
-        )
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ungültiges Token")
+# Auth-frei bleiben nur der Login (Passwort + OIDC-Einstieg/Callback), /health
+# und der /images-StaticFiles-Mount (<img> kann keine Authorization-Header senden).
+# Mehrbenutzer: das Token trägt die Benutzer-ID; get_db schneidet die Session
+# auf diesen Benutzer zu (app/tenancy.py).
+def require_auth(auth: AuthState = Depends(resolve_auth)) -> AuthUser:
+    if auth.user is None:
+        detail = auth.error or "Nicht eingeloggt"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+    return auth.user
+
+
+def require_admin(user: AuthUser = Depends(require_auth)) -> AuthUser:
+    """Instanz-weite Einstellungen/Jobs (API-Keys, Katalog-Sync, Backup …)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Nur für Administratoren")
+    return user

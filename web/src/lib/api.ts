@@ -33,7 +33,8 @@ api.interceptors.response.use(
       typeof window !== "undefined" &&
       error?.response?.status === 401 &&
       !String(error?.config?.url ?? "").includes("/auth/login") &&
-      window.location.pathname !== "/login"
+      window.location.pathname !== "/login" &&
+      window.location.pathname !== "/auth/callback"
     ) {
       localStorage.removeItem("token");
       window.location.href = "/login";
@@ -408,6 +409,81 @@ export const sealedApi = {
     return api.post<SealedProduct>(`/sealed/${id}/image`, form);
   },
   deleteImage: (id: number) => api.delete<SealedProduct>(`/sealed/${id}/image`),
+};
+
+// ── Anmeldung / Mehrbenutzer ──────────────────────────────────────────────
+
+export type AuthConfig = {
+  oidc_enabled: boolean;
+  oidc_provider_name: string;
+  password_login: boolean;
+};
+
+export type Me = {
+  id: number;
+  username: string;
+  display_name: string | null;
+  email: string | null;
+  is_admin: boolean;
+  sso_linked: boolean;
+  oidc_enabled: boolean;
+  oidc_provider_name: string;
+  password_login: boolean;
+};
+
+export type UserRow = {
+  id: number;
+  username: string;
+  display_name: string | null;
+  email: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  sso_linked: boolean;
+  created_at: string | null;
+  last_login_at: string | null;
+  owned_cards: number;
+  collections: number;
+  sealed: number;
+};
+
+/**
+ * Benutzerwechsel: Offline-Kopien der API-Antworten (Service-Worker-Cache)
+ * gehören dem bisherigen Benutzer — bei Login/Logout verwerfen.
+ */
+export async function clearClientCaches(): Promise<void> {
+  try {
+    if (typeof caches === "undefined") return;
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k.startsWith("pokecollect-")).map((k) => caches.delete(k)));
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Abmelden: Token + Offline-Cache weg, harte Navigation zur Login-Seite. */
+export async function logout(): Promise<void> {
+  localStorage.removeItem("token");
+  await clearClientCaches();
+  window.location.href = "/login";
+}
+
+export const authApi = {
+  config: () => api.get<AuthConfig>("/auth/config"),
+  me: () => api.get<Me>("/auth/me"),
+  // SSO-Einstieg ist eine volle Seiten-Navigation (302 zum Provider), kein XHR.
+  // origin nur, wenn die API auf einem anderen Origin liegt als das Web-UI —
+  // das Backend leitet das Token nur an erlaubte Origins zurück.
+  ssoLoginUrl: (next: string = "/") => {
+    const params = new URLSearchParams({ next });
+    if (typeof window !== "undefined") params.set("origin", window.location.origin);
+    return `${API_BASE}/api/v1/auth/oidc/login?${params.toString()}`;
+  },
+};
+
+export const usersApi = {
+  list: () => api.get<UserRow[]>("/users"),
+  update: (id: number, patch: { is_admin?: boolean; is_active?: boolean }) =>
+    api.patch<UserRow[]>(`/users/${id}`, patch),
 };
 
 export const settingsApi = {

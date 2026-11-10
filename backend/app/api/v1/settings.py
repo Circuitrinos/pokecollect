@@ -5,18 +5,35 @@ from fastapi import APIRouter, Depends, HTTPException
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_admin, require_auth
+from app.auth_user import AuthUser
 from app.database import get_db
 from app.models.setting import AppSetting
-from app.schemas.setting import DEFAULTS, SECRET_KEYS, PasswordChange, SettingsResponse, SettingsUpdate
+from app.models.user import UserSetting
+from app.schemas.setting import DEFAULTS, SECRET_KEYS, USER_KEYS, PasswordChange, SettingsResponse, SettingsUpdate
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def _get_all(db: Session) -> dict[str, str]:
+def _get_all(db: Session, user_id: int | None = None) -> dict[str, str]:
     rows = {r.key: r.value for r in db.query(AppSetting).all()}
-    return {k: rows.get(k, v) for k, v in DEFAULTS.items()}
+    merged = {k: rows.get(k, v) for k, v in DEFAULTS.items()}
+    if user_id is not None:
+        # Persönliche Werte überdecken die Instanz-Vorgabe (Mehrbenutzer).
+        for r in db.query(UserSetting).filter(UserSetting.user_id == user_id).all():
+            if r.key in USER_KEYS and r.value is not None:
+                merged[r.key] = r.value
+    return merged
+
+
+def _set_user(db: Session, user_id: int, key: str, value: str):
+    row = db.get(UserSetting, (user_id, key))
+    if row:
+        row.value = value
+    else:
+        db.add(UserSetting(user_id=user_id, key=key, value=value))
 
 
 def _set(db: Session, key: str, value: str):
@@ -46,13 +63,14 @@ def _mask(value: str) -> str:
     return f"•••• {value[-4:]}" if value else ""
 
 
-def _to_response(raw: dict[str, str]) -> SettingsResponse:
-    # Secrets nie im Klartext ausliefern (Issue #1) — nur gesetzt-Flag + Maske.
+def _to_response(raw: dict[str, str], is_admin: bool = True) -> SettingsResponse:
+    # Secrets nie im Klartext ausliefern (Issue #1) — nur gesetzt-Flag + Maske;
+    # Nicht-Admins sehen nicht einmal die Maske.
     secret_fields: dict[str, bool | str] = {}
     for key in SECRET_KEYS:
         value = raw[key] or ""
         secret_fields[f"{key}_set"] = bool(value)
-        secret_fields[f"{key}_masked"] = _mask(value)
+        secret_fields[f"{key}_masked"] = _mask(value) if is_admin else ""
     return SettingsResponse(
         placeholder_images_enabled=raw["placeholder_images_enabled"] == "true",
         cards_per_page=_int_or(raw["cards_per_page"], 48),
@@ -73,20 +91,27 @@ def _to_response(raw: dict[str, str]) -> SettingsResponse:
 
 
 @router.get("", response_model=SettingsResponse)
-def get_settings(db: Session = Depends(get_db)):
-    return _to_response(_get_all(db))
+def get_settings(user: AuthUser = Depends(require_auth), db: Session = Depends(get_db)):
+    return _to_response(_get_all(db, user.id), user.is_admin)
 
 
 @router.put("", response_model=SettingsResponse)
-def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
+def update_settings(data: SettingsUpdate, user: AuthUser = Depends(require_auth), db: Session = Depends(get_db)):
     updates = data.model_dump(exclude_unset=True)
+    instance_keys = [k for k in updates if k not in USER_KEYS]
+    if instance_keys and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Nur Admins dürfen Instanz-Einstellungen ändern")
     for key, value in updates.items():
-        _set(db, key, str(value).lower() if isinstance(value, bool) else str(value))
+        text_value = str(value).lower() if isinstance(value, bool) else str(value)
+        if key in USER_KEYS:
+            _set_user(db, user.id, key, text_value)
+        else:
+            _set(db, key, text_value)
     db.commit()
-    return _to_response(_get_all(db))
+    return _to_response(_get_all(db, user.id), user.is_admin)
 
 
-@router.post("/change-password")
+@router.post("/change-password", dependencies=[Depends(require_admin)])
 def change_password(data: PasswordChange, db: Session = Depends(get_db)):
     stored_hash_row = db.get(AppSetting, "app_password_hash")
     current_hash = (

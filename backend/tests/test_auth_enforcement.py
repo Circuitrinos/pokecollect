@@ -115,6 +115,9 @@ def test_inventar_der_auth_freien_routen():
     frei = {pfad for pfad, abh in blaetter if not any(d.dependency is require_auth for d in abh)}
     assert frei == {
         "/auth/login",                              # unter /api/v1
+        "/auth/config",                             # Mehrbenutzer: Login-Seite fragt Anmeldewege ab
+        "/auth/oidc/login",                         # SSO-Einstieg (302 zum Provider)
+        "/auth/oidc/callback",                      # SSO-Rückkehr (prüft state-Cookie + Code)
         "/health",
         "/images",                                  # StaticFiles-Mount
         "/bild-spiegel/{signatur}/{kodiert}",       # #120, signiert

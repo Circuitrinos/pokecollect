@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_auth
-from app.api.v1 import auth, cards, catalog, collections, data, prices, scan, sealed, settings, sets
+from app.api.v1 import auth, cards, catalog, collections, data, prices, scan, sealed, settings, sets, users
 
 router = APIRouter(prefix="/api/v1")
 
-# Auth-frei: nur der Login selbst. /health und der /images-StaticFiles-Mount
+# Auth-frei: nur der Login selbst (Passwort, Login-Konfiguration, OIDC-Einstieg
+# und -Callback; /auth/me trägt require_auth an der Route). /health und der /images-StaticFiles-Mount
 # liegen außerhalb dieses Routers (main.py) und bleiben ebenfalls offen —
 # <img>-Tags können keine Authorization-Header senden (Issue #1).
 router.include_router(auth.router)
@@ -21,5 +22,6 @@ for protected in (
     sealed.router,
     settings.router,
     sets.router,
+    users.router,   # zusätzlich require_admin je Route
 ):
     router.include_router(protected, dependencies=[Depends(require_auth)])

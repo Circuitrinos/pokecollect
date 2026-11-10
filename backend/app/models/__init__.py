@@ -1,5 +1,6 @@
 # Alle Models hier importieren, damit Base.metadata.create_all() beim Start
 # garantiert jede Tabelle kennt (unabhängig von Import-Seiteneffekten der Router).
+from app.models.user import User, UserSetting  # noqa: F401 — vor den Besitz-Tabellen (FK users.id)
 from app.models.card import PokemonCard, PreisHistorie
 from app.models.setting import AppSetting  # noqa: F401
 from app.models.pokemon_set import PokemonSet  # noqa: F401

@@ -55,6 +55,8 @@ class SealedProduct(Base):
     __tablename__ = "sealed_products"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Besitzer (Mehrbenutzer): gefiltert zentral in app/tenancy.py
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(Text, nullable=False)
     # Fester Katalog (schemas/sealed.py::SEALED_TYP_VALUES): Booster, Display,
     # ETB, Tin, Blister, Bundle, Sonstiges. Als Text gehalten (Label-Map im UI).

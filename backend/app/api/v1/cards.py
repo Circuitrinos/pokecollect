@@ -6,6 +6,8 @@ from sqlalchemy import func, select, update, or_, and_, cast, String
 from sqlalchemy.orm import Session
 
 from app.schemas._grenzen import PG_INTEGER_MAX
+from app.api.deps import require_auth
+from app.auth_user import AuthUser
 from app.database import get_db
 from app.domain.pokedex import GEN_RANGES
 from app.services.card_creation import _trigger_image_fetch, create_owned_card
@@ -389,11 +391,12 @@ async def fill_pokedex(db: Session = Depends(get_db)):
 def backfill_images(
     background_tasks: BackgroundTasks,
     force: bool = False,
+    user: AuthUser = Depends(require_auth),
 ):
     """
     Startet einen Hintergrund-Job, der TCGdex-Bilder + Metadaten für alle
-    besessenen Karten abruft (services/card_images.py).
+    besessenen Karten des Benutzers abruft (services/card_images.py).
     force=True: auch Karten mit vorhandener bild_karte_url neu abrufen.
     """
-    background_tasks.add_task(backfill_images_task, force)
+    background_tasks.add_task(backfill_images_task, force, user.id)
     return {"detail": "Backfill gestartet – läuft im Hintergrund."}
