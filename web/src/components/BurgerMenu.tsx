@@ -8,7 +8,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { NAV_TARGETS, isNavActive } from "@/lib/navRegistry";
+import { NAV_TARGETS, isNavActive, navHref } from "@/lib/navRegistry";
 
 export default function BurgerMenu() {
   const { t } = useI18n();
@@ -113,7 +113,8 @@ export default function BurgerMenu() {
             <nav className="flex-1 overflow-y-auto py-2" aria-label={t.nav_menu_title}>
               {NAV_TARGETS.map((target) => {
                 const active = isNavActive(pathname, target);
-                const { key, href, Icon, labelKey } = target;
+                const { key, Icon, labelKey } = target;
+                const href = navHref(target, pathname);
                 return (
                   <Link
                     key={key}

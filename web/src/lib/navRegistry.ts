@@ -83,6 +83,32 @@ export function isNavKey(x: unknown): x is NavKey {
 
 // Aktiver Zustand eines Ziels für den aktuellen Pfad — eine Routine für Burger
 // und BottomNav (DRY), damit beide identisch highlighten.
+/**
+ * Scan-Ziel mit Kontext: merkt sich die aktuelle Seite (from=, dorthin führt
+ * „Zurück" nach dem Scan) und wählt von einer Sammlungsseite aus diese
+ * Sammlung als Ziel vor (collection=<id>).
+ */
+export function scanHref(pathname: string): string {
+  const q = new URLSearchParams();
+  const m = pathname.match(/^\/collections\/(\d+)(?:\/|$)/);
+  if (m) q.set("collection", m[1]);
+  if (pathname !== "/" && !pathname.startsWith("/scan")) q.set("from", pathname);
+  const s = q.toString();
+  return s ? `/scan?${s}` : "/scan";
+}
+
+/** Rücksprungziel aus ?from= — nur app-interne Pfade (kein //host, kein Schema). */
+export function safeReturnPath(from: string | null): string | null {
+  if (!from || !from.startsWith("/") || from.startsWith("//") || from.includes("\\")) return null;
+  if (from.startsWith("/scan") || from === "/login" || from.startsWith("/auth/")) return null;
+  return from;
+}
+
+/** Link eines Navigationsziels für die aktuelle Seite (Scan nimmt die Sammlung mit). */
+export function navHref(target: NavTarget, pathname: string): string {
+  return target.key === "scan" ? scanHref(pathname) : target.href;
+}
+
 export function isNavActive(pathname: string, target: NavTarget): boolean {
   if (target.exact) return pathname === target.href;
   return pathname === target.href || pathname.startsWith(target.href + "/");

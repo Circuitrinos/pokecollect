@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { APP_VERSION } from "@/lib/version";
 import BurgerMenu from "@/components/BurgerMenu";
+import { scanHref } from "@/lib/navRegistry";
 
 export default function Navbar() {
   const { t, lang, setLang } = useI18n();
@@ -40,7 +41,7 @@ export default function Navbar() {
         </button>
         <Link href="/settings" className="hidden md:inline-block text-gray-400 hover:text-white text-sm">⚙ {t.nav_settings}</Link>
         <Link
-          href="/scan"
+          href={scanHref(pathname)}
           className="hidden md:inline-block bg-pokemon-blue text-white text-sm px-3 py-1.5 rounded hover:bg-blue-500 text-center"
         >
           {t.nav_scan}

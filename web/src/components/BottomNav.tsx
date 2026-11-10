@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
-import { NAV_TARGETS, NavTarget, isNavActive } from "@/lib/navRegistry";
+import { NAV_TARGETS, NavTarget, isNavActive, navHref } from "@/lib/navRegistry";
 import { useBottomNavConfig } from "@/lib/useBottomNav";
 
 export default function BottomNav() {
@@ -26,7 +26,8 @@ export default function BottomNav() {
   return (
     <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-pokemon-card border-t border-gray-800 flex items-stretch justify-around pb-[env(safe-area-inset-bottom)]">
       {items.map((target) => {
-        const { key, href, Icon, labelKey } = target;
+        const { key, Icon, labelKey } = target;
+        const href = navHref(target, pathname);
         const active = isNavActive(pathname, target);
         // Scan behält seinen hervorgehobenen "primären" Look, wo immer er sitzt.
         const primary = key === "scan";

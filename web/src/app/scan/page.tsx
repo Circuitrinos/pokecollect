@@ -16,6 +16,7 @@ import CornerEditor from "@/components/CornerEditor";
 import { cropToCardPhoto, loadImg, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
+import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
 
 type Step = "setup" | "review" | "done";
@@ -77,6 +78,9 @@ export default function ScanPage() {
   const [mode, setMode] = useState<ScanMode>("single");
   const [target, setTarget] = useState<"pokedex" | "collection" | "wishlist">("pokedex");
   const [collectionId, setCollectionId] = useState<number | null>(null);
+  // Seite, von der aus gescannt wurde (/scan?from=…): „Zurück" führt dorthin.
+  // Von einer Sammlungsseite (…&collection=<id>) ist diese Sammlung das Ziel.
+  const [returnTo, setReturnTo] = useState<string | null>(null);
   const [layout, setLayout] = useState("3x3");
   const [setPokedexRep, setSetPokedexRep] = useState(false);
   const [priority, setPriority] = useState("");  // für Wunschkarten-Scan
@@ -105,10 +109,25 @@ export default function ScanPage() {
   const [cameraOn, setCameraOn] = useState(false);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setReturnTo(safeReturnPath(params.get("from")));
+    const fromId = Number(params.get("collection"));
+    const preset = Number.isInteger(fromId) && fromId > 0 ? fromId : null;
+    if (preset) {
+      setTarget("collection");
+      setCollectionId(preset);
+    }
     scanApi.status().then((r) => setStatus(r.data)).catch(() => {});
-    collectionApi.list().then((r) => setCollections(r.data)).catch(() => {});
+    collectionApi.list().then((r) => {
+      setCollections(r.data);
+      if (preset && !r.data.some((c) => c.id === preset)) {  // gelöscht/fremd → normaler Standard
+        setTarget("pokedex");
+        setCollectionId(null);
+      }
+    }).catch(() => {});
     return () => stopCamera();
   }, []);
+  const backHref = returnTo ?? "/";
 
   // Bild-Abgleich lädt nach einem Neustart eine Weile: Status nachfragen, bis er bereit ist.
   const localState = status?.provider === "local" ? status.local?.status ?? "unreachable" : null;
@@ -474,7 +493,7 @@ export default function ScanPage() {
     <div className="max-w-3xl mx-auto pb-24">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">{t.scan_title}</h1>
-        <Link href="/" className="text-gray-500 hover:text-white text-sm">{t.scan_back}</Link>
+        <Link href={backHref} className="text-gray-500 hover:text-white text-sm">{t.scan_back}</Link>
       </div>
       <p className="text-gray-400 text-sm mb-1">{t.scan_subtitle}</p>
       <p className={`text-xs ${localState && localState !== "ready" ? "mb-2" : "mb-6"}`}>
@@ -875,7 +894,7 @@ export default function ScanPage() {
             <button type="button" onClick={reset} className="bg-pokemon-blue text-white px-4 py-2 rounded hover:bg-blue-500">
               {t.scan_scan_again}
             </button>
-            <Link href="/" className="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-600">
+            <Link href={backHref} className="bg-gray-700 text-white px-4 py-2 rounded hover:bg-gray-600">
               {t.scan_back}
             </Link>
           </div>
