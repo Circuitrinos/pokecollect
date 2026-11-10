@@ -55,7 +55,9 @@ function parseLayout(layout: string): { cols: number; rows: number } {
 }
 
 const GAP = 8;        // gap zwischen Pockets
-const PAGE_PAD = 24;  // p-3 links+rechts
+const PAGE_PAD = 26;  // p-3 links+rechts + 1 px Rahmen je Seite
+const PAGE_CHROME_Y = 26 + 16;  // p-3 oben+unten + Rahmen + Seitenzahl darunter
+const MIN_POCKET = 56;
 const SPREAD_GAP = 16;
 const SIZE_KEY = "binder_card_size";
 
@@ -85,6 +87,7 @@ export default function BinderView({
   }, [page, storageKey]);
   const [dragId, setDragId] = useState<number | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [viewport, setViewport] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [cardSize, setCardSize] = useState<number>(() => {
     if (typeof window !== "undefined") {
       const s = Number(localStorage.getItem(SIZE_KEY));
@@ -101,7 +104,10 @@ export default function BinderView({
       for (const e of entries) setContainerWidth(e.contentRect.width);
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => { ro.disconnect(); window.removeEventListener("resize", onResize); };
   }, []);
 
   const setSize = (v: number) => {
@@ -130,6 +136,19 @@ export default function BinderView({
 
   const pageWidth = cols * cardSize + (cols - 1) * GAP + PAGE_PAD;
   const twoPage = containerWidth >= 2 * pageWidth + SPREAD_GAP;
+
+  // Auf kleinen Bildschirmen passt die Seite ganz hinein: so breit wie der
+  // Platz, und so hoch, dass sie (hochgescrollt) samt Blätter-Leiste über der
+  // Bottom-Nav sichtbar ist. Die Kartengröße aus ⚙ gilt als Obergrenze.
+  const small = viewport.w > 0 && (viewport.w < 768 || viewport.h < 600);
+  const fitW = containerWidth > 0
+    ? Math.floor((containerWidth - PAGE_PAD - (cols - 1) * GAP) / cols) : cardSize;
+  const reserveY = (viewport.w < 768 ? 56 : 0) + 64;   // Bottom-Nav + Blätter-Leiste
+  const fitH = small
+    ? Math.floor(((viewport.h - reserveY - PAGE_CHROME_Y - (rows - 1) * GAP) / rows) * (63 / 88)) : cardSize;
+  const maxFit = Math.max(MIN_POCKET, Math.min(fitW, fitH));        // größte Tasche, die passt
+  const pocket = twoPage ? cardSize : Math.max(MIN_POCKET, Math.min(cardSize, maxFit));
+  const compact = pocket < 120;    // schmale Taschen: nur Name + Seltenheit
 
   const safePage = Math.min(Math.max(0, page), totalPages - 1);
 
@@ -214,7 +233,7 @@ export default function BinderView({
         key={pageNum}
         className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-700 rounded-xl p-3 shadow-xl shrink-0"
       >
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${cols}, ${cardSize}px)`, gap: `${GAP}px` }}>
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${cols}, ${pocket}px)`, gap: `${GAP}px` }}>
           {Array.from({ length: perPage }).map((_, i) => {
             const slot = startSlot + i;
             const card = slotMap.get(slot) ?? null;
@@ -312,16 +331,16 @@ export default function BinderView({
                       fill
                       draggable={false}
                       className={isPlaceholder ? "object-contain p-2 opacity-70" : "object-cover"}
-                      sizes={`${cardSize}px`}
+                      sizes={`${pocket}px`}
                     />
                   ) : (
                     <div className="flex items-center justify-center h-full text-gray-600 text-xs">
                       {card.pokedex_nr ? `#${String(card.pokedex_nr).padStart(4, "0")}` : "?"}
                     </div>
                   )}
-                  <div className="absolute bottom-0 inset-x-0 bg-black/60 px-1 py-0.5 grid grid-cols-3 items-center gap-1">
+                  <div className={`absolute bottom-0 inset-x-0 bg-black/60 px-1 py-0.5 grid items-center gap-1 ${compact ? "grid-cols-[1fr_auto]" : "grid-cols-3"}`}>
                     <span className="text-[10px] text-white truncate">{name}</span>
-                    <span className="text-[10px] text-gray-400 font-mono text-center truncate">{code}</span>
+                    {!compact && <span className="text-[10px] text-gray-400 font-mono text-center truncate">{code}</span>}
                     <span className="flex justify-end"><RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" /></span>
                   </div>
                 </Link>
@@ -387,8 +406,8 @@ export default function BinderView({
           <label className="flex items-center gap-2 text-sm text-gray-400">
             {t.binder_card_size}
             <input
-              type="range" min={70} max={260} step={10}
-              value={cardSize}
+              type="range" min={70} max={Math.max(70, Math.min(260, maxFit))} step={10}
+              value={Math.min(cardSize, Math.max(70, maxFit))}
               onChange={(e) => setSize(Number(e.target.value))}
               className="accent-pokemon-yellow"
             />
