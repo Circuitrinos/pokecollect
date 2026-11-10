@@ -197,22 +197,30 @@ def test_nachholer(client, catalog, monkeypatch):
     calls = []
 
     texts = {P + "unchecked": ("Pokemon", "J", None), P + "pretext-d": ("Trainer", "D", "Heal 30 damage."),
-             P + "pretext-i": ("Trainer", "I", "Heal 30 damage.")}
+             P + "pretext-i": ("Trainer", "I", "Heal 30 damage."), P + "raw": ("Pokemon", "H", None),
+             P + "nocat": ("Pokemon", "I", None)}
 
     async def fake_get_card(cid, lang="en"):
         calls.append(cid)
-        cat, mark, effect = texts.get(cid, ("Pokemon", "J", None))
+        if cid not in texts:
+            return None                 # fremde Testdaten nicht anfassen
+        cat, mark, effect = texts[cid]
         return TcgdexCard.model_validate({"id": cid, "category": cat, "regulationMark": mark, "effect": effect,
-                                          "legal": {"standard": True, "expanded": True}})
+                                          "rarity": "Common", "legal": {"standard": True, "expanded": True}})
 
     monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
     db = SessionLocal()
     # Zeilen aus der Version ohne Text-Prüfung: Zeichen da, Text fehlt
     db.add(_cat("pretext-d", "Pretext", "Trainer", "D", effect_checked=False))
     db.add(_cat("pretext-i", "Pretext", "Trainer", "I", effect_checked=False))
+    # noch nicht angereichert (die Nacht-Anreicherung hat die Zeile noch nicht erreicht)
+    db.add(_cat("raw", "Rawcard", "Pokemon", None, checked=False, enriched=False))
     db.commit()
     card = _create(client, "unchecked")
     old = _create(client, "pretext-d")
+    raw = _create(client, "raw")
+    nocat = _create(client, "nocat")            # TCGdex-ID ohne Katalogzeile
+    assert raw["legal_mark"] is None and nocat["legal_mark"] is None
     assert card["legal_mark"] is None
     assert (old["legal_mark"], old["name_mark"]) == ("D", "I")      # Text noch unbekannt → nicht legal
     try:
@@ -220,12 +228,20 @@ def test_nachholer(client, catalog, monkeypatch):
         assert P + "unchecked" in calls and P + "pretext-d" in calls and res["checked"] >= 2
         row = db.get(TcgdexCatalog, P + "unchecked")
         assert (row.regulation_mark, row.regulation_checked, row.legal_expanded) == ("J", True, True)
+        db.expire_all()
+        raw_row = db.get(TcgdexCatalog, P + "raw")
+        assert raw_row.enriched and raw_row.rarity == "Common" and raw_row.regulation_mark == "H"
+        assert res["direct"] >= 1
         res = asyncio.run(regulation.backfill_catalog(db, limit=50))
         assert P + "pretext-i" in calls
     finally:
         db.close()
     got = client.get(f"{API}/cards/{old['id']}").json()
     assert (got["legal_mark"], got["name_mark"]) == ("I", None)
+    assert client.get(f"{API}/cards/{raw['id']}").json()["legal_mark"] == "H"
+    got = client.get(f"{API}/cards/{nocat['id']}").json()
+    assert (got["regulation_mark"], got["legal_mark"]) == ("I", "I")
+    assert client.get(f"{API}/catalog/regulation").json()["pending_owned"] == 0
     got = client.get(f"{API}/cards/{card['id']}").json()
     assert (got["regulation_mark"], got["legal_mark"]) == ("J", "J")
     st = client.get(f"{API}/catalog/regulation").json()

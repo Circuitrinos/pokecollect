@@ -167,6 +167,25 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     }
   };
 
+  // Anzeige umschalten: eigenes Foto ↔ Katalogbild (das Foto bleibt dabei
+  // erhalten und lernt weiter mit — dieselben Aktionen wie die Sammelauswahl).
+  const showsOwn = !!card.bild_karte_pfad;
+  const canShowCatalog = showsOwn && !!card.katalog_bild;
+  const canShowOwn = !showsOwn && !!card.bild_scan_pfad;
+  const [switching, setSwitching] = useState(false);
+  const switchPicture = async (to: "catalog_image" | "own_photo") => {
+    setSwitching(true);
+    try {
+      await cardApi.bulk(to, [card.id]);
+      const r = await cardApi.get(card.id);
+      onCardUpdated(r.data);
+    } catch {
+      toast.error(t.form_save_error);
+    } finally {
+      setSwitching(false);
+    }
+  };
+
   const handleDeleteImage = async () => {
     if (!confirm(t.detail_delete_photo_confirm)) return;
     try {
@@ -222,6 +241,21 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
           <div className="flex items-center justify-center h-full text-gray-600">{t.detail_no_image}</div>
         )}
       </div>
+      {(canShowCatalog || canShowOwn) && (
+        <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-gray-800/70 p-1" role="radiogroup"
+          aria-label={t.detail_picture_label}>
+          <button type="button" role="radio" aria-checked={showsOwn} disabled={switching || showsOwn}
+            onClick={() => void switchPicture("own_photo")}
+            className={`rounded-md px-2 py-1 text-xs ${showsOwn ? "bg-pokemon-blue text-white" : "text-gray-300 hover:bg-gray-700"}`}>
+            {t.detail_picture_own}
+          </button>
+          <button type="button" role="radio" aria-checked={!showsOwn} disabled={switching || !showsOwn}
+            onClick={() => void switchPicture("catalog_image")}
+            className={`rounded-md px-2 py-1 text-xs ${!showsOwn ? "bg-pokemon-blue text-white" : "text-gray-300 hover:bg-gray-700"}`}>
+            {t.detail_picture_catalog}
+          </button>
+        </div>
+      )}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
       <div className="mt-2 grid grid-cols-2 gap-1">

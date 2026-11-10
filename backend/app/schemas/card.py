@@ -169,6 +169,10 @@ class CardResponse(CardBase):
     bild_karte_pfad: Optional[str] = None
     bild_thumbnail_pfad: Optional[str] = None
     bild_original_pfad: Optional[str] = None
+    # Scan-Foto, das gerade nicht angezeigt wird (die Karte zeigt das Katalogbild)
+    bild_scan_pfad: Optional[str] = None
+    # Gibt es ein Katalogbild, auf das sich umschalten lässt? (nur Einzelkarten)
+    katalog_bild: Optional[bool] = None
     # TCGdex-Anreicherung
     tcgdex_card_id: Optional[str] = None
     set_id: Optional[str] = None

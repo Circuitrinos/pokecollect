@@ -28,6 +28,7 @@ from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.services.catalog_lookup import catalog_row_for
 from app.services import card_bulk, regulation
+from app.services.tcgdex import is_allowed_image_url
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
@@ -221,6 +222,9 @@ def _card_response(db: Session, card: PokemonCard) -> CardResponse:
     """
     resp = CardResponse.model_validate(card)
     row = catalog_row_for(db, card.tcgdex_card_id)
+    resp.katalog_bild = bool(
+        (card.bild_karte_url and is_allowed_image_url(card.bild_karte_url))
+        or (row is not None and is_allowed_image_url(row.image_url)))
     if row is not None:
         # NUR den $-Preis der tatsächlichen Variante zeigen (v1.8.2) — sonst
         # stünde bei einer Pokéball-Karte der Basispreis, aus dem sich ihr

@@ -88,6 +88,8 @@ export type Card = {
   bild_karte_pfad: string | null;
   bild_thumbnail_pfad: string | null;
   bild_original_pfad: string | null;
+  bild_scan_pfad?: string | null;     // eigenes Scan-Foto, während das Katalogbild angezeigt wird
+  katalog_bild?: boolean | null;      // Katalogbild vorhanden (nur Einzelkarten)
   // TCGdex-Anreicherung (v0.7.0)
   tcgdex_card_id: string | null;
   set_id: string | null;
@@ -647,6 +649,8 @@ export type ScanCommitItem = {
 export type ScanCommitRequest = {
   target: "pokedex" | "collection" | "wishlist";
   collection_id?: number | null;
+  // Gewähltes Fach (0-basiert über alle Seiten); Mappenseiten-Scan: Seitenanfang
+  start_position?: number | null;
   items: ScanCommitItem[];
 };
 
@@ -789,5 +793,6 @@ export const scanApi = {
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),
   commit: (payload: ScanCommitRequest) =>
-    api.post<{ created: number; card_ids: number[]; all_card_ids?: number[]; copy_ids?: number[][] }>("/scan/commit", payload),
+    api.post<{ created: number; card_ids: number[]; all_card_ids?: number[]; copy_ids?: number[][];
+      positions?: number[]; next_position?: number | null }>("/scan/commit", payload),
 };

@@ -9,6 +9,7 @@ import RarityBadge from "@/components/RarityBadge";
 import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
 import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
+import { Camera } from "lucide-react";
 
 export type BinderItem = { card: Card; position: number };
 
@@ -37,6 +38,8 @@ type Props = {
   editable?: boolean;
   onMoveToSlot?: (cardId: number, slot: number) => void;
   onAddAtSlot?: (cardId: number, slot: number) => void;
+  /** Leeres Fach antippen → in genau dieses Fach scannen (Sammlungen). */
+  onScanAtSlot?: (slot: number) => void;
   binderSlots?: number | null;
   onAddPage?: (newSlots: number) => void;
   onDeleteLastPage?: (cardIdsOnLastPage: number[], newSlots: number) => void;
@@ -71,7 +74,7 @@ const SIZE_KEY = "binder_card_size";
 
 export default function BinderView({
   items, apiBase, placeholderEnabled = true, layout,
-  onLayoutChange, editable = false, onMoveToSlot, onAddAtSlot,
+  onLayoutChange, editable = false, onMoveToSlot, onAddAtSlot, onScanAtSlot,
   binderSlots, onAddPage, onDeleteLastPage, storageKey, highlightIds, ghosts,
   selection, isSelectable, onVisibleIdsChange,
 }: Props) {
@@ -284,6 +287,7 @@ export default function BinderView({
             const dropProps = editable
               ? { onDragOver: (e: ReactDragEvent) => e.preventDefault(), onDrop: (e: ReactDragEvent) => handleDrop(slot, e) }
               : {};
+            const canScanHere = !!onScanAtSlot && !selecting && !moving && dragId == null;
 
             if (!card) {
               const ghost = ghostMap.get(slot);
@@ -333,6 +337,17 @@ export default function BinderView({
                         ★
                       </button>
                     )}
+                    {canScanHere && (
+                      <button
+                        type="button"
+                        onClick={() => onScanAtSlot!(slot)}
+                        title={t.binder_scan_here}
+                        aria-label={t.binder_scan_here}
+                        className={`absolute ${ghost.onWishlist ? "top-8" : "top-1"} right-1 rounded-full p-1 bg-black/60 text-white hover:bg-black/80`}
+                      >
+                        <Camera size={12} />
+                      </button>
+                    )}
                   </div>
                 );
               }
@@ -340,12 +355,22 @@ export default function BinderView({
                 <div
                   key={slot}
                   {...dropProps}
-                  onClick={picked != null ? () => moveTo(slot) : undefined}
-                  className={`aspect-[63/88] rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
+                  onClick={picked != null ? () => moveTo(slot) : canScanHere ? () => onScanAtSlot!(slot) : undefined}
+                  role={canScanHere ? "button" : undefined}
+                  title={canScanHere ? t.binder_scan_here : undefined}
+                  aria-label={canScanHere ? t.binder_scan_here : undefined}
+                  data-slot={slot}
+                  className={`group aspect-[63/88] rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
                     picked != null ? "border-pokemon-yellow/70 bg-pokemon-yellow/5 text-pokemon-yellow cursor-pointer"
+                      : canScanHere ? "border-gray-700/60 bg-gray-800/30 text-gray-600 cursor-pointer hover:border-pokemon-blue/70 hover:text-pokemon-blue"
                       : "border-gray-700/60 bg-gray-800/30 text-gray-700"}`}
                 >
-                  {picked != null ? "↓" : t.binder_empty_pocket}
+                  {picked != null ? "↓" : canScanHere ? (
+                    <span className="flex flex-col items-center gap-1 pointer-events-none">
+                      <Camera size={pocket < 80 ? 12 : 16} className="opacity-60 group-hover:opacity-100" />
+                      {pocket >= 70 && <span>{t.binder_scan_here_short}</span>}
+                    </span>
+                  ) : t.binder_empty_pocket}
                 </div>
               );
             }

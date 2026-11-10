@@ -95,6 +95,28 @@ export default function SettingsPage() {
   // Lokaler Bild-Cache (#43): Katalog-Kennzahlen für Status + Größenschätzung.
   const [catalogMeta, setCatalogMeta] = useState<{ total: number; cached_images: number } | null>(null);
   const [regStatus, setRegStatus] = useState<{ min_mark: string; pending_owned: number } | null>(null);
+  const [regLoading, setRegLoading] = useState(false);
+  // Nachholen läuft im Hintergrund: Stand alle 5 s neu holen, bis nichts mehr
+  // offen ist (höchstens 5 Minuten).
+  const loadRegulation = async () => {
+    try {
+      await catalogApi.loadRegulation();
+      toast.success(t.settings_reg_started);
+    } catch {
+      toast.error(t.form_save_error);
+      return;
+    }
+    setRegLoading(true);
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const r = await catalogApi.regulation();
+        setRegStatus(r.data);
+        if (r.data.pending_owned === 0) break;
+      } catch { /* weiter versuchen */ }
+    }
+    setRegLoading(false);
+  };
 
   useEffect(() => {
     settingsApi.get().then((r) => setS(r.data)).catch(() => toast.error(t.settings_load_error));
@@ -718,12 +740,11 @@ export default function SettingsPage() {
           <div className="pt-1">
             <button
               type="button"
-              onClick={() => catalogApi.loadRegulation()
-                .then(() => toast.success(t.settings_reg_started))
-                .catch(() => toast.error(t.form_save_error))}
-              className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600"
+              onClick={() => void loadRegulation()}
+              disabled={regLoading}
+              className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-60"
             >
-              {t.settings_reg_load}
+              {regLoading ? t.settings_reg_loading : t.settings_reg_load}
             </button>
           </div>
         )}

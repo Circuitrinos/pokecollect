@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
@@ -17,10 +17,12 @@ import BulkBar, { SelectToggle } from "@/components/BulkBar";
 import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
 import { useI18n } from "@/lib/i18n";
+import { scanHref } from "@/lib/navRegistry";
 import { useSets } from "@/lib/useSets";
 
 export default function CollectionDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = Number(params?.id);
   const { t, lang } = useI18n();
   const { sets } = useSets();
@@ -410,6 +412,7 @@ export default function CollectionDetailPage() {
               editable
               onMoveToSlot={handleMoveToSlot}
               onAddAtSlot={handleAddAtSlot}
+              onScanAtSlot={(slot) => router.push(`${scanHref(`/collections/${id}`)}&slot=${slot}`)}
               binderSlots={collection?.binder_slots ?? null}
               onAddPage={handleAddPage}
               storageKey={`binder_page_coll_${id}`}

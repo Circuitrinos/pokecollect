@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -29,7 +30,6 @@ from app.schemas.scan import (
 from app.services import regulation
 from app.services.card_creation import create_owned_card
 from app.services.catalog_lookup import catalog_row_for
-from app.services.collection_slots import next_free_position
 from app.services.scan import crop_hints, gemini, local_match, model_catalog, ocr, vlm
 from app.services.scan.rate_window import gemini_rate
 from app.services.scan.resolver import resolve_one, resolve_reads
@@ -389,6 +389,51 @@ async def scan_resolve(read: ScanRawRead, db: Session = Depends(get_db)):
     return await resolve_one(db, read, default_lang=read.language or "DE")
 
 
+def _page_size(layout: Optional[str]) -> int:
+    """Fächer je Mappenseite aus dem Layout ("3x3" → 9)."""
+    try:
+        a, b = (int(x) for x in (layout or "3x3").lower().split("x"))
+        return max(1, a * b)
+    except ValueError:
+        return 9
+
+
+def _plan_slots(db: Session, collection: Collection, payload: ScanCommitRequest) -> tuple[dict[tuple[int, int], int], set[int]]:
+    """
+    Fach je (Item, Exemplar). Belegte Fächer werden nie doppelt vergeben —
+    ist das gewünschte belegt, gilt das nächste freie dahinter.
+      - Mappenseiten-Scan (item.position): Seite ab start_position, ohne Wahl
+        eine neue Seite hinter der letzten belegten.
+      - Sonst der Reihe nach ab start_position, ohne Wahl ab dem ersten freien.
+    """
+    used = set(db.scalars(
+        select(collection_cards.c.position)
+        .where(collection_cards.c.collection_id == collection.id)
+        .where(collection_cards.c.position.isnot(None))
+    ).all())
+    start = payload.start_position
+    ps = _page_size(collection.binder_layout)
+    base = start if start is not None else ((max(used) // ps + 1) * ps if used else 0)
+
+    def take(p: int) -> int:
+        while p in used:
+            p += 1
+        used.add(p)
+        return p
+
+    plan: dict[tuple[int, int], int] = {}
+    for i, item in enumerate(payload.items):
+        if item.position is not None:
+            plan[(i, 0)] = take(base + item.position)
+    cursor = start if start is not None else 0
+    for i, item in enumerate(payload.items):
+        for c in range(item.copies):
+            if (i, c) not in plan:
+                plan[(i, c)] = take(cursor)
+                cursor = plan[(i, c)] + 1
+    return plan, used
+
+
 @router.post("/commit", response_model=ScanCommitResponse)
 def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
@@ -409,10 +454,16 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
         if not collection:
             raise HTTPException(status_code=404, detail="Sammlung nicht gefunden")
 
+    plan: dict[tuple[int, int], int] = {}
+    used: set[int] = set()
+    if collection:
+        plan, used = _plan_slots(db, collection, payload)
+
     created_ids: list[int] = []
     first_ids: list[int] = []
     copy_ids: list[list[int]] = []
-    for item in payload.items:
+    positions: list[int] = []
+    for item_no, item in enumerate(payload.items):
         item_ids: list[int] = []
         bild_url = item.bild_karte_url if is_allowed_image_url(item.bild_karte_url) else None
         if bild_url is None and item.tcgdex_card_id:
@@ -457,11 +508,10 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
             else:
                 card = create_owned_card(db, fields, background_tasks=background_tasks, commit=False)
 
-            # Sammlung + Binder-Slot. Binder-Scan liefert den Slot mit (nur für das
-            # erste Exemplar); sonst den nächsten freien Slot (nie None, #30).
+            # Sammlung + Fach aus dem Plan (nie None, #30)
             if collection:
-                slot = item.position if (item.position is not None and copy_no == 0) \
-                    else next_free_position(db, collection.id)
+                slot = plan[(item_no, copy_no)]
+                positions.append(slot)
                 db.execute(
                     collection_cards.insert().values(
                         collection_id=collection.id,
@@ -477,5 +527,11 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
         copy_ids.append(item_ids)
 
     db.commit()
+    next_position = None
+    if positions:
+        next_position = max(positions) + 1
+        while next_position in used:
+            next_position += 1
     return ScanCommitResponse(created=len(created_ids), card_ids=first_ids,
-                              all_card_ids=created_ids, copy_ids=copy_ids)
+                              all_card_ids=created_ids, copy_ids=copy_ids,
+                              positions=positions, next_position=next_position)

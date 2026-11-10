@@ -14,6 +14,7 @@ import { useSettings } from "@/lib/useSettings";
 import SetPicker from "@/components/SetPicker";
 import RaritySelect from "@/components/RaritySelect";
 import CornerEditor from "@/components/CornerEditor";
+import SlotPicker, { pageSizeOf } from "@/components/SlotPicker";
 import { cropToCardPhoto, loadImg, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
@@ -85,6 +86,10 @@ export default function ScanPage() {
   // Seite, von der aus gescannt wurde (/scan?from=…): „Zurück" führt dorthin.
   // Von einer Sammlungsseite (…&collection=<id>) ist diese Sammlung das Ziel.
   const [returnTo, setReturnTo] = useState<string | null>(null);
+  // Gewähltes Fach in der Sammlung (über alle Seiten gezählt, 0-basiert);
+  // null = erstes freies Fach bzw. beim Mappenseiten-Scan eine neue Seite.
+  const [slot, setSlot] = useState<number | null>(null);
+  const [slotRefresh, setSlotRefresh] = useState(0);
   const [layout, setLayout] = useState("3x3");
   const [setPokedexRep, setSetPokedexRep] = useState(false);
   const [priority, setPriority] = useState("");  // für Wunschkarten-Scan
@@ -125,6 +130,8 @@ export default function ScanPage() {
     if (preset) {
       setTarget("collection");
       setCollectionId(preset);
+      const presetSlot = Number(params.get("slot"));
+      if (params.get("slot") !== null && Number.isInteger(presetSlot) && presetSlot >= 0) setSlot(presetSlot);
     }
     scanApi.status().then((r) => setStatus(r.data)).catch(() => {});
     collectionApi.list().then((r) => {
@@ -132,6 +139,7 @@ export default function ScanPage() {
       if (preset && !r.data.some((c) => c.id === preset)) {  // gelöscht/fremd → normaler Standard
         setTarget("pokedex");
         setCollectionId(null);
+        setSlot(null);
       }
     }).catch(() => {});
     return () => stopCamera();
@@ -147,6 +155,9 @@ export default function ScanPage() {
     }, 5000);
     return () => window.clearTimeout(id);
   }, [localState, status]);
+
+  const targetCollection = target === "collection" && collectionId
+    ? collections.find((x) => x.id === collectionId) ?? null : null;
 
   // Layout aus gewählter Sammlung übernehmen
   useEffect(() => {
@@ -547,11 +558,22 @@ export default function ScanPage() {
           copies: target === "wishlist" ? 1 : c.copies,
         };
       });
+      const ps = pageSizeOf(targetCollection?.binder_layout);
       const res = await scanApi.commit({
         target,
         collection_id: target === "collection" ? collectionId : null,
+        start_position: target === "collection" && slot != null
+          ? (mode === "binder" ? Math.floor(slot / ps) * ps : slot) : null,
         items,
       });
+      // Weiterscannen: nächstes freies Fach hinter dem letzten bzw. nächste Seite
+      if (target === "collection") {
+        const placed = res.data.positions ?? [];
+        if (slot != null && placed.length) {
+          setSlot(mode === "binder" ? (Math.floor(Math.max(...placed) / ps) + 1) * ps : res.data.next_position ?? null);
+        }
+        setSlotRefresh((n) => n + 1);
+      }
       // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
       // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
       // Abgleich (die Karte zeigt das Katalogbild). Das erste Exemplar bekommt
@@ -622,6 +644,13 @@ export default function ScanPage() {
             ? t.scan_local_starting(status?.local?.phase)
             : t.scan_local_unreachable}
         </p>
+      )}
+
+      {targetCollection && (
+        <div className="mb-3">
+          <SlotPicker collection={targetCollection} value={slot} onChange={setSlot}
+            pageMode={mode === "binder"} refreshKey={slotRefresh} />
+        </div>
       )}
 
       {step === "setup" && (
@@ -730,7 +759,7 @@ export default function ScanPage() {
                 <label className="text-gray-400 text-xs block mb-1">{t.scan_target_collection}</label>
                 <select
                   value={collectionId ?? ""}
-                  onChange={(e) => setCollectionId(e.target.value ? Number(e.target.value) : null)}
+                  onChange={(e) => { setCollectionId(e.target.value ? Number(e.target.value) : null); setSlot(null); }}
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-sm"
                 >
                   <option value="">–</option>

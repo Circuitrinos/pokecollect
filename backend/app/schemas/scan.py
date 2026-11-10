@@ -115,11 +115,13 @@ class ScanCommitItem(BaseModel):
     set_id: Optional[str] = None
     dex_id: Optional[PgNichtNegativ] = None
     bild_karte_url: Optional[str] = None   # TCGdex high.webp (wird host-validiert)
-    position: Optional[PgNichtNegativ] = None  # Binder-Slot (0-basiert) für die Ablage
+    # Mappenseiten-Scan: Fach auf der fotografierten Seite (0-basiert); landet
+    # auf der Seite ab start_position (ohne: auf einer neuen Seite am Ende).
+    position: Optional[PgNichtNegativ] = None
     im_pokedex: bool = False               # je Karte: als Pokédex-Vertreter setzen
     prioritaet: Optional[str] = None       # nur für Wunschliste
-    # Gleiche Karte mehrfach besessen: so viele Exemplare anlegen (je eine Zeile;
-    # das eigene Foto bekommt das erste, die übrigen das Katalogbild).
+    # Gleiche Karte mehrfach besessen: so viele Exemplare anlegen (je eine Zeile,
+    # alle mit demselben Bild).
     copies: int = Field(1, ge=1, le=50)
 
     # Scan-Commit legt Karten an → dieselbe Steuerzeichen-Sperre wie CardBase
@@ -131,6 +133,10 @@ class ScanCommitRequest(BaseModel):
     # Ziel: Pokédex (besessen), Sammlung, oder Wunschliste (nicht besessen)
     target: Literal["pokedex", "collection", "wishlist"] = "pokedex"
     collection_id: Optional[int] = None
+    # Gewähltes Fach (0-basiert, über alle Seiten gezählt): Karten ohne
+    # position füllen freie Fächer ab hier; beim Mappenseiten-Scan der Anfang
+    # der Zielseite. Ohne: erstes freies Fach bzw. neue Seite am Ende.
+    start_position: Optional[PgNichtNegativ] = None
     items: list[ScanCommitItem]
 
 
@@ -139,3 +145,7 @@ class ScanCommitResponse(BaseModel):
     card_ids: list[int]                    # je Item das erste Exemplar (Reihenfolge = items)
     all_card_ids: list[int] = []           # alle angelegten Exemplare
     copy_ids: list[list[int]] = []         # je Item alle Exemplare (Foto für jedes Exemplar)
+    # Sammlung: belegte Fächer dieses Commits + nächstes freies Fach danach
+    # (Weiterscannen ins nächste Fach / auf die nächste Seite)
+    positions: list[int] = []
+    next_position: Optional[int] = None

@@ -248,20 +248,22 @@ def _needs_fetch():
 
 async def backfill_catalog(db: Session, limit: int = 2000, owned_only: bool = False) -> dict:
     """
-    Holt die Legalitäts-Felder für bereits angereicherte Katalogzeilen nach
-    (vor dieser Version angereichert). Vorrang: Zeilen eigener Karten, dann
-    Trainer/Energie (Reprint-Regel), dann der Rest. Danach die eigenen Karten
-    neu berechnen. Zwei kurze Transaktionen wie beim €-Repass (#66).
+    Holt die Legalitäts-Felder für Katalogzeilen nach. Vorrang: Zeilen eigener
+    Karten, dann Trainer/Energie (Reprint-Regel), dann der Rest. Noch nicht
+    angereicherte Zeilen werden dabei gleich voll angereichert (sonst blieben
+    eigene Karten, deren Zeile die nächtliche Anreicherung noch nicht erreicht
+    hat, ohne Zeichen). Danach Karten ohne Katalogzeile direkt bei TCGdex und
+    die eigenen Karten neu berechnen. Kurze Transaktionen wie beim €-Repass (#66).
     """
     from app.services import tcgdex
-    from app.services.catalog import _CONC, _catalog_lang
+    from app.services.catalog import _CONC, _apply_full, _catalog_lang
 
     owned = select(PokemonCard.tcgdex_card_id).where(PokemonCard.tcgdex_card_id.isnot(None))
     is_owned = TcgdexCatalog.card_id.in_(owned)
     prio_owned = case((is_owned, 0), else_=1)
     prio_kind = case((TcgdexCatalog.category.in_(["Trainer", "Energy"]), 0), else_=1)
     q = (select(TcgdexCatalog.card_id, TcgdexCatalog.region)
-         .where(TcgdexCatalog.enriched == True, _needs_fetch())  # noqa: E712
+         .where(_needs_fetch())
          .order_by(prio_owned, prio_kind, TcgdexCatalog.card_id)
          .limit(limit)
          .execution_options(all_users=True))
@@ -269,8 +271,6 @@ async def backfill_catalog(db: Session, limit: int = 2000, owned_only: bool = Fa
         q = q.where(is_owned)
     auswahl = db.execute(q).all()
     db.commit()
-    if not auswahl:
-        return {"checked": 0, "failed": 0, "cards_changed": 0}
 
     sem = asyncio.Semaphore(_CONC)
     data: dict[str, object] = {}
@@ -295,13 +295,61 @@ async def backfill_catalog(db: Session, limit: int = 2000, owned_only: bool = Fa
         row = db.get(TcgdexCatalog, cid)
         if row is None:
             continue
-        apply_to_catalog(row, tc)
+        if row.enriched:
+            apply_to_catalog(row, tc)
+        else:
+            _apply_full(row, tc)          # volle Anreicherung, inkl. Zeichen
         checked += 1
     db.commit()
+    direct = await _backfill_without_catalog(db, limit=min(limit, 500))
     changed = refresh_cards(db)
-    log.info("Regulation-Nachholer: %d Katalogzeilen geprüft, %d fehlgeschlagen, %d Karten geändert.",
-             checked, failed, changed)
-    return {"checked": checked, "failed": failed, "cards_changed": changed}
+    log.info("Regulation-Nachholer: %d Katalogzeilen geprüft, %d fehlgeschlagen, %d Karten ohne "
+             "Katalogzeile direkt geholt, %d Karten geändert.", checked, failed, direct, changed)
+    return {"checked": checked, "failed": failed, "direct": direct, "cards_changed": changed}
+
+
+async def _backfill_without_catalog(db: Session, limit: int = 500) -> int:
+    """Eigene Karten mit TCGdex-ID, aber ohne Katalogzeile (Set noch nicht im
+    Katalog, Altbestand): Zeichen direkt bei TCGdex holen. → Anzahl IDs mit Zeichen."""
+    from app.services import tcgdex
+
+    known = select(func.upper(TcgdexCatalog.card_id))
+    ids = db.scalars(
+        select(PokemonCard.tcgdex_card_id).distinct()
+        .where(PokemonCard.tcgdex_card_id.isnot(None))
+        .where(PokemonCard.regulation_mark.is_(None), PokemonCard.legal_mark.is_(None))
+        .where(func.upper(PokemonCard.tcgdex_card_id).not_in(known))
+        .limit(limit)
+        .execution_options(all_users=True)
+    ).all()
+    db.commit()
+    if not ids:
+        return 0
+    sem = asyncio.Semaphore(5)
+    marks: dict[str, str] = {}
+
+    async def one(cid: str):
+        async with sem:
+            for lang in ("en", "ja"):
+                try:
+                    tc = await tcgdex.get_card(cid, lang)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Regulation-Nachholer: %s (%s) fehlgeschlagen: %s", cid, lang, exc)
+                    tc = None
+                if tc is not None:
+                    mark = norm_mark(tc.regulationMark)
+                    if mark:
+                        marks[cid] = mark
+                    return
+
+    await asyncio.gather(*(one(cid) for cid in ids))
+    for cid, mark in marks.items():
+        db.execute(update(PokemonCard).where(PokemonCard.tcgdex_card_id == cid,
+                                             PokemonCard.regulation_mark.is_(None))
+                   .values(regulation_mark=mark)
+                   .execution_options(all_users=True, synchronize_session=False))
+    db.commit()
+    return len(marks)
 
 
 def status(db: Session) -> dict:
