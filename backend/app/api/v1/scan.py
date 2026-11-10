@@ -9,6 +9,7 @@ GET  /api/v1/scan/status   welche Engine aktiv ist (für die UI)
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -141,16 +142,21 @@ def scan_status(db: Session = Depends(get_db)):
     """Welche Erkennungs-Engine ist aktiv? (provider-bewusste Anzeige im UI)"""
     provider, key, model, _base = _reader_config(db)
     ocr_on = ocr.is_enabled()
+    local: dict | None = None
     if provider == "gemini":
         reader_on = gemini.is_enabled(key)
     elif provider in ("openai", "openrouter"):
         reader_on = vlm.is_enabled(key)
     elif provider == "local":
-        reader_on = local_match.is_ready(_base)
+        local = local_match.state(_base)
+        reader_on = local["status"] == "ready"
     else:  # "ocr": bewusst nur lokale Erkennung
         reader_on = False
     active = provider if reader_on else ("ocr" if ocr_on else "none")
     return {
+        # Bild-Abgleich: Zustand des matcher-Dienstes (lädt nach einem Neustart
+        # eine Weile) – das UI zeigt das an und fragt erneut, bis er bereit ist.
+        "local": local,
         "provider": provider,
         "model": model,
         # Rückwärtskompatibel: alte Clients lesen weiter gemini/ocr/active.
@@ -239,6 +245,7 @@ async def scan(
     mime = (file.content_type or "image/jpeg").lower()
     if not mime.startswith("image/"):
         raise HTTPException(status_code=400, detail="Content-Type muss image/* sein")
+    t0 = time.perf_counter()
 
     engine = "none"
     reads = None
@@ -256,7 +263,9 @@ async def scan(
             reads, local_extras, engine = result.reads, result.extras, "local"
         else:
             hinweis_art = result.fehler_art
-            hinweis = "Bild-Abgleich nicht erreichbar – Erkennung über lokale OCR."
+            hinweis = ("Bild-Abgleich startet noch – Erkennung über lokale OCR."
+                       if result.fehler_art == local_match.FEHLER_STARTET
+                       else "Bild-Abgleich nicht erreichbar – Erkennung über lokale OCR.")
     elif provider == "gemini" and gemini.is_enabled(reader_key):
         if _gemini_limit_reached(db):
             limit_erreicht = True
@@ -297,6 +306,7 @@ async def scan(
         engine = "ocr"
 
     reads = reads or []
+    t_read = time.perf_counter()
     # Koordinaten-Vorstufe (Panel-Runde 3, Auflage A1 — Regression aus Runde
     # 2): MUSS vor der Auswahl laufen. Ohne sie liest die Auswahl unten die
     # ROHE bbox-Fläche ohne Gültigkeitsfilter — ein Koordinaten-Müll-Wert wie
@@ -332,6 +342,10 @@ async def scan(
     reads = crop_hints.sanitize_crop_hints(reads, data, mode=mode)
 
     candidates = await resolve_reads(db, reads, default_lang=default_language)
+    t_end = time.perf_counter()
+    log.info("Scan %s über %s: %d Karte(n) in %d ms (Erkennung %d ms, Auflösung/TCGdex %d ms)",
+             mode, engine, len(candidates), round((t_end - t0) * 1000),
+             round((t_read - t0) * 1000), round((t_end - t_read) * 1000))
     # Bild-Abgleich: Alternativen + „bitte wählen" an die Kandidaten hängen
     # (Zuordnung über das Read-Objekt; resolve_reads sortiert um).
     for c in candidates:

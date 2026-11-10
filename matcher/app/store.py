@@ -98,8 +98,12 @@ class Store:
         return set(self._snap.card_id)
 
     def add(self, seg: Segment) -> None:
+        self.add_many([seg])
+
+    def add_many(self, segs: list[Segment]) -> None:
+        """Add segments with one rebuild (startup loads ~80 at once)."""
         with self._lock:
-            self._segments.append(seg)
+            self._segments.extend(segs)
             self._rebuild()
 
     def _rebuild(self) -> None:

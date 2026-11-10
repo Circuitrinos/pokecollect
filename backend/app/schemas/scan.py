@@ -85,9 +85,12 @@ class ScanResponse(BaseModel):
     # Maschinenlesbare Fallback-Ursache (Issue #21): erlaubt dem UI, „Rate-Limit
     # erreicht" von „Key ungültig" zu unterscheiden. None = kein Hinweis.
     # "gemini_fehler" = harter Gemini-Fehler; "reader_fehler" = harter Fehler
-    # eines OpenAI-/OpenRouter-Lesemodells (Issue #57).
+    # eines OpenAI-/OpenRouter-Lesemodells (Issue #57) oder ein nicht
+    # erreichbarer Bild-Abgleich; "bild_abgleich_startet" = der matcher-Dienst
+    # lädt noch (kurz nach einem Neustart).
     hinweis_art: Optional[Literal[
-        "tageslimit", "rate_limit", "key_ungueltig", "gemini_fehler", "reader_fehler"
+        "tageslimit", "rate_limit", "key_ungueltig", "gemini_fehler", "reader_fehler",
+        "bild_abgleich_startet",
     ]] = None
 
 

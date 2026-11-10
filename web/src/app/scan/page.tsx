@@ -106,6 +106,16 @@ export default function ScanPage() {
     return () => stopCamera();
   }, []);
 
+  // Bild-Abgleich lädt nach einem Neustart eine Weile: Status nachfragen, bis er bereit ist.
+  const localState = status?.provider === "local" ? status.local?.status ?? "unreachable" : null;
+  useEffect(() => {
+    if (!localState || localState === "ready" || localState === "error") return;
+    const id = window.setTimeout(() => {
+      scanApi.status().then((r) => setStatus(r.data)).catch(() => {});
+    }, 5000);
+    return () => window.clearTimeout(id);
+  }, [localState, status]);
+
   // Layout aus gewählter Sammlung übernehmen
   useEffect(() => {
     if (target === "collection" && collectionId) {
@@ -240,6 +250,7 @@ export default function ScanPage() {
           : art === "rate_limit" ? t.scan_fehler_rate
           : art === "gemini_fehler" ? t.scan_fehler_gemini
           : art === "reader_fehler" ? t.scan_fehler_reader
+          : art === "bild_abgleich_startet" ? t.scan_fehler_local_starting
           : t.scan_limit_fallback; // tageslimit
         toast(msg, { icon: art === "key_ungueltig" ? "🔑" : "⚠️" });
       } else if (res.data.limit_erreicht) {
@@ -468,11 +479,18 @@ export default function ScanPage() {
         <Link href="/" className="text-gray-500 hover:text-white text-sm">{t.scan_back}</Link>
       </div>
       <p className="text-gray-400 text-sm mb-1">{t.scan_subtitle}</p>
-      <p className="text-xs mb-6">
+      <p className={`text-xs ${localState && localState !== "ready" ? "mb-2" : "mb-6"}`}>
         {engineActive === "none"
           ? <span className="text-red-400">{t.scan_engine_none}</span>
           : <span className="text-gray-500">{t.scan_engine_active(engineActive)}</span>}
       </p>
+      {localState && localState !== "ready" && (
+        <p className="text-xs mb-6 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1.5 text-amber-300">
+          {localState === "loading" || localState === "converting"
+            ? t.scan_local_starting(status?.local?.phase)
+            : t.scan_local_unreachable}
+        </p>
+      )}
 
       {step === "setup" && (
         <div className="space-y-6">

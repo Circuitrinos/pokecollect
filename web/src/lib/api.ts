@@ -564,7 +564,8 @@ export type ScanAlternative = {
   art_inliers: number;
 };
 
-export type GeminiHinweisArt = "tageslimit" | "rate_limit" | "key_ungueltig" | "gemini_fehler" | "reader_fehler";
+export type GeminiHinweisArt = "tageslimit" | "rate_limit" | "key_ungueltig" | "gemini_fehler" | "reader_fehler"
+  | "bild_abgleich_startet";
 
 export type ScanResponse = {
   engine: string;
@@ -581,6 +582,8 @@ export type ScanStatus = {
   active: string;
   provider?: string;   // Scan-Stufe B (Issue #57): gewähltes Lese-Modell
   model?: string;
+  // Bild-Abgleich: Zustand des matcher-Dienstes (nur bei provider "local")
+  local?: { status: "ready" | "loading" | "converting" | "error" | "unreachable" | string; phase?: string | null } | null;
 };
 
 export type ScanCommitItem = {

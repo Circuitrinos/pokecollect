@@ -35,6 +35,7 @@ import cv2
 import httpx
 import numpy as np
 
+from . import timing
 from .catalog import CatalogCard
 
 log = logging.getLogger(__name__)
@@ -87,7 +88,9 @@ class Engine:
 
     def embed(self, imgs: list[np.ndarray]) -> np.ndarray:
         x = np.stack([prep(i) for i in imgs])
+        t = time.perf_counter()
         with self._lock:
+            timing.add("embed_wait", time.perf_counter() - t)   # e.g. behind a backfill batch
             out = self.sess.run(None, {self.input: x})[0]
         out = out.astype(np.float32)
         return out / (np.linalg.norm(out, axis=1, keepdims=True) + 1e-9)

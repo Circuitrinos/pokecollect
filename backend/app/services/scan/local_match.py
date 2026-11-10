@@ -10,6 +10,7 @@ die Alternativen für die Auswahl im Bestätigungs-Dialog.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -20,6 +21,7 @@ from app.schemas.scan import ScanAlternative, ScanRawRead
 log = logging.getLogger(__name__)
 
 FEHLER_NICHT_BEREIT = "reader_fehler"
+FEHLER_STARTET = "bild_abgleich_startet"   # Dienst lädt noch (typisch kurz nach einem Neustart)
 _TIMEOUT = httpx.Timeout(60.0, connect=3.0)
 
 
@@ -37,6 +39,10 @@ class LocalResult:
     fehler_art: Optional[str] = None
 
 
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=_TIMEOUT)
+
+
 def status(base_url: str) -> dict:
     """GET /health des Dienstes (kurz, für /scan/status). Fehler → {}."""
     if not base_url:
@@ -52,6 +58,12 @@ def is_ready(base_url: str) -> bool:
     return status(base_url).get("status") == "ready"
 
 
+def state(base_url: str) -> dict:
+    """Kurzform für /scan/status: {"status": ready|loading|converting|error|unreachable, "phase": …}."""
+    st = status(base_url)
+    return {"status": st.get("status") or "unreachable", "phase": st.get("phase")}
+
+
 def _bbox(quad: list[list[float]]) -> list[float]:
     xs, ys = [p[0] for p in quad], [p[1] for p in quad]
     x0, y0 = max(0.0, min(xs)), max(0.0, min(ys))
@@ -60,8 +72,9 @@ def _bbox(quad: list[list[float]]) -> list[float]:
 
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
                   rows: int = 0, cols: int = 0) -> LocalResult:
+    t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with _client() as client:
             r = await client.post(
                 f"{base_url.rstrip('/')}/match",
                 files={"file": ("scan", image_bytes, mime_type)},
@@ -72,11 +85,16 @@ async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: st
         return LocalResult(fehler_art=FEHLER_NICHT_BEREIT)
     if r.status_code != 200:
         log.warning("Matcher antwortete %s: %s", r.status_code, r.text[:200])
-        return LocalResult(fehler_art=FEHLER_NICHT_BEREIT)
+        startet = r.status_code == 503 and "not ready" in r.text
+        return LocalResult(fehler_art=FEHLER_STARTET if startet else FEHLER_NICHT_BEREIT)
+    body = r.json()
+    log.info("Bild-Abgleich (%s): %d Karte(n) in %d ms, davon Matcher %s ms %s",
+             mode, len(body.get("cards") or []), round((time.perf_counter() - t0) * 1000),
+             body.get("ms"), body.get("timing") or "")
 
     reads: list[ScanRawRead] = []
     extras: dict[int, LocalExtra] = {}
-    for card in r.json().get("cards", []):
+    for card in body.get("cards", []):
         cands = card.get("candidates") or []
         if not cands:
             continue

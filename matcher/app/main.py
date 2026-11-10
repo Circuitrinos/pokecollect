@@ -16,8 +16,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
-from . import detect, embedding, matcher, numocr
+from . import detect, embedding, matcher, numocr, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -33,25 +34,39 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 EXTEND = os.getenv("EXTEND", "1") == "1"
 EXTEND_REGIONS = {r.strip() for r in os.getenv("EXTEND_REGIONS", "west").split(",") if r.strip()}
 REFRESH_HOURS = float(os.getenv("REFRESH_HOURS", "24"))
+# Extension pass + embedding backfill wait this long after startup (and then
+# run at low CPU priority), so the first scans after a reboot don't compete
+# with them.
+BACKGROUND_DELAY_MIN = float(os.getenv("BACKGROUND_DELAY_MIN", "10"))
+WARMUP = os.getenv("WARMUP", "1") == "1"
 MAX_BYTES = 12 * 1024 * 1024
 
+_T0 = time.monotonic()
 app = FastAPI(title="PokéCollect matcher")
 store = Store()
-state: dict = {"status": "loading", "error": None, "mapping": None}
+state: dict = {"status": "loading", "phase": "starting", "error": None, "mapping": None,
+               "ready_after_s": None, "warmup_ms": None, "matches": 0}
+_match_lock = threading.Lock()   # one photo at a time; each match already uses every core
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
 shortlist = embedding.Shortlist()
 
 
 def _load_catalog_with_retry() -> dict[str, CatalogCard]:
-    delay = 5
+    # After a reboot the database often comes up after us: retry often enough
+    # that we don't sit idle long after it's back.
+    delay = 3
     while True:
         try:
             return load_catalog(DATABASE_URL)
         except Exception as exc:
             log.warning("Catalog not reachable yet (%s); retrying in %ds", exc, delay)
             time.sleep(delay)
-            delay = min(delay * 2, 300)
+            delay = min(delay * 2, 30)
+
+
+def _since(t: float) -> str:
+    return f"{time.monotonic() - t:.1f}s"
 
 
 def _startup() -> None:
@@ -60,31 +75,91 @@ def _startup() -> None:
         SEG_DIR.mkdir(parents=True, exist_ok=True)
         base = SEG_DIR / "base"
         if not base.with_suffix(".npz").exists() and INDEX_PKL.exists():
-            state["status"] = "converting"
+            state.update(status="converting", phase="converting")
             convert(INDEX_PKL, base)
-        state["status"] = "loading"
+        state.update(status="loading", phase="catalog")
+        t = time.monotonic()
         catalog = _load_catalog_with_retry()
+        log.info("Startup: catalog %d cards (%s)", len(catalog), _since(t))
+        state["phase"] = "index"
+        t = time.monotonic()
         if base.with_suffix(".npz").exists():
             seg = load_segment(base)
             seg.card_ids, report = map_pokemontcg(seg.meta, catalog)
             state["mapping"] = report.as_dict()
             store.add(seg)
-        n_ext = extender.load_existing(catalog)
+        n_ext = extender.load_existing(
+            catalog, progress=lambda i, n: state.update(phase=f"index {i}/{n}"))
+        log.info("Startup: index %s (%s)", store.stats(), _since(t))
+        state["phase"] = "embeddings"
+        t = time.monotonic()
         shortlist.load()
         shortlist.update_coverage(store.known_card_ids())
-        log.info("Ready: %s (+%d from earlier extension runs), shortlist: %s", store.stats(), n_ext,
+        log.info("Startup: shortlist %s (%s)", "DINOv2 + pHash" if shortlist.active else "pHash", _since(t))
+        if WARMUP:
+            state["phase"] = "warm-up"
+            state["warmup_ms"] = _warm_up()
+        state.update(status="ready", phase=None, ready_after_s=round(time.monotonic() - _T0, 1))
+        log.info("Ready after %.1fs: %s (+%d from earlier extension runs), shortlist: %s",
+                 state["ready_after_s"], store.stats(), n_ext,
                  "DINOv2 + pHash" if shortlist.active else "pHash")
-        state["status"] = "ready"
     except Exception as exc:
         log.exception("Startup failed")
-        state.update(status="error", error=str(exc))
+        state.update(status="error", phase=None, error=str(exc))
         return
-    while EXTEND or shortlist.engine is not None:
+    if not (EXTEND or shortlist.engine is not None):
+        return
+    _lower_priority()
+    if BACKGROUND_DELAY_MIN > 0:
+        log.info("Background passes (extension, embedding backfill) start in %g min", BACKGROUND_DELAY_MIN)
+        time.sleep(BACKGROUND_DELAY_MIN * 60)
+    while True:
         if EXTEND:
             extender.run_once(catalog)
         shortlist.backfill(catalog, store.known_card_ids())   # embed cards that have none yet
         time.sleep(REFRESH_HOURS * 3600)
         catalog = _load_catalog_with_retry()
+
+
+def _lower_priority() -> None:
+    """Nice this thread (and the worker threads it starts) so scans win the CPU."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+    except (AttributeError, OSError) as exc:
+        log.debug("Could not lower background priority: %s", exc)
+
+
+def _synthetic_photo() -> np.ndarray:
+    """A textured, card-shaped rectangle on a plain desk."""
+    rng = np.random.default_rng(7)
+    card = cv2.resize(rng.integers(0, 256, (48, 34, 3), dtype=np.uint8), (734, 1024),
+                      interpolation=cv2.INTER_NEAREST)
+    cv2.rectangle(card, (0, 0), (733, 1023), (40, 200, 230), 28)
+    photo = np.full((1200, 1000, 3), 70, np.uint8)
+    photo[88:88 + 1024, 133:133 + 734] = card
+    return photo
+
+
+def _warm_up() -> int:
+    """
+    Run every stage once before reporting ready: first calls pay for lazy
+    set-up (ONNX Runtime buffers for the 2-image batch, OpenCV/BLAS thread
+    pools, Tesseract binary + language data from a cold disk after a reboot).
+    """
+    t = time.perf_counter()
+    timing.start()
+    try:
+        photo = _synthetic_photo()
+        dets = _detect(photo, max_cards=5, nested=True)
+        quad = dets[0].quad if dets else detect.whole_image_as_card(photo)
+        _match(detect.warp(photo, quad), store.snapshot(), 5)
+        with timing.phase("ocr"):
+            numocr.warm_up()
+    except Exception:
+        log.exception("Warm-up failed (ignored)")
+    ms = round((time.perf_counter() - t) * 1000)
+    log.info("Startup: warm-up %d ms %s", ms, timing.take())
+    return ms
 
 
 @app.on_event("startup")
@@ -94,8 +169,9 @@ def _on_startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {**state, "store": store.stats(), "extension": extender.status,
-            "embedding": shortlist.status, "ocr": numocr.available(), "catalog": len(catalog)}
+    return {**state, "uptime_s": round(time.monotonic() - _T0), "store": store.stats(),
+            "extension": extender.status, "embedding": shortlist.status, "ocr": numocr.available(),
+            "catalog": len(catalog)}
 
 
 # ── matching ────────────────────────────────────────────────────────────────
@@ -111,8 +187,11 @@ def _card_info(card_id: str) -> dict:
 def _decide(card: np.ndarray, cands: list[matcher.Candidate], quad: np.ndarray) -> tuple[matcher.Decision, np.ndarray]:
     upside = bool(cands and cands[0].upside_down)
     wanted = {num_key(catalog[c.card_id].local_id) for c in cands if c.card_id in catalog}
-    decision = matcher.decide(cands, catalog,
-                              lambda: numocr.read_numbers(card, upside_down=upside, wanted=wanted))
+    def read_numbers():
+        with timing.phase("ocr"):
+            return numocr.read_numbers(card, upside_down=upside, wanted=wanted)
+
+    decision = matcher.decide(cands, catalog, read_numbers)
     q = detect.portrait_order(quad)
     if decision.candidates and decision.candidates[0].upside_down:
         q = np.roll(q, 2, axis=0)  # report corners in the card's real orientation
@@ -120,7 +199,15 @@ def _decide(card: np.ndarray, cands: list[matcher.Candidate], quad: np.ndarray) 
 
 
 def _match(card: np.ndarray, snap, top_k: int) -> list[matcher.Candidate]:
-    return matcher.match_card(card, snap, top_k=top_k, shortlist=shortlist.shortlist(card))
+    with timing.phase("embed"):
+        sl = shortlist.shortlist(card)
+    with timing.phase("match"):
+        return matcher.match_card(card, snap, top_k=top_k, shortlist=sl)
+
+
+def _detect(img: np.ndarray, **kw) -> list:
+    with timing.phase("detect"):
+        return detect.detect_cards(img, **kw)
 
 
 def _identify(img: np.ndarray, quad: np.ndarray, top_k: int) -> tuple[matcher.Decision, np.ndarray]:
@@ -203,10 +290,30 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
-    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-    if img is None:
-        raise HTTPException(400, "unreadable image")
-    top_k = max(1, min(top_k, 10))
+    # The work is CPU-bound: run it in a worker thread so /health keeps
+    # answering (the backend's status check has a 2 s timeout).
+    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)))
+
+
+def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int) -> dict:
+    t0 = time.perf_counter()
+    with _match_lock:
+        queued = time.perf_counter() - t0
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(400, "unreadable image")
+        res = _run_match(img, mode, rows, cols, top_k)
+        state["matches"] += 1
+    if queued >= 0.05:
+        res["timing"]["queued"] = round(queued * 1000)
+    log.info("match %s %dx%d: %d card(s) in %d ms %s%s", mode, img.shape[1], img.shape[0],
+             len(res["cards"]), res["ms"], res["timing"],
+             " (first since start)" if state["matches"] == 1 else "")
+    return res
+
+
+def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> dict:
+    timing.start()
     t0 = time.perf_counter()
     h, w = img.shape[:2]
     cards: list[dict] = []
@@ -217,7 +324,7 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
             for c in range(cols):
                 x0, y0 = c * cw, r * ch
                 cell = img[y0:y0 + ch, x0:x0 + cw]
-                opts = [d.quad + [x0, y0] for d in detect.detect_cards(cell, max_cards=2, nested=True)
+                opts = [d.quad + [x0, y0] for d in _detect(cell, max_cards=2, nested=True)
                         if d.area_frac > 0.3]
                 opts.append(detect.whole_image_as_card(cell) + [x0, y0])
                 d, q = _best_of(img, opts, top_k)
@@ -229,7 +336,7 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
         # sub-rectangles match worse than a true card outline, so they lose.
         snap = store.snapshot()
         scored = []
-        for det in detect.detect_cards(img, max_cards=24, nested=True):
+        for det in _detect(img, max_cards=24, nested=True):
             card = detect.warp(img, det.quad)
             cands = _match(card, snap, top_k)
             if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
@@ -250,10 +357,10 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
             d, oq = _decide(card, cands, q)
             cards.append(_result(d, oq, img.shape, None))
     else:  # single
-        dets = [x for x in detect.detect_cards(img, max_cards=5, nested=True) if x.area_frac > 0.05]
+        dets = [x for x in _detect(img, max_cards=5, nested=True) if x.area_frac > 0.05]
         opts = [x.quad for x in dets] + [detect.whole_image_as_card(img)]
         d, q = _best_of(img, opts, top_k)
         cards.append(_result(d, q, img.shape, None))
 
     return {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
-            "shortlist": "dinov2" if shortlist.active else "phash"}
+            "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}

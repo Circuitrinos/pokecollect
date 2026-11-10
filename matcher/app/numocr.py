@@ -76,3 +76,14 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
                     if wanted and num_key(pair[0]) in wanted:
                         return [pair] + [p for p in found if p != pair]
     return found
+
+
+def warm_up() -> None:
+    """One tiny Tesseract call, so the first real read doesn't pay for loading
+    the binary and language data from a cold disk."""
+    if not available():
+        return
+    import pytesseract
+    img = np.full((60, 200), 255, np.uint8)
+    cv2.putText(img, "123/197", (8, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 0, 2)
+    pytesseract.image_to_string(img, config=_CONFIGS[0])

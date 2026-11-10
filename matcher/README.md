@@ -68,12 +68,17 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 | `PHASH_TOP` | `10` | pHash templates added to it |
 | `EMBED_MIN_COVERAGE` | `0.98` | below this, the full pHash preselection stays on too |
 | `EMBED_THREADS` | `0` | onnxruntime threads (0 = its default) |
+| `BACKGROUND_DELAY_MIN` | `10` | wait before the extension pass + embedding backfill after a start (they then run at low CPU priority, so first scans after a reboot don't compete) |
+| `WARMUP` | `1` | run every stage once on a synthetic photo before reporting ready |
 
 ## Endpoints
 
-- `GET /health`: loading state, template counts, pokemontcg→TCGdex mapping
-  report (incl. unmapped sets), extension progress, embedding shortlist state.
+- `GET /health`: loading state (`status`, `phase` while starting, `ready_after_s`,
+  `warmup_ms`), template counts, pokemontcg→TCGdex mapping report (incl. unmapped
+  sets), extension progress, embedding shortlist state.
 - `POST /match` (multipart): `file`, `mode` = `single|multi|binder`, `rows`, `cols`, `top_k`.
-  The response's `shortlist` says which shortlist was used (`dinov2` or `phash`).
+  The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
+  `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
+  Each match is also logged with that breakdown.
 
 Thresholds live at the top of `app/matcher.py` (`MIN_ART`, `LEAD`, …).

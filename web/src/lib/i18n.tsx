@@ -210,6 +210,10 @@ const DE = {
   scan_fehler_key: "Gemini-API-Key ungültig oder fehlt – dieses Foto wurde mit der lokalen OCR gelesen. Bitte den Key in den Einstellungen prüfen.",
   scan_fehler_gemini: "Gemini war nicht erreichbar – dieses Foto wurde mit der lokalen OCR gelesen.",
   scan_fehler_reader: "Das gewählte Lese-Modell war nicht erreichbar – dieses Foto wurde mit der lokalen OCR gelesen.",
+  scan_fehler_local_starting: "Der Bild-Abgleich startet noch – dieses Foto wurde mit der lokalen OCR gelesen.",
+  scan_local_starting: (phase?: string | null) =>
+    `Bild-Abgleich startet noch${phase ? ` (${phase})` : ""} – bis er bereit ist, werden Fotos mit der lokalen OCR gelesen.`,
+  scan_local_unreachable: "Bild-Abgleich nicht erreichbar – Fotos werden mit der lokalen OCR gelesen.",
   price_history_empty: "Keine Preishistorie vorhanden.",
   scan_results_title: (n: number) => `${n} Karte(n) erkannt`,
   scan_uncertain: "Unsicher – bitte prüfen",
@@ -850,6 +854,10 @@ const EN: typeof DE = {
   scan_fehler_key: "Gemini API key invalid or missing – this photo was read with local OCR instead. Please check the key in settings.",
   scan_fehler_gemini: "Gemini was unavailable – this photo was read with local OCR instead.",
   scan_fehler_reader: "The selected reading model was unavailable – this photo was read with local OCR instead.",
+  scan_fehler_local_starting: "Image match was still starting up – this photo was read with local OCR instead.",
+  scan_local_starting: (phase?: string | null) =>
+    `Image match is still starting up${phase ? ` (${phase})` : ""} – until it's ready, photos are read with local OCR.`,
+  scan_local_unreachable: "Image match is unreachable – photos are read with local OCR.",
   price_history_empty: "No price history yet.",
   scan_results_title: (n: number) => `${n} card(s) detected`,
   scan_uncertain: "Uncertain – please check",

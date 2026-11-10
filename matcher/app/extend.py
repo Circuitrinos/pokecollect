@@ -38,14 +38,18 @@ class Extender:
         self._lock = threading.Lock()
 
     # ── existing extension segments ──────────────────────────────────────────
-    def load_existing(self, catalog: dict[str, CatalogCard]) -> int:
-        n = 0
-        for p in sorted(self.seg_dir.glob("ext_*.npz")):
+    def load_existing(self, catalog: dict[str, CatalogCard], progress=None) -> int:
+        paths = sorted(self.seg_dir.glob("ext_*.npz"))
+        segs = []
+        for i, p in enumerate(paths, 1):
             seg = load_segment(p.with_suffix(""))
             seg.card_ids = [m.get("card_id") if m.get("card_id") in catalog else None for m in seg.meta]
-            self.store.add(seg)
-            n += len(seg)
-        return n
+            segs.append(seg)
+            if progress:
+                progress(i, len(paths))
+        if segs:
+            self.store.add_many(segs)
+        return sum(len(s) for s in segs)
 
     # ── failures ─────────────────────────────────────────────────────────────
     def _failed(self) -> dict[str, float]:
