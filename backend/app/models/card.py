@@ -72,6 +72,10 @@ class PokemonCard(Base):
     regulation_mark = Column(Text, nullable=True, index=True)
     legal_mark = Column(Text, nullable=True, index=True)
     basic_energy = Column(Boolean, nullable=False, server_default=false(), default=False)
+    # Jüngstes Zeichen eines GLEICHNAMIGEN Trainer-/Spezial-Energie-Drucks mit
+    # ANDEREM (oder unbekanntem) Text, wenn es höher als legal_mark ist — für
+    # den Hinweis „gleicher Name legal, aber anderer Text". Sonst NULL.
+    name_mark = Column(Text, nullable=True)
     hinzugefuegt_am = Column(DateTime, default=datetime.utcnow)
     aktualisiert_am = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -64,6 +64,7 @@ export type Card = {
   regulation_mark?: string | null;
   legal_mark?: string | null;
   basic_energy?: boolean;
+  name_mark?: string | null;         // gleichnamiger legaler Druck mit anderem/unbekanntem Text
   legal_expanded?: boolean | null;   // TCGdex-Flag, nur Einzelkarten
   sprache: string;
   besessen: boolean;

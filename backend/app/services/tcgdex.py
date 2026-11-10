@@ -143,8 +143,9 @@ class TcgdexCard(BaseModel):
     regulationMark: Optional[str] = None
     energyType: Optional[str] = None
     legal: Optional[Legal] = None
+    effect: Optional[str] = None        # Text von Trainer-/Energie-Karten (Reprint-Regel)
 
-    @field_validator("regulationMark", "energyType", mode="before")
+    @field_validator("regulationMark", "energyType", "effect", mode="before")
     @classmethod
     def _str_or_none(cls, v):
         return v if isinstance(v, str) else None

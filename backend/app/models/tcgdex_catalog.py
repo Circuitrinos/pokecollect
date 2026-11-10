@@ -67,6 +67,11 @@ class TcgdexCatalog(Base):
     legal_standard = Column(Boolean, nullable=True)
     legal_expanded = Column(Boolean, nullable=True)
     regulation_checked = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Reprint-Regel: Fingerabdruck des normalisierten Kartentexts (Trainer/
+    # Energie) — ein alter Druck zählt nur bei gleichem Text. effect_checked =
+    # Text schon einmal geholt (Nachholer für vorher geprüfte Zeilen).
+    effect_key = Column(Text, nullable=True)
+    effect_checked = Column(Boolean, nullable=False, default=False, server_default="false")
     # Varianten-$-Preise (#63): Subtypen des Basisprodukts (Holofoil/Reverse
     # Holofoil) + Muster-PRODUKTE („(Poke Ball Pattern)"/„(Master Ball Pattern)",
     # eigene TCGplayer-Produkte je Karte). Datenstand teilt price_usd_updated.

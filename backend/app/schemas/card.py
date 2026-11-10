@@ -182,6 +182,8 @@ class CardResponse(CardBase):
     # maßgebliches Zeichen (inkl. Reprint-Regel), "-" = keins, None = unbekannt.
     legal_mark: Optional[str] = None
     basic_energy: bool = False
+    # Gleichnamiger legaler Druck mit anderem/unbekanntem Text (kein Reprint-Vorteil)
+    name_mark: Optional[str] = None
     # TCGdex' Expanded-Flag aus dem Katalog (nur Einzelkarten-Antworten)
     legal_expanded: Optional[bool] = None
     hinzugefuegt_am: Optional[datetime] = None

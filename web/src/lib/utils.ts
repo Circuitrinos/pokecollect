@@ -49,7 +49,7 @@ type MatchCard = {
   seltenheit?: string | null; sprache?: string | null; illustrator?: string | null;
   besessen?: boolean; erste_edition?: boolean | null; prize_pack?: boolean | null;
   bild_karte_pfad?: string | null; bild_pokedex_url?: string | null;
-  regulation_mark?: string | null; legal_mark?: string | null; basic_energy?: boolean;
+  regulation_mark?: string | null; legal_mark?: string | null; basic_energy?: boolean; name_mark?: string | null;
 };
 
 /** Client-seitiger Filter-Abgleich (für Dimmen im Binder, gleiche Logik wie Backend). */
@@ -80,7 +80,7 @@ export function cardMatchesFilters(card: MatchCard, f: FilterCriteria, minMark?:
   if (f.standard) {
     const st = standardStatus(card, minMark);
     if (f.standard === "legal" && !isStandardLegal(st)) return false;
-    if (f.standard === "not_legal" && st !== "not_legal") return false;
+    if (f.standard === "not_legal" && st !== "not_legal" && st !== "text_differs") return false;
     if (f.standard === "unknown" && st !== "unknown") return false;
   }
   if (f.regulation_mark) {

@@ -16,10 +16,13 @@ API = "/api/v1"
 P = "testreg-"
 
 
-def _cat(card_id, name, category, mark=None, energy_type=None, checked=True, enriched=True, region="west"):
+def _cat(card_id, name, category, mark=None, energy_type=None, checked=True, enriched=True, region="west",
+         effect=None, effect_checked=None):
     return TcgdexCatalog(card_id=P + card_id, region=region, set_id=P + "set", name=name, name_en=name,
                          category=category, regulation_mark=mark, energy_type=energy_type,
                          regulation_checked=checked, enriched=enriched,
+                         effect_key=regulation.effect_key(effect),
+                         effect_checked=checked if effect_checked is None else effect_checked,
                          image_url=f"https://assets.tcgdex.net/en/sv/{card_id}/high.webp")
 
 
@@ -30,12 +33,18 @@ def catalog(client):
         _cat("pika-h", "Pikachu", "Pokemon", "H"),
         _cat("pika-d", "Pikachu", "Pokemon", "D"),
         _cat("pika-i", "Pikachu", "Pokemon", "I"),
-        _cat("ball-d", "Testball", "Trainer", "D"),
-        _cat("ball-i", "Testball", "Trainer", "I"),
-        _cat("old-trainer", "Oldie", "Trainer", None),
+        _cat("ball-d", "Testball", "Trainer", "D",
+             effect="Search your deck for a Pokémon, reveal it, and put it into your hand."),
+        # gleicher Text, nur Akzente/Satzzeichen/Groß-klein anders → Reprint zählt
+        _cat("ball-i", "Testball", "Trainer", "I",
+             effect="search your deck for a Pokemon — reveal it and put it into your hand"),
+        # gleicher Name, anderer Text („damage" statt „damage counter") → zählt nicht
+        _cat("hurt-d", "Testhurt", "Trainer", "D", effect="Put 1 damage counter on 1 of your opponent's Pokémon."),
+        _cat("hurt-i", "Testhurt", "Trainer", "I", effect="This card does 10 damage to 1 of your opponent's Pokémon."),
+        _cat("old-trainer", "Oldie", "Trainer", None, effect="Draw a card."),
         _cat("fire", "Basic Fire Energy", "Energy", None, energy_type="Basic"),
-        _cat("spec-e", "Testenergy", "Energy", "E", energy_type="Special"),
-        _cat("spec-j", "Testenergy", "Energy", "J", energy_type="Special"),
+        _cat("spec-e", "Testenergy", "Energy", "E", energy_type="Special", effect="Provides 2 Colorless Energy."),
+        _cat("spec-j", "Testenergy", "Energy", "J", energy_type="Special", effect="Provides 2 Colorless Energy."),
         _cat("unchecked", "Mew", "Pokemon", None, checked=False),
     ]
     db.add_all(rows)
@@ -82,16 +91,25 @@ def test_norm_mark():
 
 def test_apply_to_catalog():
     row = TcgdexCatalog(card_id="x")
-    tc = SimpleNamespace(regulationMark="i", energyType=None, category="Trainer",
+    tc = SimpleNamespace(regulationMark="i", energyType=None, category="Trainer", effect="Draw 2 cards.",
                          legal=SimpleNamespace(standard=True, expanded=True))
     regulation.apply_to_catalog(row, tc)
     assert (row.regulation_mark, row.legal_standard, row.legal_expanded, row.regulation_checked) == ("I", True, True, True)
+    assert row.effect_checked and row.effect_key == regulation.effect_key("draw 2 cards")
+
+
+def test_effect_key():
+    k = regulation.effect_key
+    assert k("Search your deck for a Pokémon.") == k("search  your deck for a POKEMON")
+    assert k("Put 1 damage counter on it.") != k("Put 1 damage on it.")
+    assert k(None) is None and k("  ...  ") is None
 
 
 def test_karten_legalitaet(client, catalog):
     pika_h = _create(client, "pika-h")
     pika_d = _create(client, "pika-d")
     ball_d = _create(client, "ball-d")
+    hurt_d = _create(client, "hurt-d")
     oldie = _create(client, "old-trainer")
     fire = _create(client, "fire")
     spec_e = _create(client, "spec-e")
@@ -102,8 +120,10 @@ def test_karten_legalitaet(client, catalog):
     # Pokémon: kein Reprint-Vorteil, auch wenn ein gleichnamiger Druck legal ist
     assert (pika_d["regulation_mark"], pika_d["legal_mark"]) == ("D", "D")
     # Trainer/Spezial-Energie: jüngstes gleichnamiges Zeichen zählt
-    assert (ball_d["regulation_mark"], ball_d["legal_mark"]) == ("D", "I")
+    assert (ball_d["regulation_mark"], ball_d["legal_mark"], ball_d["name_mark"]) == ("D", "I", None)
     assert (spec_e["regulation_mark"], spec_e["legal_mark"]) == ("E", "J")
+    # gleicher Name, anderer Text: kein Reprint-Vorteil, aber Hinweis über name_mark
+    assert (hurt_d["regulation_mark"], hurt_d["legal_mark"], hurt_d["name_mark"]) == ("D", "D", "I")
     assert (oldie["regulation_mark"], oldie["legal_mark"]) == (None, "-")
     assert fire["basic_energy"] is True and fire["legal_mark"] == "-"
     assert (unchecked["regulation_mark"], unchecked["legal_mark"]) == (None, None)
@@ -116,9 +136,9 @@ def test_karten_legalitaet(client, catalog):
         items = body["items"] if isinstance(body, dict) else body
         return {c["id"] for c in items}
 
-    mine = {c["id"] for c in (pika_h, pika_d, ball_d, oldie, fire, spec_e, unchecked, manual)}
+    mine = {c["id"] for c in (pika_h, pika_d, ball_d, hurt_d, oldie, fire, spec_e, unchecked, manual)}
     assert ids(standard="legal") & mine == {pika_h["id"], ball_d["id"], fire["id"], spec_e["id"], manual["id"]}
-    assert ids(standard="not_legal") & mine == {pika_d["id"], oldie["id"]}
+    assert ids(standard="not_legal") & mine == {pika_d["id"], hurt_d["id"], oldie["id"]}
     assert ids(standard="unknown") & mine == {unchecked["id"]}
     assert ids(regulation_mark="H,j") & mine == {pika_h["id"], manual["id"]}
     assert ids(regulation_mark="-") & mine == {oldie["id"], fire["id"]}
@@ -140,16 +160,22 @@ def test_handeingabe_und_reprint_nachtraeglich(client, catalog):
     r = client.put(f"{API}/cards/{card['id']}", json={"regulation_mark": ""})
     assert r.json()["regulation_mark"] is None
 
-    # Neuer Reprint taucht im Katalog auf → nächtliche Neuberechnung hebt den Trainer an
+    # Neue Reprints tauchen im Katalog auf → nächtliche Neuberechnung
     oldie = _create(client, "old-trainer")
     assert oldie["legal_mark"] == "-"
     db = SessionLocal()
     try:
-        db.add(_cat("oldie-j", "Oldie", "Trainer", "J"))
+        db.add(_cat("oldie-i", "Oldie", "Trainer", "I", effect="Draw a card from the bottom of your deck."))
         db.commit()
         assert regulation.refresh_cards(db) >= 1
         got = db.get(PokemonCard, oldie["id"], execution_options={"all_users": True})
-        assert (got.regulation_mark, got.legal_mark) == (None, "J")
+        assert (got.legal_mark, got.name_mark) == ("-", "I")          # anderer Text → nur Hinweis
+        db.add(_cat("oldie-j", "Oldie", "Trainer", "J", effect="Draw a card."))
+        db.commit()
+        assert regulation.refresh_cards(db) >= 1
+        db.expire_all()
+        got = db.get(PokemonCard, oldie["id"], execution_options={"all_users": True})
+        assert (got.regulation_mark, got.legal_mark, got.name_mark) == (None, "J", None)
     finally:
         db.close()
 
@@ -170,22 +196,36 @@ def test_nachholer(client, catalog, monkeypatch):
 
     calls = []
 
+    texts = {P + "unchecked": ("Pokemon", "J", None), P + "pretext-d": ("Trainer", "D", "Heal 30 damage."),
+             P + "pretext-i": ("Trainer", "I", "Heal 30 damage.")}
+
     async def fake_get_card(cid, lang="en"):
         calls.append(cid)
-        return TcgdexCard.model_validate({"id": cid, "category": "Pokemon", "regulationMark": "J",
+        cat, mark, effect = texts.get(cid, ("Pokemon", "J", None))
+        return TcgdexCard.model_validate({"id": cid, "category": cat, "regulationMark": mark, "effect": effect,
                                           "legal": {"standard": True, "expanded": True}})
 
     monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
-    card = _create(client, "unchecked")
-    assert card["legal_mark"] is None
     db = SessionLocal()
+    # Zeilen aus der Version ohne Text-Prüfung: Zeichen da, Text fehlt
+    db.add(_cat("pretext-d", "Pretext", "Trainer", "D", effect_checked=False))
+    db.add(_cat("pretext-i", "Pretext", "Trainer", "I", effect_checked=False))
+    db.commit()
+    card = _create(client, "unchecked")
+    old = _create(client, "pretext-d")
+    assert card["legal_mark"] is None
+    assert (old["legal_mark"], old["name_mark"]) == ("D", "I")      # Text noch unbekannt → nicht legal
     try:
         res = asyncio.run(regulation.backfill_catalog(db, limit=50, owned_only=True))
-        assert P + "unchecked" in calls and res["checked"] >= 1
+        assert P + "unchecked" in calls and P + "pretext-d" in calls and res["checked"] >= 2
         row = db.get(TcgdexCatalog, P + "unchecked")
         assert (row.regulation_mark, row.regulation_checked, row.legal_expanded) == ("J", True, True)
+        res = asyncio.run(regulation.backfill_catalog(db, limit=50))
+        assert P + "pretext-i" in calls
     finally:
         db.close()
+    got = client.get(f"{API}/cards/{old['id']}").json()
+    assert (got["legal_mark"], got["name_mark"]) == ("I", None)
     got = client.get(f"{API}/cards/{card['id']}").json()
     assert (got["regulation_mark"], got["legal_mark"]) == ("J", "J")
     st = client.get(f"{API}/catalog/regulation").json()
