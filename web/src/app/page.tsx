@@ -12,6 +12,8 @@ import { useSets } from "@/lib/useSets";
 import { useSettings } from "@/lib/useSettings";
 import { useI18n } from "@/lib/i18n";
 import { useIsDesktop } from "@/lib/useIsDesktop";
+import { useSelection } from "@/lib/useSelection";
+import BulkBar, { SelectToggle } from "@/components/BulkBar";
 
 export default function HomePage() {
   const { t } = useI18n();
@@ -22,6 +24,8 @@ export default function HomePage() {
   const [filters, setFilters] = useState<Filters>({});
   const [page, setPage] = useState<number>(1);
   const [view, setView] = useState<ViewMode>("grid");
+  const selection = useSelection();
+  const [reloadKey, setReloadKey] = useState(0);
   const [layout, setLayout] = useState("3x3");
   const [loading, setLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -63,7 +67,7 @@ export default function HomePage() {
       .then((r) => { if (!cancel) setData(r.data); })
       .finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [view, filters, page, appSettings]);
+  }, [view, filters, page, appSettings, reloadKey]);
 
   // Binder: ALLE Karten laden (fixe Plätze) – Filter dimmt nur, statt zu entfernen
   useEffect(() => {
@@ -128,7 +132,8 @@ export default function HomePage() {
         controls={
           <div className="flex items-center gap-3">
             <span className="text-gray-400 text-sm">{t.home_cards_count(data?.total ?? 0)}</span>
-            <ViewToggle value={view} onChange={setView} />
+            <ViewToggle value={view} onChange={(v) => { if (v === "binder") selection.setActive(false); setView(v); }} />
+            <SelectToggle selection={selection} onStart={() => setView("grid")} />
           </div>
         }
         pager={view !== "binder" && data ? { page, pages: data.pages, onPage: setPage } : null}
@@ -158,9 +163,12 @@ export default function HomePage() {
             highlightIds={highlightIds}
           />
         ) : (
-          <CardGrid cards={data?.items ?? []} apiBase={API_BASE} placeholderEnabled={placeholderEnabled} />
+          <CardGrid cards={data?.items ?? []} apiBase={API_BASE} placeholderEnabled={placeholderEnabled} selection={selection} />
         )}
       </div>
+      <BulkBar selection={selection} pageIds={(data?.items ?? []).filter((c) => c.besessen).map((c) => c.id)}
+        onDone={() => setReloadKey((k) => k + 1)} />
+      {selection.active && <div className="h-28" />}
     </div>
   );
 }

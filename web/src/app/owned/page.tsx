@@ -11,6 +11,8 @@ import { useSets } from "@/lib/useSets";
 import { useSettings } from "@/lib/useSettings";
 import { useI18n } from "@/lib/i18n";
 import { useIsDesktop } from "@/lib/useIsDesktop";
+import { useSelection } from "@/lib/useSelection";
+import BulkBar, { SelectToggle } from "@/components/BulkBar";
 
 export default function AllOwnedPage() {
   const { t } = useI18n();
@@ -23,6 +25,7 @@ export default function AllOwnedPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const selection = useSelection();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,6 +74,7 @@ export default function AllOwnedPage() {
           }] : []),
         ]}
         onToggleFilters={() => setFiltersOpen((o) => !o)}
+        controls={<SelectToggle selection={selection} />}
         pager={data ? { page, pages: data.pages, onPage: setPage } : null}
       >
         <FilterSidebar
@@ -87,9 +91,13 @@ export default function AllOwnedPage() {
         {loading ? (
           <div className="flex items-center justify-center h-64 text-gray-500">{t.detail_loading}</div>
         ) : (
-          <CardGrid cards={data?.items ?? []} apiBase={API_BASE} placeholderEnabled={appSettings?.placeholder_images_enabled ?? true} />
+          <CardGrid cards={data?.items ?? []} apiBase={API_BASE} placeholderEnabled={appSettings?.placeholder_images_enabled ?? true}
+            selection={selection} />
         )}
       </div>
+      <BulkBar selection={selection} pageIds={(data?.items ?? []).filter((c) => c.besessen).map((c) => c.id)}
+        onDone={() => { void load(); cardApi.stats().then((r) => setValue(r.data.gesamtwert_eur)).catch(() => {}); }} />
+      {selection.active && <div className="h-28" />}
     </div>
   );
 }

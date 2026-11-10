@@ -12,9 +12,12 @@ type Props = {
   apiBase: string;
   onReorder: (orderedIds: number[]) => void;
   onRemove: (cardId: number) => void;
+  /** Auswahl-Modus: Tippen wählt, kein Ziehen/Entfernen. */
+  selection?: { active: boolean; ids: Set<number>; toggle: (id: number) => void } | null;
 };
 
-export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove }: Props) {
+export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, selection }: Props) {
+  const selecting = !!selection?.active;
   const { t, lang } = useI18n();
   const [order, setOrder] = useState<CollectionCard[]>(cards);
   const [dragId, setDragId] = useState<number | null>(null);
@@ -36,23 +39,33 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove }
 
   return (
     <div>
-      <p className="text-gray-500 text-xs mb-2">{t.collection_reorder_hint}</p>
+      {!selecting && <p className="text-gray-500 text-xs mb-2">{t.collection_reorder_hint}</p>}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
         {order.map((card) => {
           const { src, isPlaceholder } = cardImageSrc(card, apiBase);
           const name = lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname;
+          const isSel = selecting && selection!.ids.has(card.id);
           return (
             <div
               key={card.id}
-              draggable
+              draggable={!selecting}
               onDragStart={() => setDragId(card.id)}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => handleDropOn(card.id)}
-              className={`relative rounded-lg border-2 overflow-hidden cursor-move bg-pokemon-card ${
+              role={selecting ? "checkbox" : undefined}
+              aria-checked={selecting ? isSel : undefined}
+              tabIndex={selecting ? 0 : undefined}
+              onClick={selecting ? () => selection!.toggle(card.id) : undefined}
+              onKeyDown={selecting ? (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); selection!.toggle(card.id); } } : undefined}
+              className={`relative rounded-lg border-2 overflow-hidden ${selecting ? "cursor-pointer" : "cursor-move"} bg-pokemon-card ${
                 card.besessen ? "border-gray-600" : "border-gray-700 opacity-60"
-              } ${dragId === card.id ? "ring-2 ring-pokemon-yellow" : ""}`}
+              } ${dragId === card.id ? "ring-2 ring-pokemon-yellow" : ""} ${isSel ? "ring-4 ring-pokemon-blue ring-offset-1 ring-offset-pokemon-dark" : ""}`}
             >
-              <Link href={`/cards/${card.id}`} draggable={false}>
+              {selecting && (
+                <span aria-hidden className={`absolute top-1 right-1 z-20 flex h-6 w-6 items-center justify-center rounded-full border-2 text-sm font-bold ${
+                  isSel ? "border-pokemon-blue bg-pokemon-blue text-white" : "border-white/80 bg-black/40 text-transparent"}`}>✓</span>
+              )}
+              <Link href={`/cards/${card.id}`} draggable={false} onClick={selecting ? (e) => e.preventDefault() : undefined}>
                 <div className="aspect-[63/88] relative bg-gray-800">
                   {src ? (
                     <Image
@@ -74,13 +87,13 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove }
                 <span className="text-xs text-white truncate">{name}</span>
                 <RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" />
               </div>
-              <button type="button"
+              {!selecting && <button type="button"
                 onClick={() => onRemove(card.id)}
                 title={t.collection_remove}
                 className="absolute top-1 right-1 bg-black/60 text-red-300 hover:text-red-100 rounded-full w-5 h-5 flex items-center justify-center text-xs"
               >
                 ✕
-              </button>
+              </button>}
             </div>
           );
         })}

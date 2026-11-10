@@ -1,9 +1,10 @@
 import json
 import math
-from typing import Optional
+from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select, update, or_, and_, cast, String
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.schemas._grenzen import PG_INTEGER_MAX
@@ -26,6 +27,7 @@ from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.services.catalog_lookup import catalog_row_for
+from app.services import card_bulk
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
@@ -302,6 +304,12 @@ def delete_card(card_id: int, db: Session = Depends(get_db)):
             status_code=400,
             detail="Nicht-besessene Karten (Pokédex-Platzhalter) können nicht gelöscht werden.",
         )
+    _delete_owned(db, card)
+    db.commit()
+
+
+def _delete_owned(db: Session, card: PokemonCard) -> None:
+    """Besessene Karte löschen; letzte ihrer Spezies → Pokédex-Platzhalter zurück (ohne Commit)."""
     # Pokédex-Daten vor dem Löschen sichern
     pokedex_nr     = card.pokedex_nr
     kartenname     = card.kartenname
@@ -326,7 +334,55 @@ def delete_card(card_id: int, db: Session = Depends(get_db)):
                 besessen=False,
             ))
 
+
+# ── Sammel-Aktionen (Auswahl-Modus) ─────────────────────────────────────────
+
+class BulkRequest(BaseModel):
+    action: Literal["catalog_image", "own_photo", "prize_pack", "zustand",
+                    "add_to_collection", "remove_from_collection", "delete"]
+    ids: list[int] = Field(default_factory=list, max_length=10000)
+    value: Optional[Union[bool, int, str]] = None   # prize_pack: bool, zustand: str, *_collection: id
+    # nur catalog_image: alle eigenen Karten mit Scan-Foto als Kartenbild
+    all_scanned: bool = False
+
+
+@router.post("/meta/bulk")
+def bulk_cards(req: BulkRequest, db: Session = Depends(get_db)):
+    """Eine Aktion auf viele Karten; Antwort zählt geändert / unverändert / nicht gefunden."""
+    if req.all_scanned and req.action != "catalog_image":
+        raise HTTPException(status_code=400, detail="all_scanned gibt es nur für catalog_image")
+    if req.action in ("add_to_collection", "remove_from_collection"):
+        if not isinstance(req.value, int) or isinstance(req.value, bool) or db.get(Collection, req.value) is None:
+            raise HTTPException(status_code=404, detail="Sammlung nicht gefunden")
+    if req.action == "zustand" and req.value not in ZUSTAND_VALUES:
+        raise HTTPException(status_code=422, detail="Unbekannter Zustand")
+    ids = card_bulk.owned_scanned_card_ids(db) if req.all_scanned else list(dict.fromkeys(req.ids))
+    done = unchanged = missing = 0
+    for cid in ids:
+        card = db.get(PokemonCard, cid)
+        # Pokédex-Platzhalter (nicht besessen) kann man nicht löschen und haben kein Foto
+        if card is None or (not card.besessen and req.action in ("delete", "catalog_image", "own_photo")):
+            missing += 1
+            continue
+        if req.action == "delete":
+            _delete_owned(db, card)
+            changed = True
+        elif req.action == "catalog_image":
+            changed = card_bulk.use_catalog_image(db, card)
+        elif req.action == "own_photo":
+            changed = card_bulk.use_own_photo(db, card)
+        elif req.action == "prize_pack":
+            changed = card_bulk.set_prize_pack(db, card, req.value)
+        elif req.action == "zustand":
+            changed = card_bulk.set_condition(db, card, req.value)
+        elif req.action == "add_to_collection":
+            changed = card_bulk.add_to_collection(db, card, req.value)
+        else:
+            changed = card_bulk.remove_from_collection(db, card, req.value)
+        done += changed
+        unchanged += not changed
     db.commit()
+    return {"done": done, "unchanged": unchanged, "missing": missing}
 
 
 # ── Bilder ──────────────────────────────────────────────────────────────────

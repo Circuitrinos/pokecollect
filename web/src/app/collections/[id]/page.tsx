@@ -11,6 +11,8 @@ import BinderEditor from "@/components/BinderEditor";
 import GoalProgress from "@/components/GoalProgress";
 import SollView from "@/components/SollView";
 import ViewToggle, { ViewMode } from "@/components/ViewToggle";
+import { useSelection } from "@/lib/useSelection";
+import BulkBar, { SelectToggle } from "@/components/BulkBar";
 import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
 import { useI18n } from "@/lib/i18n";
@@ -25,6 +27,7 @@ export default function CollectionDetailPage() {
   const [cards, setCards] = useState<CollectionCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<ViewMode>("grid");
+  const selection = useSelection();
   const [layout, setLayout] = useState("3x3");
   const [editingPages, setEditingPages] = useState(false);
 
@@ -265,7 +268,8 @@ export default function CollectionDetailPage() {
         </div>
         {!isGoal && (
           <div className="flex items-center gap-2 flex-wrap">
-            <ViewToggle value={view} onChange={setView} />
+            <ViewToggle value={view} onChange={(v) => { if (v === "binder") selection.setActive(false); setView(v); }} />
+            {cards.length > 0 && <SelectToggle selection={selection} onStart={() => setView("grid")} />}
             <button type="button"
               onClick={() => setShowAssign((v) => !v)}
               className="bg-pokemon-accent text-white text-sm px-3 py-1.5 rounded hover:bg-blue-700"
@@ -390,8 +394,14 @@ export default function CollectionDetailPage() {
           apiBase={API_BASE}
           onReorder={handleReorder}
           onRemove={handleRemoveConfirm}
+          selection={selection}
         />
       )}
+      {!isGoal && (
+        <BulkBar selection={selection} pageIds={cards.map((c) => c.id)} collectionId={id}
+          onDone={() => { loadCards(true); loadMeta(); }} />
+      )}
+      {selection.active && <div className="h-28" />}
     </div>
   );
 }

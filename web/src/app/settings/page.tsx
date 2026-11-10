@@ -84,6 +84,7 @@ export default function SettingsPage() {
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [exportingScans, setExportingScans] = useState(false);
+  const [switchingImages, setSwitchingImages] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreAck, setRestoreAck] = useState(false);
@@ -231,6 +232,18 @@ export default function SettingsPage() {
       toast.error(t.settings_backup_error);
     } finally {
       setBackingUp(false);
+    }
+  };
+
+  const handleCatalogImages = async () => {
+    setSwitchingImages(true);
+    try {
+      const r = await cardApi.bulk("catalog_image", [], undefined, true);
+      toast.success(t.settings_catalog_images_done(r.data.done));
+    } catch {
+      toast.error(t.bulk_error);
+    } finally {
+      setSwitchingImages(false);
     }
   };
 
@@ -713,6 +726,18 @@ export default function SettingsPage() {
             {exportingScans ? t.settings_data_busy : t.settings_scan_dataset}
           </button>
           )}
+        </div>
+        <div className="border-t border-gray-700 pt-3 space-y-2">
+          <p className="text-white text-sm font-medium">{t.settings_catalog_images}</p>
+          <p className="text-gray-500 text-xs">{t.settings_catalog_images_hint}</p>
+          <button
+            type="button"
+            onClick={() => void handleCatalogImages()}
+            disabled={switchingImages}
+            className="bg-gray-700 text-white text-sm px-4 py-1.5 rounded hover:bg-gray-600 disabled:opacity-50"
+          >
+            {switchingImages ? t.settings_data_busy : t.settings_catalog_images}
+          </button>
         </div>
         {isAdmin && (
         <div className="border-t border-gray-700 pt-3 space-y-3">

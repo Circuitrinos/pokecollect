@@ -230,7 +230,14 @@ export const BINDER_LAYOUTS = ["1x1", "2x2", "3x3", "4x3", "3x4", "4x4"] as cons
 
 // ── API Calls ─────────────────────────────────────────────────────────────
 
+export type BulkAction = "catalog_image" | "own_photo" | "prize_pack" | "zustand"
+  | "add_to_collection" | "remove_from_collection" | "delete";
+export type BulkResult = { done: number; unchanged: number; missing: number };
+
 export const cardApi = {
+  // Sammel-Aktion im Auswahl-Modus; allScanned nur für catalog_image (alle gescannten eigenen Karten)
+  bulk: (action: BulkAction, ids: number[], value?: unknown, allScanned = false) =>
+    api.post<BulkResult>("/cards/meta/bulk", { action, ids, value: value ?? null, all_scanned: allScanned }),
   list: (params: Record<string, unknown> = {}) =>
     api.get<CardListResponse>("/cards", { params }),
 

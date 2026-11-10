@@ -16,6 +16,8 @@ type Props = {
   placeholderEnabled?: boolean;
   /** Optionales Aktions-Overlay je Karte (z.B. „zu Sammlung hinzufügen", #29). */
   renderOverlay?: (card: Card) => ReactNode;
+  /** Auswahl-Modus: Tippen wählt (nur besessene Karten), statt die Karte zu öffnen. */
+  selection?: { active: boolean; ids: Set<number>; toggle: (id: number) => void } | null;
 };
 
 const RARITY_BORDER: Record<string, string> = {
@@ -38,7 +40,7 @@ const RARITY_BORDER: Record<string, string> = {
   "Promo":                     "border-teal-400",
 };
 
-export default function CardGrid({ cards, apiBase, placeholderEnabled = true, renderOverlay }: Props) {
+export default function CardGrid({ cards, apiBase, placeholderEnabled = true, renderOverlay, selection }: Props) {
   const { t, lang } = useI18n();
 
   if (!cards.length) {
@@ -62,20 +64,37 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
 
         const setCode = extractSetCode(card.set_edition) || "–";
 
+        const selecting = !!selection?.active;
+        const selectable = selecting && card.besessen;
+        const isSel = selecting && selection!.ids.has(card.id);
+        // Funktion statt Komponente: eine Komponente je Render würde die Bilder neu laden
+        const wrap = (children: ReactNode) => selecting ? (
+          <div role="checkbox" aria-checked={isSel} aria-disabled={!selectable} tabIndex={selectable ? 0 : -1}
+            onClick={() => selectable && selection!.toggle(card.id)}
+            onKeyDown={(e) => { if (selectable && (e.key === " " || e.key === "Enter")) { e.preventDefault(); selection!.toggle(card.id); } }}
+            className={selectable ? "cursor-pointer" : "cursor-not-allowed"}>
+            {children}
+          </div>
+        ) : (
+          <Link href={`/cards/${card.id}`} onClick={() => rememberCardOrder(cards.map((c) => c.id))}>{children}</Link>
+        );
+
         return (
           <div key={card.id} className="relative">
-          <Link
-            href={`/cards/${card.id}`}
-            onClick={() => rememberCardOrder(cards.map((c) => c.id))}
-          >
+          {wrap(
             <div
               className={`
                 relative rounded-lg border-2 overflow-hidden cursor-pointer
-                transition-transform hover:scale-105 hover:shadow-lg
+                transition-transform ${selecting ? "" : "hover:scale-105 hover:shadow-lg"}
                 bg-pokemon-card
                 ${card.besessen ? borderColor : "border-gray-700 opacity-50"}
+                ${isSel ? "ring-4 ring-pokemon-blue ring-offset-1 ring-offset-pokemon-dark" : ""}
               `}
             >
+              {selectable && (
+                <span aria-hidden className={`absolute top-1 right-1 z-20 flex h-6 w-6 items-center justify-center rounded-full border-2 text-sm font-bold ${
+                  isSel ? "border-pokemon-blue bg-pokemon-blue text-white" : "border-white/80 bg-black/40 text-transparent"}`}>✓</span>
+              )}
               {/* Bild */}
               <div className="aspect-[63/88] relative bg-gray-800">
                 {/* 1st-Edition- und Play!-Badge dezent oben links (#25) */}
@@ -156,8 +175,8 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
 
               </div>
             </div>
-          </Link>
-          {renderOverlay && (
+          )}
+          {renderOverlay && !selecting && (
             <div className="absolute top-1 right-1 z-10">{renderOverlay(card)}</div>
           )}
           </div>
