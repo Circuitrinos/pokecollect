@@ -1,0 +1,106 @@
+# PokéCollect with the prebuilt images from GHCR (built from the `english` branch
+# by .github/workflows/images.yml): api, web, matcher, PostgreSQL and a Caddy
+# gateway that serves everything on port 3011.
+#
+#   docker compose -f deploy/docker-compose.ghcr.yml up -d
+#
+# TrueNAS SCALE: Apps → Discover Apps → Custom App → Install via YAML, paste this file.
+#
+# Replace before the first start:
+#   CHANGE_DB_PASSWORD   (3 places, must match)
+#   CHANGE_JWT_SECRET    (long random string, e.g. `openssl rand -hex 32`)
+#   CHANGE_BCRYPT_HASH   (password hash for APP_USERNAME, see .env.example)
+#   /path/to/pokecollect (a folder owned by uid/gid 3010)
+#
+# The web image is built for USD and relative /api calls; keep CURRENCY at USD.
+# Compose needs to support inline `configs: content` (Docker Compose 2.23+).
+
+services:
+  api:
+    image: ghcr.io/circuitrinos/pokecollect-api:latest
+    pull_policy: always
+    user: "3010:3010"
+    environment:
+      DATABASE_URL: 'postgresql://pokecollect:CHANGE_DB_PASSWORD@db:5432/pokecollect'
+      JWT_SECRET: 'CHANGE_JWT_SECRET'
+      APP_USERNAME: admin
+      APP_PASSWORD_HASH: 'CHANGE_BCRYPT_HASH'
+      CATALOG_IMAGE_LANG: en
+      CURRENCY: USD
+      # Optional single sign-on (OpenID Connect, e.g. Authentik). Redirect URI to
+      # register at the provider: PUBLIC_URL + /api/v1/auth/oidc/callback
+      # OIDC_ISSUER: 'https://auth.example.com/application/o/pokecollect/'
+      # OIDC_CLIENT_ID: 'CHANGE_CLIENT_ID'
+      # OIDC_CLIENT_SECRET: 'CHANGE_CLIENT_SECRET'
+      # PUBLIC_URL: 'https://tcg.example.com'
+      # OIDC_ALLOWED_ORIGINS: 'http://192.168.1.10:3011'
+      # OIDC_ADMIN_USERS: 'admin'
+      # PASSWORD_LOGIN: 'false'
+    volumes:
+      - /path/to/pokecollect/images:/app/images
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/circuitrinos/pokecollect-web:latest
+    pull_policy: always
+    user: "3010:3010"
+    tmpfs:
+      - /app/.next/cache/images:size=256m,uid=3010,gid=3010,mode=0700
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Optional: the "Image match (local)" scan reader. Builds its card index from
+  # the catalog images on first start, which takes a while (see matcher/README.md).
+  matcher:
+    image: ghcr.io/circuitrinos/pokecollect-matcher:latest
+    pull_policy: always
+    user: "3010:3010"
+    environment:
+      DATABASE_URL: 'postgresql://pokecollect:CHANGE_DB_PASSWORD@db:5432/pokecollect'
+    volumes:
+      - /path/to/pokecollect/matcher:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16.3-alpine
+    user: "3010:3010"
+    environment:
+      POSTGRES_USER: pokecollect
+      POSTGRES_PASSWORD: 'CHANGE_DB_PASSWORD'
+      POSTGRES_DB: pokecollect
+    volumes:
+      - /path/to/pokecollect/db/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pokecollect"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2-alpine
+    ports:
+      - "3011:80"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+configs:
+  caddyfile:
+    content: |
+      :80 {
+        @api path /api/* /images/* /bild-spiegel/* /health /docs /openapi.json
+        reverse_proxy @api api:8000
+        reverse_proxy web:3000
+      }
