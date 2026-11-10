@@ -26,6 +26,7 @@ export default function HomePage() {
   const [view, setView] = useState<ViewMode>("grid");
   const selection = useSelection();
   const [reloadKey, setReloadKey] = useState(0);
+  const [binderVisible, setBinderVisible] = useState<number[]>([]);   // eigene Karten der sichtbaren Binder-Seite(n)
   const [layout, setLayout] = useState("3x3");
   const [loading, setLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -78,7 +79,7 @@ export default function HomePage() {
       .then((r) => { if (!cancel) setData(r.data); })
       .finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [view, appSettings]);
+  }, [view, appSettings, reloadKey]);
 
   // Standard-Sortierung aus den (geteilten) Einstellungen vorbelegen
   useEffect(() => {
@@ -132,8 +133,8 @@ export default function HomePage() {
         controls={
           <div className="flex items-center gap-3">
             <span className="text-gray-400 text-sm">{t.home_cards_count(data?.total ?? 0)}</span>
-            <ViewToggle value={view} onChange={(v) => { if (v === "binder") selection.setActive(false); setView(v); }} />
-            <SelectToggle selection={selection} onStart={() => setView("grid")} />
+            <ViewToggle value={view} onChange={setView} />
+            <SelectToggle selection={selection} />
           </div>
         }
         pager={view !== "binder" && data ? { page, pages: data.pages, onPage: setPage } : null}
@@ -161,12 +162,16 @@ export default function HomePage() {
             placeholderEnabled={placeholderEnabled}
             storageKey="binder_page_home"
             highlightIds={highlightIds}
+            selection={selection}
+            isSelectable={(c) => c.besessen}
+            onVisibleIdsChange={setBinderVisible}
           />
         ) : (
           <CardGrid cards={data?.items ?? []} apiBase={API_BASE} placeholderEnabled={placeholderEnabled} selection={selection} />
         )}
       </div>
-      <BulkBar selection={selection} pageIds={(data?.items ?? []).filter((c) => c.besessen).map((c) => c.id)}
+      <BulkBar selection={selection}
+        pageIds={view === "binder" ? binderVisible : (data?.items ?? []).filter((c) => c.besessen).map((c) => c.id)}
         onDone={() => setReloadKey((k) => k + 1)} />
       {selection.active && <div className="h-28" />}
     </div>

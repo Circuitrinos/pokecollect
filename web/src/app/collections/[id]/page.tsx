@@ -35,8 +35,8 @@ export default function CollectionDetailPage() {
   // allen Geräten. Gelesen beim ersten Laden der Sammlung (loadMeta), gespeichert
   // bei jedem Umschalten. Der Auswahl-Modus schaltet nur vorübergehend aufs Raster.
   const viewFromServer = useRef(false);
+  const [binderVisible, setBinderVisible] = useState<number[]>([]);   // Karten der sichtbaren Binder-Seite(n)
   const changeView = (v: ViewMode) => {
-    if (v === "binder") selection.setActive(false);
     setView(v);
     collectionApi.update(id, { view_mode: v }).catch(() => {});
   };
@@ -267,7 +267,7 @@ export default function CollectionDetailPage() {
         {!isGoal && (
           <div className="flex items-center gap-2 flex-wrap">
             <ViewToggle value={view} onChange={changeView} />
-            {cards.length > 0 && <SelectToggle selection={selection} onStart={() => setView("grid")} />}
+            {cards.length > 0 && <SelectToggle selection={selection} />}
             <button type="button"
               onClick={() => setShowAssign((v) => !v)}
               className="bg-pokemon-accent text-white text-sm px-3 py-1.5 rounded hover:bg-blue-700"
@@ -381,6 +381,8 @@ export default function CollectionDetailPage() {
               binderSlots={collection?.binder_slots ?? null}
               onAddPage={handleAddPage}
               storageKey={`binder_page_coll_${id}`}
+              selection={selection}
+              onVisibleIdsChange={setBinderVisible}
             />
           )}
         </div>
@@ -396,7 +398,7 @@ export default function CollectionDetailPage() {
         />
       )}
       {!isGoal && (
-        <BulkBar selection={selection} pageIds={cards.map((c) => c.id)} collectionId={id}
+        <BulkBar selection={selection} pageIds={view === "binder" ? binderVisible : cards.map((c) => c.id)} collectionId={id}
           onDone={() => { loadCards(true); loadMeta(); }} />
       )}
       {selection.active && <div className="h-28" />}

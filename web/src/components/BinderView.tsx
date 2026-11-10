@@ -7,6 +7,7 @@ import { cardImageSrc, setCodeFromEdition } from "@/lib/utils";
 import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
 import { useI18n } from "@/lib/i18n";
+import { useLongPress } from "@/lib/useLongPress";
 
 export type BinderItem = { card: Card; position: number };
 
@@ -44,6 +45,12 @@ type Props = {
   highlightIds?: Set<number> | null;
   /** Fehlende Soll-Slots einer Set-Sammlung (gedimmte Katalog-Platzhalter). */
   ghosts?: BinderGhost[];
+  /** Auswahl-Modus (Sammel-Aktionen): Tippen wählt statt zu öffnen. */
+  selection?: { active: boolean; ids: Set<number>; toggle: (id: number) => void } | null;
+  /** Welche Karten auswählbar sind (Standard: alle). */
+  isSelectable?: (card: Card) => boolean;
+  /** Meldet die Karten der gerade sichtbaren Seite(n) – für „alle auf der Seite". */
+  onVisibleIdsChange?: (ids: number[]) => void;
 };
 
 export const ASSIGN_DRAG_TYPE = "application/x-pokecollect-add";
@@ -65,6 +72,7 @@ export default function BinderView({
   items, apiBase, placeholderEnabled = true, layout,
   onLayoutChange, editable = false, onMoveToSlot, onAddAtSlot,
   binderSlots, onAddPage, onDeleteLastPage, storageKey, highlightIds, ghosts,
+  selection, isSelectable, onVisibleIdsChange,
 }: Props) {
   const { t, lang } = useI18n();
   const { cols, rows } = parseLayout(layout);
@@ -86,6 +94,14 @@ export default function BinderView({
     }
   }, [page, storageKey]);
   const [dragId, setDragId] = useState<number | null>(null);
+  // Verschieben per Tippen (Handy: Ziehen scrollt): Karte halten oder im
+  // Verschiebe-Modus antippen → „aufgenommen", dann die Ziel-Tasche antippen.
+  const [moveMode, setMoveMode] = useState(false);
+  const [picked, setPicked] = useState<number | null>(null);
+  const selecting = !!selection?.active;
+  const moving = editable && !selecting && (moveMode || picked != null);
+  const longPress = useLongPress((id) => setPicked(id), editable && !selecting && !!onMoveToSlot);
+  useEffect(() => { if (selecting) { setPicked(null); setMoveMode(false); } }, [selecting]);
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewport, setViewport] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [cardSize, setCardSize] = useState<number>(() => {
@@ -164,6 +180,32 @@ export default function BinderView({
 
   const leftVisible = visiblePages[0];
   const rightVisible = visiblePages[visiblePages.length - 1];
+
+  // Sichtbare Karten nach außen melden (nur bei Änderung – sonst Render-Schleife)
+  const lastVisible = useRef("");
+  useEffect(() => {
+    if (!onVisibleIdsChange) return;
+    const ids: number[] = [];
+    for (const p of visiblePages) {
+      for (let i = 0; i < perPage; i++) {
+        const c = slotMap.get(p * perPage + i);
+        if (c && (!isSelectable || isSelectable(c))) ids.push(c.id);
+      }
+    }
+    const key = ids.join(",");
+    if (key !== lastVisible.current) { lastVisible.current = key; onVisibleIdsChange(ids); }
+  });
+
+  const moveTo = (slot: number) => {
+    if (picked == null || !onMoveToSlot) return;
+    onMoveToSlot(picked, slot);
+    setPicked(null);
+  };
+  const pickedName = (() => {
+    if (picked == null) return "";
+    const c = items.find((it) => it.card.id === picked)?.card;
+    return c ? (lang === "EN" && c.englischer_name ? c.englischer_name : c.kartenname) : "";
+  })();
 
   const goPrev = () => {
     if (!twoPage) setPage(safePage - 1);
@@ -296,9 +338,12 @@ export default function BinderView({
                 <div
                   key={slot}
                   {...dropProps}
-                  className="aspect-[63/88] rounded-lg border-2 border-dashed border-gray-700/60 bg-gray-800/30 flex items-center justify-center text-gray-700 text-[10px]"
+                  onClick={picked != null ? () => moveTo(slot) : undefined}
+                  className={`aspect-[63/88] rounded-lg border-2 border-dashed flex items-center justify-center text-[10px] ${
+                    picked != null ? "border-pokemon-yellow/70 bg-pokemon-yellow/5 text-pokemon-yellow cursor-pointer"
+                      : "border-gray-700/60 bg-gray-800/30 text-gray-700"}`}
                 >
-                  {t.binder_empty_pocket}
+                  {picked != null ? "↓" : t.binder_empty_pocket}
                 </div>
               );
             }
@@ -307,22 +352,47 @@ export default function BinderView({
             const name = lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname;
             const code = setCodeFromEdition(card.set_edition) ?? "";
             const dimmed = highlightIds ? !highlightIds.has(card.id) : false;
+            const canSelect = selecting && (!isSelectable || isSelectable(card));
+            const isSel = selecting && selection!.ids.has(card.id);
+            const isPicked = picked === card.id;
             return (
               <div
                 key={slot}
                 {...dropProps}
-                draggable={editable}
+                {...longPress.bind(card.id)}
+                draggable={editable && !selecting && !moving}
                 onDragStart={editable ? (e) => { e.dataTransfer.setData("text/plain", String(card.id)); setDragId(card.id); } : undefined}
                 onDragEnd={editable ? () => setDragId(null) : undefined}
-                className={`aspect-[63/88] rounded-lg overflow-hidden relative bg-gray-800 ring-1 ring-black/40 transition-transform hover:scale-[1.03] hover:ring-pokemon-yellow ${
-                  editable ? "cursor-move" : ""
-                } ${dimmed ? "opacity-20 grayscale" : card.besessen ? "" : "opacity-50"}`}
+                style={{ WebkitTouchCallout: "none" }}
+                className={`aspect-[63/88] rounded-lg overflow-hidden relative bg-gray-800 ring-1 ring-black/40 transition-transform select-none ${
+                  selecting || moving ? "" : "hover:scale-[1.03] hover:ring-pokemon-yellow"} ${
+                  editable && !selecting ? "cursor-move" : ""
+                } ${dimmed ? "opacity-20 grayscale" : card.besessen ? "" : "opacity-50"} ${
+                  isSel ? "ring-4 ring-pokemon-blue" : ""} ${isPicked ? "ring-4 ring-pokemon-yellow scale-95 opacity-80" : ""} ${
+                  selecting && !canSelect ? "cursor-not-allowed" : ""}`}
               >
+                {canSelect && (
+                  <span aria-hidden className={`absolute top-1 right-1 z-20 flex h-6 w-6 items-center justify-center rounded-full border-2 text-sm font-bold ${
+                    isSel ? "border-pokemon-blue bg-pokemon-blue text-white" : "border-white/80 bg-black/40 text-transparent"}`}>✓</span>
+                )}
                 <Link
                   href={`/cards/${card.id}`}
                   draggable={false}
                   className="block w-full h-full"
-                  onClick={() => rememberCardOrder(items.map((it) => it.card.id))}
+                  role={selecting ? "checkbox" : undefined}
+                  aria-checked={selecting ? isSel : undefined}
+                  onClick={(e) => {
+                    if (longPress.suppressed(card.id)) { e.preventDefault(); return; }
+                    if (selecting) { e.preventDefault(); if (canSelect) selection!.toggle(card.id); return; }
+                    if (moving) {
+                      e.preventDefault();
+                      if (picked == null) setPicked(card.id);
+                      else if (picked === card.id) setPicked(null);
+                      else moveTo(slot);                     // belegte Tasche: Karten tauschen
+                      return;
+                    }
+                    rememberCardOrder(items.map((it) => it.card.id));
+                  }}
                 >
                   {src ? (
                     <Image
@@ -359,7 +429,16 @@ export default function BinderView({
 
   return (
     <div className="flex flex-col items-center w-full" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-      {editable && <p className="text-gray-500 text-xs mb-2 text-center">{t.binder_dnd_hint}</p>}
+      {editable && !selecting && (
+        picked != null ? (
+          <div className="mb-2 flex items-center justify-center gap-2 rounded bg-pokemon-yellow/10 border border-pokemon-yellow/40 px-3 py-1.5 text-xs text-pokemon-yellow">
+            <span>{t.binder_moving(pickedName)}</span>
+            <button type="button" onClick={() => setPicked(null)} className="underline shrink-0">{t.binder_cancel}</button>
+          </div>
+        ) : (
+          <p className="text-gray-500 text-xs mb-2 text-center">{moveMode ? t.binder_move_hint : t.binder_dnd_hint}</p>
+        )
+      )}
 
       {/* Seiten */}
       <div ref={containerRef} className="w-full overflow-x-auto relative">
@@ -442,6 +521,16 @@ export default function BinderView({
         >
           ›
         </button>
+        {editable && onMoveToSlot && !selecting && (
+          <button type="button"
+            onClick={() => { setMoveMode((m) => !m); setPicked(null); }}
+            aria-pressed={moveMode}
+            title={t.binder_move_hint}
+            className={`px-3 py-1.5 rounded ${moveMode ? "bg-pokemon-accent text-white" : "bg-pokemon-card text-gray-300 hover:text-white"}`}
+          >
+            ✥ {t.binder_move}
+          </button>
+        )}
         <button type="button"
           onClick={() => setShowOpts((o) => !o)}
           title={t.binder_display_options}
