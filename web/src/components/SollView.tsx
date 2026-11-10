@@ -27,6 +27,7 @@ function slotToCatalogItem(s: SollSlot): CatalogItem {
     set_id: s.set_id,
     set_code: s.set_code,
     set_name: s.set_name,
+    set_name_en: s.set_name_en,
     local_id: s.local_id,
     name: s.name,
     name_en: s.name_en,

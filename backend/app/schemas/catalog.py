@@ -10,6 +10,7 @@ class CatalogItem(BaseModel):
     set_id: Optional[str] = None
     set_code: Optional[str] = None
     set_name: Optional[str] = None
+    set_name_en: Optional[str] = None   # englischer Set-Name (UI wählt je nach Sprache)
     local_id: Optional[str] = None
     name: Optional[str] = None
     name_en: Optional[str] = None

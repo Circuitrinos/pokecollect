@@ -64,6 +64,8 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
 
   // Live-Detail ist reicher (dex/rarity/illustrator/kategorie/varianten); card ist der Sofort-Fallback.
   const d = detail ?? card;
+  // Set-Name in UI-Sprache: die Katalogzeile führt den deutschen, set_name_en den englischen
+  const setName = lang === "EN" && d.set_name_en ? d.set_name_en : d.set_name;
   const fmtEur = (n?: number | null) => (n != null ? `${n.toFixed(2).replace(".", ",")} €` : null);
   const fmtUsd = (n?: number | null) => (n != null ? `$ ${n.toFixed(2)}` : null);
   const variantsStr =
@@ -125,7 +127,7 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
             )}
           </div>
           <dl className="flex-1 text-sm space-y-1 min-w-0">
-            {row(t.field_set, d.set_name ? `${d.set_name} (${d.set_code})` : d.set_code)}
+            {row(t.field_set, setName ? `${setName} (${d.set_code})` : d.set_code)}
             {row(t.field_card_nr, d.local_id)}
             {row(t.field_pokedex_nr, d.dex_id ? `#${d.dex_id}` : null)}
             {row(t.catalog_species, speciesStr)}

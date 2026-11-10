@@ -29,6 +29,7 @@ from app.models.card import PokemonCard
 from app.models.collection import Collection, CollectionSoll
 from app.models.pokemon_set import PokemonSet
 from app.models.tcgdex_catalog import TcgdexCatalog
+from app.services.set_names import english_set_names
 from app.services import catalog_images
 
 
@@ -147,6 +148,7 @@ def soll_status(db: Session, collection: Collection, base_url: str = "") -> list
         ).all()
     }
     set_ids = {c.set_id for c in catalog.values() if c.set_id}
+    set_en = english_set_names(db, set_ids)
 
     # Bestand in einem Rutsch laden: direkte tcgdex-Treffer + Set-Kandidaten
     # für den Set+Nummer-Fallback (Karten ohne tcgdex_card_id).
@@ -205,6 +207,7 @@ def soll_status(db: Session, collection: Collection, base_url: str = "") -> list
             "set_id": cat.set_id if cat else None,
             "set_code": cat.set_code if cat else None,
             "set_name": cat.set_name if cat else None,
+            "set_name_en": set_en.get(cat.set_id) if cat else None,
             "dex_id": cat.dex_id if cat else None,
         })
     return result

@@ -99,6 +99,7 @@ class SollSlotResponse(BaseModel):
     set_id: Optional[str] = None
     set_code: Optional[str] = None
     set_name: Optional[str] = None
+    set_name_en: Optional[str] = None
     dex_id: Optional[int] = None
 
 

@@ -18,6 +18,7 @@ from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
 from app.services import catalog as catalog_svc, catalog_images, tcgdex
+from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
 from app.services.settings import get_setting
 
@@ -113,9 +114,11 @@ def list_catalog(
         ).all())
 
     base_url = str(request.base_url)
+    set_en = english_set_names(db, (r.set_id for r in rows))
     items = []
     for r in rows:
         ci = CatalogItem.model_validate(r)
+        ci.set_name_en = set_en.get(r.set_id)
         # #43: lokal gecachtes Bild bevorzugen, sonst unverändert die CDN-URL
         # (EINE Hilfsfunktion für Liste/Detail/Soll-Slots, DRY).
         ci.image_url = catalog_images.resolve_catalog_image_url(r.image_pfad, r.image_url, base_url)
@@ -189,6 +192,7 @@ async def catalog_card_detail(
         raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
 
     detail = CatalogDetail.model_validate(row)
+    detail.set_name_en = english_set_names(db, [row.set_id]).get(row.set_id)
     # #43: lokal gecachtes Bild bevorzugen, sonst unverändert die CDN-URL.
     detail.image_url = catalog_images.resolve_catalog_image_url(
         row.image_pfad, row.image_url, str(request.base_url))

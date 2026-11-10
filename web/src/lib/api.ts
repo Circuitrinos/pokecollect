@@ -219,6 +219,7 @@ export type SollSlot = {
   set_id: string | null;
   set_code: string | null;
   set_name: string | null;
+  set_name_en?: string | null;
   dex_id: number | null;
 };
 
@@ -636,6 +637,7 @@ export type CatalogItem = {
   set_id: string | null;
   set_code: string | null;
   set_name: string | null;
+  set_name_en?: string | null;   // englischer Set-Name (Anzeige bei UI-Sprache EN)
   local_id: string | null;
   name: string | null;
   name_en: string | null;
