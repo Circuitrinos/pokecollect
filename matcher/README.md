@@ -87,6 +87,12 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
   `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
   Each match is also logged with that breakdown.
+- `POST /verify` (multipart): `file` (a saved, straightened scan photo), `card_id`, optionally
+  `original` + `quad` (the corners it was cut along). Compares the photo with that card's
+  catalog images only (learned photos are left out, they would match themselves) and returns
+  `inliers`, `art_inliers`, `corner_err` (share of the card diagonal), `geo_ok`, the card's
+  `outline` inside the photo and — with the original — `suggested_quad`: better corners in
+  the original. Used by the app's admin tool "Weak scans".
 
 ### Learning from scans
 

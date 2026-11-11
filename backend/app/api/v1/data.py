@@ -331,21 +331,45 @@ def _restore_images(zf: zipfile.ZipFile) -> int:
 
 _DATASET_README = """PokéCollect scan dataset
 
-Every card saved from a scan with "use photo", for all users:
+Every card saved from a scan (its straightened photo and the whole photo it
+was cut from), for all users:
 
   labels.jsonl   one JSON object per card photo:
                    card_id    TCGdex id the user confirmed (e.g. sv03-125)
                    name, set_id, set, number, language, prize_pack
-                   crop       straightened card photo (what the app shows)
+                   crop       straightened card photo
                    original   the whole photo it was cut from (shared by all cards of one photo)
-                   quad       crop corners in the original, normalised 0..1, or null (older scans)
+                   quad       crop corners in the original, normalised 0..1, or null (older scans);
+                              corrected corners replace the old ones ("Fix crop" in the app)
+                   check      scan quality check, or null if not run: status (ok | low |
+                              no_reference | dismissed), inliers and corner_err against the
+                              card's catalog image (corner_err = share of the card diagonal)
+  photos.jsonl   one JSON object per whole photo: original, width, height, the cards
+                 cut from it (id, card_id, quad) and labeled (true when every card
+                 has corners)
   crops/         straightened card photos
   originals/     whole photos, stored once per photo
+  originals/<photo>.txt   card outlines for detector training (YOLO OBB / segmentation
+                 polygon format: "0 x1 y1 x2 y2 x3 y3 x4 y4", normalised), only
+                 for photos where every saved card has corners
+  detect.yaml, detect_train.txt   Ultralytics dataset for those photos
+                 (yolo obb train data=detect.yaml), one class: card
+
+Photos with several cards come from "Multiple cards" and binder page scans.
+A photo lists only the cards that were saved from it: a card discarded in the
+review (or never saved) is in the photo but has no outline, so prefer photos
+whose card count matches what you see, or check them before training.
 
 Use: evaluation and fine-tuning of the card matcher (embed_experiment:
-`python embed_eval.py import-scans <this zip>`), a learned card detector
-(original + quad), a Prize Pack stamp classifier (crop + prize_pack).
+`python embed_eval.py import-scans <this zip>`), a learned card detector /
+segmentation model (photos.jsonl or the YOLO files), a Prize Pack stamp
+classifier (crop + prize_pack). Filter out check.status == "low" to train
+only on clean crops.
 """
+
+
+def _quad_ok(q) -> bool:
+    return isinstance(q, list) and len(q) == 4 and all(isinstance(p, list) and len(p) == 2 for p in q)
 
 
 @router.get("/scan-dataset/summary", dependencies=[Depends(require_admin)])
@@ -382,14 +406,21 @@ def scan_dataset():
     """
     import hashlib
 
+    from PIL import Image
+
+    from app.models.scan_check import ScanCheck
+
     c = PokemonCard.__table__.c
+    s = ScanCheck.__table__.c
     with engine.connect() as conn:   # Core: bewusst ohne Benutzer-Filter (Admin-Export)
         rows = conn.execute(
-            PokemonCard.__table__.select()
+            PokemonCard.__table__.outerjoin(ScanCheck.__table__, s.card_id == c.id).select()
             .with_only_columns(c.id, c.tcgdex_card_id, c.kartenname, c.englischer_name, c.set_id,
                                c.set_edition, c.karten_nr, c.sprache, c.prize_pack,
                                func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).label("crop"),
-                               c.bild_original_pfad, c.bild_quad)
+                               c.bild_original_pfad, c.bild_quad,
+                               s.status.label("check_status"), s.inliers.label("check_inliers"),
+                               s.corner_err.label("check_corner_err"))
             .where(scan_export.exportable())
             .order_by(c.id)
         ).mappings().all()
@@ -398,6 +429,7 @@ def scan_dataset():
     try:
         labels: list[str] = []
         seen: dict[str, str] = {}
+        photos: dict[str, dict] = {}   # Originalfoto → alle daraus geschnittenen Karten (Detektor)
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             for r in rows:
                 crop, orig = safe_media_path(r["crop"]), safe_media_path(r["bild_original_pfad"])
@@ -409,18 +441,42 @@ def scan_dataset():
                 if digest not in seen:
                     seen[digest] = f"originals/{digest}{orig.suffix.lower()}"
                     zf.write(orig, arcname=seen[digest])
+                    try:
+                        with Image.open(orig) as im:
+                            size = im.size
+                    except OSError:
+                        size = (None, None)
+                    photos[digest] = {"original": seen[digest], "width": size[0], "height": size[1], "cards": []}
                 try:
                     quad = json.loads(r["bild_quad"]) if r["bild_quad"] else None
                 except ValueError:
                     quad = None
+                check = None if r["check_status"] is None else {
+                    "status": r["check_status"], "inliers": r["check_inliers"],
+                    "corner_err": r["check_corner_err"]}
                 labels.append(json.dumps({
                     "id": r["id"], "card_id": r["tcgdex_card_id"],
                     "name": r["englischer_name"] or r["kartenname"], "set_id": r["set_id"],
                     "set": r["set_edition"], "number": r["karten_nr"], "language": r["sprache"],
                     "prize_pack": bool(r["prize_pack"]), "crop": crop_name, "original": seen[digest],
-                    "quad": quad,
+                    "quad": quad, "check": check,
                 }, ensure_ascii=False))
+                photos[digest]["cards"].append({"id": r["id"], "card_id": r["tcgdex_card_id"], "quad": quad})
             zf.writestr("labels.jsonl", "\n".join(labels) + ("\n" if labels else ""))
+            # Detektor/Segmentierung: je Originalfoto alle Kartenumrisse
+            train: list[str] = []
+            lines: list[str] = []
+            for digest, ph in photos.items():
+                ph["labeled"] = all(_quad_ok(cd["quad"]) for cd in ph["cards"])
+                lines.append(json.dumps(ph, ensure_ascii=False))
+                if ph["labeled"]:
+                    yolo = "\n".join("0 " + " ".join(f"{min(1.0, max(0.0, v)):.6f}" for p in cd["quad"] for v in p)
+                                     for cd in ph["cards"])
+                    zf.writestr(f"originals/{digest}.txt", yolo + "\n")
+                    train.append("./" + ph["original"])
+            zf.writestr("photos.jsonl", "\n".join(lines) + ("\n" if lines else ""))
+            zf.writestr("detect_train.txt", "\n".join(train) + ("\n" if train else ""))
+            zf.writestr("detect.yaml", "path: .\ntrain: detect_train.txt\nval: detect_train.txt\nnames:\n  0: card\n")
             zf.writestr("README.txt", _DATASET_README)
         tmp.close()
     except Exception:

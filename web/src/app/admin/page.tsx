@@ -6,6 +6,7 @@ import { scanApi, catalogApi, dataApi, usersApi, AppSettingsUpdate, ScanDatasetS
 import { useMe } from "@/lib/useMe";
 import { useI18n } from "@/lib/i18n";
 import { apiErrorText } from "@/lib/uiLang";
+import WeakScans from "@/components/admin/WeakScans";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { Field, INPUT, Section, Toggle, triggerBlobDownload, useSettingsEditor } from "@/components/settings/SettingsUI";
 
@@ -390,6 +391,10 @@ export default function AdminPage() {
             </p>
           </div>
         )}
+      </Section>
+
+      <Section title={`🔍 ${t.weak_title}`}>
+        <WeakScans />
       </Section>
 
       <Section title={`📚 ${t.settings_section_catalog}`}>

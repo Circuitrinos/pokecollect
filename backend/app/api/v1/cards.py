@@ -19,6 +19,7 @@ from app.services.card_images import (
     ImageValidationError,
     backfill_images_task,
     remove_card_images,
+    replace_crop,
     store_card_image,
     store_scan_photo,
 )
@@ -490,6 +491,37 @@ async def show_catalog_image(card_id: int, db: Session = Depends(get_db)):
     return _card_response(db, card)
 
 
+class ImageLanguageRequest(BaseModel):
+    lang: str = Field(..., pattern=r"^[A-Za-z]{2}$")
+
+
+@router.post("/{card_id}/image-language", response_model=CardResponse)
+async def set_image_language(card_id: int, req: ImageLanguageRequest, db: Session = Depends(get_db)):
+    """
+    Katalogbild in einer anderen Sprache zeigen (z. B. das deutsche Bild einer
+    deutschen Karte, deren Katalogbild englisch ist). Nur für westliche
+    TCGdex-Bilder; das Bild wird vorher geholt — gibt es die Sprachfassung
+    nicht, bleibt alles, wie es war (404). Ein eigenes Foto bleibt angezeigt;
+    das neue Katalogbild gilt für den Umschalter.
+    """
+    from app.services import bild_spiegel, image_lang
+
+    card = _card_or_404(card_id, db)
+    base = card.bild_karte_url
+    if not image_lang.image_lang(base) and card.tcgdex_card_id:
+        row = catalog_row_for(db, card.tcgdex_card_id)
+        base = row.image_url if row is not None else None
+    url = image_lang.with_lang(base, req.lang)
+    if not url:
+        raise HTTPException(status_code=422, detail="Für dieses Bild gibt es keine anderen Sprachen")
+    if await bild_spiegel.datei_fuer(url) is None:
+        raise HTTPException(status_code=404, detail="Kein Kartenbild in dieser Sprache")
+    card.bild_karte_url = url
+    db.commit()
+    db.refresh(card)
+    return _card_response(db, card)
+
+
 class LinkCatalogRequest(BaseModel):
     card_id: str = Field(..., min_length=1, max_length=64)       # TCGdex-ID der gewählten Katalogkarte
     image_url: Optional[str] = Field(None, max_length=500)       # das im Auswähler gezeigte Bild
@@ -582,6 +614,48 @@ async def link_pokemon_com(card_id: int, req: PokemonComLinkRequest, db: Session
     db.commit()
     db.refresh(card)
     return _card_response(db, card)
+
+
+@router.post("/{card_id}/recrop", response_model=CardResponse)
+async def recrop(
+    card_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    quad: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Zuschnitt korrigieren: neues Kartenfoto aus dem gespeicherten Original mit
+    neuen Ecken (Kartenseite, Werkzeug „Schwache Scans"). Ersetzt das gerade
+    gespeicherte Foto — angezeigt oder nur zum Lernen — und die Ecken.
+    """
+    card = _card_or_404(card_id, db)
+    if not card.bild_original_pfad or not (card.bild_karte_pfad or card.bild_scan_pfad):
+        raise HTTPException(status_code=409, detail="Kein Originalfoto zum Neu-Zuschneiden")
+    try:
+        card = replace_crop(db, card, file, _parse_quad(quad))
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    if card.tcgdex_card_id:
+        background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return _card_response(db, card)
+
+
+@router.get("/{card_id}/scan-check")
+def scan_check(card_id: int, db: Session = Depends(get_db)):
+    """Letzte Prüfung des Scan-Fotos dieser Karte (Werkzeug „Schwache Scans"), sonst null."""
+    from app.models.scan_check import ScanCheck
+
+    card = _card_or_404(card_id, db)
+    row = db.get(ScanCheck, card.id)
+    if row is None:
+        return None
+    return {
+        "status": row.status, "inliers": row.inliers, "art_inliers": row.art_inliers,
+        "corner_err": row.corner_err, "templates": row.templates,
+        "suggested_quad": json.loads(row.suggested_quad) if row.suggested_quad else None,
+        "checked_at": row.checked_at.isoformat() if row.checked_at else None,
+    }
 
 
 @router.post("/{card_id}/scan-photo", response_model=CardResponse)

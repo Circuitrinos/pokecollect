@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
@@ -7,6 +8,7 @@ from pydantic import BaseModel, computed_field, field_validator
 from app.schemas._grenzen import MONEY_FIELD, PgNichtNegativ
 from app.schemas._validators import reject_control_chars, reject_explicit_null
 from app.services.bild_spiegel import pokedex_url, spiegel_pfad
+from app.services.image_lang import image_lang
 
 
 SELTENHEIT_VALUES = [
@@ -154,6 +156,12 @@ class CardResponse(CardBase):
     def bild_karte_spiegel(self) -> Optional[str]:
         return spiegel_pfad(self.bild_karte_url)
 
+    # Sprache des Katalogbilds (TCGdex, westlich), z. B. "DE"; None = nicht umschaltbar
+    @computed_field
+    @property
+    def bild_sprache(self) -> Optional[str]:
+        return image_lang(self.bild_karte_url)
+
     @computed_field
     @property
     def bild_pokedex_spiegel(self) -> Optional[str]:
@@ -169,6 +177,19 @@ class CardResponse(CardBase):
     bild_karte_pfad: Optional[str] = None
     bild_thumbnail_pfad: Optional[str] = None
     bild_original_pfad: Optional[str] = None
+    # Ecken des Zuschnitts im Originalfoto (normiert, 4×[x,y]) — für „Zuschnitt korrigieren"
+    bild_quad: Optional[list[list[float]]] = None
+
+    @field_validator("bild_quad", mode="before")
+    @classmethod
+    def _quad_json(cls, v):
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                return None
+        return v if isinstance(v, list) and len(v) == 4 else None
+
     # Scan-Foto, das gerade nicht angezeigt wird (die Karte zeigt das Katalogbild)
     bild_scan_pfad: Optional[str] = None
     # Gibt es ein Katalogbild, auf das sich umschalten lässt? (nur Einzelkarten)

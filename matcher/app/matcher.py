@@ -103,41 +103,11 @@ def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: 
         chosen = np.array(list(dict.fromkeys(emb_t + [int(t) for t in chosen])), np.int64)
 
     def ratio_matches(t: int):
-        seg = snap.segments[int(snap.seg_of[t])]
-        des, kp = seg.template(int(snap.idx_in_seg[t]))
-        if len(des) < 2:
-            return t, []
-        knn = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(f.des, des, k=2)
-        return t, [(m.queryIdx, m.trainIdx) for pair in knn if len(pair) == 2
-                   for m, n in [pair] if m.distance < LOWE * n.distance]
+        return t, _ratio_matches(f, snap, t)
 
     def geometry(t: int, good: list[tuple[int, int]]):
-        seg = snap.segments[int(snap.seg_of[t])]
-        j = int(snap.idx_in_seg[t])
-        _, kp = seg.template(j)
-        src = f.kp_xy[[q for q, _ in good]].reshape(-1, 1, 2)
-        dst = kp[[r for _, r in good]].reshape(-1, 1, 2)
-        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_PX, maxIters=RANSAC_ITERS)
-        if mask is None or H is None:
-            return 0, 0, False, None, None, False
-        inl = mask.ravel().astype(bool)
-        meta = seg.meta[j]
-        cw = int((meta.get("w") or DEFAULT_TEMPLATE_WH[0]) * features.CROP_FRAC)
-        ch = int((meta.get("h") or DEFAULT_TEMPLATE_WH[1]) * features.CROP_FRAC)
-        p = dst.reshape(-1, 2)[inl]
-        art = int(((p[:, 0] >= ART_X[0] * cw) & (p[:, 0] <= ART_X[1] * cw)
-                   & (p[:, 1] >= ART_Y[0] * ch) & (p[:, 1] <= ART_Y[1] * ch)).sum())
-        upside = abs(math.degrees(math.atan2(H[1, 0], H[0, 0]))) > 90
-        twh = (int(meta.get("w") or DEFAULT_TEMPLATE_WH[0]), int(meta.get("h") or DEFAULT_TEMPLATE_WH[1]))
-        # Both images are straightened cards, so a true match maps the query
-        # crop's corners onto the template crop's corners (maybe rotated 180°).
-        qc = np.float32([[0, 0], [qcw, 0], [qcw, qch], [0, qch]])
-        tc = np.float32([[0, 0], [cw, 0], [cw, ch], [0, ch]])
-        if upside:
-            tc = np.roll(tc, 2, axis=0)
-        mapped = cv2.perspectiveTransform(qc.reshape(-1, 1, 2), H).reshape(4, 2)
-        err = float(np.mean(np.linalg.norm(mapped - tc, axis=1))) / math.hypot(cw, ch)
-        return int(inl.sum()), art, upside, H, twh, err <= MAX_CORNER_ERR
+        inl, art, upside, H, twh, err = _geometry(f, snap, t, good, qcw, qch)
+        return inl, art, upside, H, twh, err <= MAX_CORNER_ERR
 
     qch, qcw = features.center_crop(card_bgr).shape[:2]
     goods = dict(_pool.map(ratio_matches, [int(t) for t in chosen]))
@@ -161,6 +131,87 @@ def match_card(card_bgr: np.ndarray, snap: Snapshot, top_k: int = 5, preselect: 
     for c in best.values():
         c.catalog_art = cat_art.get(c.card_id, 0)
     return sorted(best.values(), key=lambda c: c.score, reverse=True)[:top_k]
+
+
+def _ratio_matches(f: features.Features, snap: Snapshot, t: int) -> list[tuple[int, int]]:
+    seg = snap.segments[int(snap.seg_of[t])]
+    des, kp = seg.template(int(snap.idx_in_seg[t]))
+    if len(des) < 2:
+        return []
+    knn = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(f.des, des, k=2)
+    return [(m.queryIdx, m.trainIdx) for pair in knn if len(pair) == 2
+            for m, n in [pair] if m.distance < LOWE * n.distance]
+
+
+def _geometry(f: features.Features, snap: Snapshot, t: int, good: list[tuple[int, int]],
+              qcw: int, qch: int):
+    """(inliers, art inliers, upside down, H, template wh, corner error) of one template."""
+    seg = snap.segments[int(snap.seg_of[t])]
+    j = int(snap.idx_in_seg[t])
+    _, kp = seg.template(j)
+    src = f.kp_xy[[q for q, _ in good]].reshape(-1, 1, 2)
+    dst = kp[[r for _, r in good]].reshape(-1, 1, 2)
+    H, mask = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_PX, maxIters=RANSAC_ITERS)
+    if mask is None or H is None:
+        return 0, 0, False, None, None, math.inf
+    inl = mask.ravel().astype(bool)
+    meta = seg.meta[j]
+    cw = int((meta.get("w") or DEFAULT_TEMPLATE_WH[0]) * features.CROP_FRAC)
+    ch = int((meta.get("h") or DEFAULT_TEMPLATE_WH[1]) * features.CROP_FRAC)
+    p = dst.reshape(-1, 2)[inl]
+    art = int(((p[:, 0] >= ART_X[0] * cw) & (p[:, 0] <= ART_X[1] * cw)
+               & (p[:, 1] >= ART_Y[0] * ch) & (p[:, 1] <= ART_Y[1] * ch)).sum())
+    upside = abs(math.degrees(math.atan2(H[1, 0], H[0, 0]))) > 90
+    twh = (int(meta.get("w") or DEFAULT_TEMPLATE_WH[0]), int(meta.get("h") or DEFAULT_TEMPLATE_WH[1]))
+    # Both images are straightened cards, so a true match maps the query
+    # crop's corners onto the template crop's corners (maybe rotated 180°).
+    qc = np.float32([[0, 0], [qcw, 0], [qcw, qch], [0, qch]])
+    tc = np.float32([[0, 0], [cw, 0], [cw, ch], [0, ch]])
+    if upside:
+        tc = np.roll(tc, 2, axis=0)
+    mapped = cv2.perspectiveTransform(qc.reshape(-1, 1, 2), H).reshape(4, 2)
+    err = float(np.mean(np.linalg.norm(mapped - tc, axis=1))) / math.hypot(cw, ch)
+    return int(inl.sum()), art, upside, H, twh, err
+
+
+def verify_card(card_bgr: np.ndarray, snap: Snapshot, card_id: str) -> dict:
+    """
+    How well a saved, straightened scan photo fits its confirmed card — against
+    that card's CATALOG images only (a user's own photo is also indexed as a
+    reference, and would always match itself). A sloppy crop shows as a large
+    corner error; a wrong card or a bad photo as few inliers. `outline` is where
+    the card really lies in the photo (fractions of its width/height, card's
+    top-left first), for suggesting better corners.
+    """
+    learned = snap.learned if len(snap.learned) == len(snap.card_id) else np.zeros(len(snap.card_id), bool)
+    rows = [t for t in snap.by_card.get(card_id, []) if not learned[t]]
+    out: dict = {"card_id": card_id, "templates": len(rows), "inliers": 0, "art_inliers": 0,
+                 "corner_err": None, "geo_ok": False, "upside_down": False, "outline": None}
+    if not rows:
+        return out
+    f = features.extract(card_bgr)
+    if f is None:
+        return out
+    qch, qcw = features.center_crop(card_bgr).shape[:2]
+    best = None
+    for t in rows:
+        good = _ratio_matches(f, snap, t)
+        if len(good) < 4:
+            continue
+        g = _geometry(f, snap, t, good, qcw, qch)
+        if best is None or g[0] > best[0]:
+            best = g
+    if best is None or best[3] is None:
+        return out
+    inl, art, upside, H, twh, err = best
+    out.update(inliers=inl, art_inliers=art, corner_err=round(err, 4), geo_ok=bool(err <= MAX_CORNER_ERR),
+               upside_down=bool(upside))
+    if inl >= MIN_GOOD:
+        c = Candidate(card_id, 0.0, inl, art, 0, 0, upside, H, twh)
+        pts = card_outline_in_query(c, (card_bgr.shape[1], card_bgr.shape[0]))
+        if pts is not None:
+            out["outline"] = (pts / [card_bgr.shape[1], card_bgr.shape[0]]).round(4).tolist()
+    return out
 
 
 def card_outline_in_query(c: Candidate, query_wh: tuple[int, int]) -> np.ndarray | None:

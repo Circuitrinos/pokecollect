@@ -9,3 +9,4 @@ from app.models.gemini_usage import GeminiUsage  # noqa: F401
 from app.models.tcgdex_catalog import TcgdexCatalog  # noqa: F401
 from app.models.sealed import SealedCatalog, SealedProduct, sealed_product_sets  # noqa: F401
 from app.models.friends import CollectionShare, Friendship  # noqa: F401
+from app.models.scan_check import ScanCheck  # noqa: F401

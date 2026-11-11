@@ -95,6 +95,9 @@ function PokedexReplaceModal({
 // Foto/Edit/Sammlungen leben in components/carddetail/.
 export default function CardDetailPage() {
   const params = useParams();
+  // ?fixcrop=1 (aus „Schwache Scans"): Zuschnitt-Editor gleich öffnen
+  const [autoFixCrop, setAutoFixCrop] = useState(false);
+  useEffect(() => { setAutoFixCrop(new URLSearchParams(window.location.search).get("fixcrop") === "1"); }, []);
   const id = params?.id as string;
   const router = useRouter();
   const { t, lang } = useI18n();
@@ -241,6 +244,7 @@ export default function CardDetailPage() {
           onCardSaved={(c) => { setCard(c); setForm(c); }}
           onImageClick={(src) => setLightboxSrc(src)}
           onSwipeCard={handleSwipe}
+          autoFixCrop={autoFixCrop}
         />
 
         {/* Details */}

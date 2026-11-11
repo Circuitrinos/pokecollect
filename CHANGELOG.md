@@ -1,5 +1,45 @@
 # Changelog
 
+## [v1.13.0] – 2026-11-11 (Scan-Prüfung, Scan-Kontrolle je Karte, englische Oberfläche) — backup
+
+**Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect eine
+neue Tabelle für die Scan-Prüfung an; vorhandene Daten bleiben unverändert.
+Auch den Bild-Abgleich (matcher) aktualisieren — die Scan-Prüfung braucht
+seine neue Schnittstelle.
+
+### Neu
+- **Scan-Kontrolle je Karte** (mehrere Karten, Binder-Seite): jede Karte
+  einzeln speichern, verwerfen oder neu erkennen; eine übersehene Karte im Foto
+  umranden und nachtragen. Die Knöpfe unten speichern den Rest.
+- **Exemplar mit anderen Angaben:** beim Scannen mehrerer Exemplare eines
+  davon mit eigener Folierung oder aus einem anderen Set (gleicher Name,
+  gleiches Artwork) anlegen.
+- **Bildsprache:** das Katalogbild in einer anderen Sprache zeigen (EN, DE, FR,
+  ES, IT, PT) — beim Scannen und auf der Kartenseite.
+- **Schwache Scans** (Admin-Bereich): prüft gespeicherte Scan-Fotos gegen das
+  Katalogbild ihrer Karte und listet schiefe Zuschnitte und schlechte Treffer.
+  „Zuschnitt korrigieren“ öffnet die Karte mit vorgeschlagenen Ecken.
+- **Zuschnitt korrigieren** auf der Kartenseite für jede Karte mit
+  Originalfoto, auch wenn sie das Katalogbild zeigt.
+- **Datensatz-Export:** Prüfergebnis je Foto, alle Karten je Originalfoto und
+  Kartenumrisse im YOLO-Format — zum Trainieren der Erkennung mehrerer Karten
+  und ganzer Binder-Seiten.
+- **Binder:** Seiten-Schieber zusätzlich zu den Pfeilen.
+
+### Geändert
+- **Englische Oberfläche:** Fehlermeldungen des Servers, gespeicherte
+  Auswahlwerte (Priorität, Muster, Sealed-Typ und -Zustand), Kartennamen in
+  Statistik und Dialogen, Beträge und Daten im Format der Browsersprache, der
+  CSV-Export (Komma, Dezimalpunkt, englische Spalten) und die Leseanweisung des
+  Scanners sind jetzt englisch. Der Katalog sortiert nach dem englischen Namen.
+- **Sprache neuer Karten** folgt ohne eigene Einstellung der App-Sprache (neue
+  Option „Wie die App-Sprache“); manuell angelegte Karten bekommen den Namen in
+  ihrer Kartensprache.
+
+### Behoben
+- Ecken eines Fotos gingen beim Neu-Zuschneiden auf der Kartenseite verloren
+  oder blieben veraltet.
+
 ## [v1.12.0] – 2026-11-11 (Mehrere Benutzer, Freunde und ein neuer Scanner) — backup
 
 **Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect neue

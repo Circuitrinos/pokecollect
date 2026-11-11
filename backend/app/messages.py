@@ -65,6 +65,10 @@ EN: dict[str, str] = {
     "Zu diesem Link gibt es kein Kartenbild": "There is no card image for this link",
     "Kein Katalogbild für diese Karte gefunden": "No catalog image found for this card",
     "all_scanned gibt es nur für catalog_image": "all_scanned only works with catalog_image",
+    "Für dieses Bild gibt es keine anderen Sprachen": "This image isn't available in other languages",
+    "Kein Kartenbild in dieser Sprache": "There is no card image in this language",
+    "Kein Originalfoto zum Neu-Zuschneiden": "There is no original photo to crop again",
+    "Scan-Prüfung nicht gefunden": "Scan check not found",
     # Bilder
     "Bild nicht verfügbar": "Image not available",
     "Bild zu groß (max. 12 MB)": "Image too large (max. 12 MB)",

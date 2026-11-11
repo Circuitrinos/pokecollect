@@ -81,6 +81,8 @@ export type Card = {
   zustand: string | null;
   bild_pokedex_url: string | null;
   bild_karte_url: string | null;       // auto: TCGdex high.webp
+  bild_sprache?: string | null;       // Sprache des Katalogbilds (TCGdex), null = nicht umschaltbar
+  bild_quad?: number[][] | null;      // Ecken des Zuschnitts im Originalfoto (normiert)
   // #120: dieselben Bilder als signierter Spiegel-Pfad der eigenen API —
   // NUR diese Felder fließen in die Anzeige (lib/utils.ts cardImageSrc).
   // null bei fehlender URL oder fremdem Host.
@@ -304,9 +306,20 @@ export const cardApi = {
     return api.post<Card>(`/cards/${id}/scan-photo`, form);
   },
 
+  // Zuschnitt aus dem gespeicherten Original neu (korrigierte Ecken)
+  recrop: (id: number, file: File, quad: number[][]) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("quad", JSON.stringify(quad));
+    return api.post<Card>(`/cards/${id}/recrop`, form);
+  },
+  scanCheck: (id: number) => api.get<ScanCheck | null>(`/cards/${id}/scan-check`),
+
   deleteImage: (id: number) => api.delete<Card>(`/cards/${id}/image`),
   // Katalogbild statt eigenem Foto zeigen; sucht eins, falls noch keins bekannt
   useCatalogImage: (id: number) => api.post<Card>(`/cards/${id}/catalog-image`),
+  // Katalogbild in einer anderen Sprache (TCGdex, westliche Karten)
+  setImageLanguage: (id: number, lang: string) => api.post<Card>(`/cards/${id}/image-language`, { lang }),
   // Mit einer Katalogkarte verknüpfen („Richtige Karte finden")
   // Link von pokemon.com (Kartenseite/Bildadresse), im eigenen Browser gefunden
   linkPokemonCom: (id: number, url: string) => api.post<Card>(`/cards/${id}/link-pokemon-com`, { url }),
@@ -483,6 +496,39 @@ export const sealedApi = {
     return api.post<SealedProduct>(`/sealed/${id}/image`, form);
   },
   deleteImage: (id: number) => api.delete<SealedProduct>(`/sealed/${id}/image`),
+};
+
+// ── Schwache Scans (Admin) ─────────────────────────────────────────────────
+export type ScanCheck = {
+  status: "ok" | "low" | "no_reference" | "error" | "dismissed";
+  inliers: number;
+  art_inliers: number;
+  corner_err: number | null;
+  templates: number;
+  suggested_quad: number[][] | null;
+  checked_at: string | null;
+};
+
+export type ScanQualityItem = {
+  card_id: number; status: string; inliers: number; art_inliers: number; corner_err: number | null;
+  templates: number; has_suggestion: boolean; checked_at: string | null; own: boolean;
+  username: string | null; name: string; english_name: string | null; set: string | null;
+  number: string | null; tcgdex_card_id: string | null; photo: string | null; has_original: boolean;
+};
+
+export type ScanQualityOverview = {
+  job: { running: boolean; done: number; total: number; low: number; started_at: string | null;
+    finished_at: string | null; error: string | null };
+  counts: { ok: number; low: number; no_reference: number; error: number; dismissed: number;
+    unchecked: number; photos: number };
+  thresholds: { inliers: number; corner_err: number };
+  items: ScanQualityItem[];
+};
+
+export const scanQualityApi = {
+  overview: (status = "low") => api.get<ScanQualityOverview>("/scan-quality", { params: { status } }),
+  run: (full = false) => api.post("/scan-quality/run", null, { params: { full } }),
+  dismiss: (cardId: number) => api.post(`/scan-quality/${cardId}/dismiss`),
 };
 
 // ── Anmeldung / Mehrbenutzer ──────────────────────────────────────────────

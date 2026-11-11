@@ -267,6 +267,8 @@ def store_card_image(
         _save_upright(original, orig_path)
         card.bild_original_pfad = str(orig_path.relative_to(images_dir.parent))
         card.bild_quad = json.dumps(quad) if quad else None
+    elif quad and card.bild_original_pfad:
+        card.bild_quad = json.dumps(quad)       # neu zugeschnitten aus dem vorhandenen Original
 
     db.commit()
     db.refresh(card)
@@ -297,6 +299,53 @@ def store_scan_photo(
     card.bild_quad = json.dumps(quad) if quad else None
     db.commit()
     db.refresh(card)
+    return card
+
+
+def replace_crop(
+    db: Session,
+    card: PokemonCard,
+    file: UploadFile,
+    quad: Optional[list[list[float]]],
+) -> PokemonCard:
+    """
+    Neuer Zuschnitt aus dem gespeicherten Originalfoto (Ecken korrigiert):
+    ersetzt das angezeigte eigene Foto bzw. — zeigt die Karte das Katalogbild —
+    das Scan-Foto, und speichert die neuen Ecken. Neuer Dateiname, damit der
+    Bild-Abgleich das geänderte Foto neu lernt (er merkt sich Fotos je Pfad).
+    """
+    import time
+
+    from app.services import scan_quality
+
+    suffix = _validated_suffix(file)
+    images_dir = Path(settings.images_dir)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    old: list[Optional[str]] = []
+    if card.bild_karte_pfad:
+        img_path = images_dir / f"card_{card.id}_{stamp}{suffix}"
+        thumb_path = images_dir / f"card_{card.id}_{stamp}_thumb{suffix}"
+        _save_upright(file, img_path, thumb=thumb_path)
+        old = [card.bild_karte_pfad, card.bild_thumbnail_pfad]
+        card.bild_karte_pfad = str(img_path.relative_to(images_dir.parent))
+        card.bild_thumbnail_pfad = str(thumb_path.relative_to(images_dir.parent))
+    else:
+        scan_path = images_dir / f"card_{card.id}_scan_{stamp}{suffix}"
+        _save_upright(file, scan_path)
+        old = [card.bild_scan_pfad]
+        card.bild_scan_pfad = str(scan_path.relative_to(images_dir.parent))
+    card.bild_quad = json.dumps(quad) if quad else None
+    scan_quality.forget(db, card.id)
+    db.commit()
+    db.refresh(card)
+    for p in old:
+        full = safe_media_path(p)
+        if full is not None and full.is_file():
+            try:
+                full.unlink()
+            except OSError:
+                pass
     return card
 
 

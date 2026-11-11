@@ -582,6 +582,22 @@ export default function BinderView({
           ⚙
         </button>
       </div>
+
+      {/* Seiten-Schieber: schnell zu einer weit entfernten Seite (zusätzlich zu ‹ ›) */}
+      {totalPages > 1 && (
+        <label className="mt-2 flex w-full max-w-md items-center gap-2 px-2 text-xs text-gray-500">
+          <span className="tabular-nums">1</span>
+          <input
+            type="range" min={1} max={totalPages} step={1}
+            value={safePage + 1}
+            onChange={(e) => setPage(Number(e.target.value) - 1)}
+            aria-label={t.binder_page_slider}
+            data-testid="binder-page-slider"
+            className="flex-1 accent-pokemon-yellow"
+          />
+          <span className="tabular-nums">{totalPages}</span>
+        </label>
+      )}
     </div>
   );
 }

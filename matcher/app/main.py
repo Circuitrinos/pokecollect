@@ -3,6 +3,8 @@ PokéCollect card matcher — identifies cards by artwork.
 
 POST /match   photo (+ mode, rows, cols) -> per detected card: corners,
               top candidates (TCGdex ids), and whether the choice is clean
+POST /verify  saved scan photo + its card id (+ original, corners) -> how well
+              it fits the card's catalog images, and better corners
 GET  /health  loading state, index size, mapping and extension progress
 """
 from __future__ import annotations
@@ -18,7 +20,9 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from . import detect, embedding, learn, matcher, numocr, timing
+import json
+
+from . import detect, embedding, learn, matcher, numocr, recrop, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -405,6 +409,39 @@ def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int) -> 
     log.info("match %s %dx%d: %d card(s) in %d ms %s%s", mode, img.shape[1], img.shape[0],
              len(res["cards"]), res["ms"], res["timing"],
              " (first since start)" if state["matches"] == 1 else "")
+    return res
+
+
+@app.post("/verify")
+async def verify(file: UploadFile = File(...), card_id: str = Form(...),
+                 original: UploadFile | None = File(None), quad: str = Form("")) -> dict:
+    """Scan quality check (admin tool in the app): the saved crop against its
+    card's catalog images only; with the original and the corners also a
+    corrected set of corners."""
+    if state["status"] != "ready":
+        raise HTTPException(503, f"matcher not ready: {state['status']}")
+    data = await file.read()
+    orig = await original.read() if original is not None else b""
+    if not data or len(data) > MAX_BYTES or len(orig) > 4 * MAX_BYTES:
+        raise HTTPException(400, "empty or oversized image")
+    return await run_in_threadpool(_verify_request, data, card_id, orig, quad)
+
+
+def _verify_request(data: bytes, card_id: str, orig: bytes, quad: str) -> dict:
+    crop = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if crop is None:
+        raise HTTPException(400, "unreadable image")
+    with _match_lock:
+        res = matcher.verify_card(crop, store.snapshot(), card_id)
+    res["suggested_quad"] = None
+    if res.get("outline") and orig and quad:
+        try:
+            q = json.loads(quad)
+            original = cv2.imdecode(np.frombuffer(orig, np.uint8), cv2.IMREAD_COLOR)
+            if original is not None and isinstance(q, list) and len(q) == 4:
+                res.update(recrop.suggest_quad(original, crop, q, res["outline"]))
+        except (ValueError, cv2.error) as exc:
+            log.info("verify %s: no corner suggestion (%s)", card_id, exc)
     return res
 
 

@@ -1,8 +1,8 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
-import { API_BASE, Card, cardApi } from "@/lib/api";
+import { API_BASE, Card, ScanCheck, cardApi } from "@/lib/api";
 import CornerEditor from "@/components/CornerEditor";
 import CardFinder from "@/components/carddetail/CardFinder";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
@@ -10,6 +10,7 @@ import { imageUrl, cardImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useMe } from "@/lib/useMe";
 import { scanExportProblems } from "@/lib/scanExport";
+import { IMAGE_LANGS } from "@/lib/imageLang";
 
 // Foto-Spalte der Kartendetailseite (Issue #14): Anzeige, Aufnahme/Upload,
 // Eck-Editor (Zuschnitt/Entzerrung), Bild-URL und Löschen. Herausgeschnitten
@@ -17,6 +18,8 @@ import { scanExportProblems } from "@/lib/scanExport";
 
 type Props = {
   card: Card;
+  /** Kartenseite mit ?fixcrop=1 (Werkzeug „Schwache Scans"): Zuschnitt-Editor gleich öffnen. */
+  autoFixCrop?: boolean;
   /** Server-Antwort übernehmen (nur Kartenzustand). */
   onCardUpdated: (card: Card) => void;
   /** Server-Antwort übernehmen UND Formular synchronisieren (URL-Änderungen). */
@@ -27,7 +30,7 @@ type Props = {
   onSwipeCard?: (dir: "prev" | "next") => void;
 };
 
-export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageClick, onSwipeCard }: Props) {
+export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageClick, onSwipeCard, autoFixCrop }: Props) {
   const { t } = useI18n();
   // Nur Admins: Hinweis, wenn das Foto nicht in den Scan-Trainingsdatensatz kommt
   const exportProblems = useMe()?.is_admin ? scanExportProblems(card) : [];
@@ -41,6 +44,19 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     [[0.06, 0.05], [0.94, 0.05], [0.94, 0.95], [0.06, 0.95]]);
   const editorBlobRef = useRef<Blob | null>(null);
   const editorOriginalRef = useRef<Blob | null>(null);  // Original mit-hochladen (nur bei neuem Foto)
+  // Zuschnitt aus dem gespeicherten Original korrigieren (POST /recrop statt neuem Foto)
+  const editorRecropRef = useRef(false);
+  // Gespeichertes Foto mit Original → Zuschnitt lässt sich korrigieren
+  const canRecrop = !!card.bild_original_pfad && !!(card.bild_karte_pfad || card.bild_scan_pfad);
+  // Letzte Prüfung des Scan-Fotos (Werkzeug „Schwache Scans"): Hinweis + vorgeschlagene Ecken
+  const [check, setCheck] = useState<ScanCheck | null>(null);
+  const checkRef = useRef<ScanCheck | null>(null);
+  const [checkLoaded, setCheckLoaded] = useState(false);
+  useEffect(() => {
+    const done = (c: ScanCheck | null) => { checkRef.current = c; setCheck(c); setCheckLoaded(true); };
+    if (!canRecrop) { done(null); return; }
+    cardApi.scanCheck(card.id).then((r) => done(r.data)).catch(() => done(null));
+  }, [card.id, canRecrop, card.bild_quad]);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   // Tap-vs-Wisch aufs Kartenbild (Issue #24): Tap öffnet die Lightbox, ein
   // horizontaler Wisch blättert zur Nachbarkarte und unterdrückt den Folge-Klick.
@@ -95,11 +111,41 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     });
   };
 
+  // Zuschnitt korrigieren: das Original mit den gespeicherten (oder von der
+  // Scan-Prüfung vorgeschlagenen) Ecken öffnen; Übernehmen ersetzt das Foto
+  // und die Ecken (Trainingsdaten für die Kartenerkennung).
+  const handleFixCrop = async () => {
+    const src = imageUrl(card.bild_original_pfad, API_BASE, card.aktualisiert_am);
+    if (!src) return;
+    try {
+      const blob = await (await fetch(src)).blob();
+      editorBlobRef.current = blob;
+      editorOriginalRef.current = null;
+      editorRecropRef.current = true;
+      setEditorInitQuad(checkRef.current?.suggested_quad ?? card.bild_quad ?? [[0.1, 0.08], [0.9, 0.08], [0.9, 0.92], [0.1, 0.92]]);
+      setEditorUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(blob);
+      });
+    } catch {
+      toast.error(t.detail_upload_error);
+    }
+  };
+  // Aus der Liste „Schwache Scans" kommend: Editor einmal von selbst öffnen
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (!autoFixCrop || autoOpened.current || !canRecrop || !checkLoaded) return;   // Vorschlag erst laden
+    autoOpened.current = true;
+    void handleFixCrop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFixCrop, canRecrop, checkLoaded]);
+
   // Bereits hochgeladenes eigenes Foto nachträglich bearbeiten (Zuschnitt /
-  // Flip / Drehen). Bevorzugt das ungeschnittene Original (falls vorhanden),
-  // damit man großzügiger neu zuschneiden kann.
+  // Flip / Drehen). Mit Original: wie „Zuschnitt korrigieren" (Ecken bleiben
+  // gespeichert); ohne Original nur den vorhandenen Zuschnitt drehen/spiegeln.
   const handleEditExisting = async () => {
     if (!card.bild_karte_pfad) return;
+    if (canRecrop) { await handleFixCrop(); return; }
     const fromOriginal = !!card.bild_original_pfad;
     const src = imageUrl(card.bild_original_pfad ?? card.bild_karte_pfad, API_BASE, card.aktualisiert_am);
     if (!src) return;
@@ -128,6 +174,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     });
     editorBlobRef.current = null;
     editorOriginalRef.current = null;
+    editorRecropRef.current = false;
   };
 
   const handleApplyPhoto = async (quad: number[][], transform: CropTransform) => {
@@ -136,10 +183,20 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     setUploadingPhoto(true);
     try {
       const file = await cropToCardPhoto(blob, { quad, ...transform });
+      if (editorRecropRef.current) {
+        const r = await cardApi.recrop(card.id, file, quad);
+        onCardUpdated(r.data);
+        checkRef.current = null;
+        setCheck(null);
+        toast.success(t.fix_crop_saved);
+        closePhotoEditor();
+        return;
+      }
       const original = editorOriginalRef.current
         ? new File([editorOriginalRef.current], "orig.jpg", { type: "image/jpeg" })
         : undefined;
-      const r = await cardApi.uploadImage(card.id, file, original);
+      // Ecken mitsenden: sie gehören zum Originalfoto (Trainingsdaten)
+      const r = await cardApi.uploadImage(card.id, file, original, original ? quad : null);
       onCardUpdated(r.data);
       toast.success(t.detail_photo_saved);
       closePhotoEditor();
@@ -184,6 +241,19 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const canShowOwn = !showsOwn && !!card.bild_scan_pfad;
   const [switching, setSwitching] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
+  const [langBusy, setLangBusy] = useState(false);
+  const changeImageLang = async (lang: string) => {
+    setLangBusy(true);
+    try {
+      const r = await cardApi.setImageLanguage(card.id, lang);
+      onCardUpdated(r.data);
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      toast.error(status === 404 ? t.image_lang_missing : t.form_save_error);
+    } finally {
+      setLangBusy(false);
+    }
+  };
   const switchPicture = async (to: "catalog_image" | "own_photo") => {
     setSwitching(true);
     try {
@@ -275,6 +345,16 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
           </button>
         </div>
       )}
+      {card.bild_sprache && (
+        <label className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-400" title={t.image_lang_hint}>
+          <span>🌐 {t.image_lang_label}</span>
+          <select value={card.bild_sprache} disabled={langBusy} data-testid="image-lang"
+            onChange={(e) => void changeImageLang(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-white text-xs disabled:opacity-50">
+            {IMAGE_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </label>
+      )}
       <button type="button" onClick={() => setFinderOpen(true)}
         className="w-full mt-1 text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5">
         🔍 {t.finder_open}
@@ -307,7 +387,20 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
           {card.bild_karte_pfad ? t.detail_replace_photo : t.detail_upload_photo}
         </button>
       </div>
-      {card.bild_karte_pfad && (
+      {check?.status === "low" && (
+        <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200" data-testid="weak-scan-warning">
+          ⚠ {t.weak_card_warn(check.inliers, check.corner_err)}{check.suggested_quad ? ` ${t.weak_card_suggest}` : ""}
+        </div>
+      )}
+      {canRecrop ? (
+        <button type="button"
+          onClick={() => void handleFixCrop()}
+          data-testid="fix-crop"
+          className="w-full mt-1 text-sm bg-gray-800 text-pokemon-blue hover:text-white rounded px-3 py-1.5"
+        >
+          ✥ {t.fix_crop}
+        </button>
+      ) : card.bild_karte_pfad && (
         <button type="button"
           onClick={() => void handleEditExisting()}
           className="w-full mt-1 text-sm bg-gray-800 text-pokemon-blue hover:text-white rounded px-3 py-1.5"

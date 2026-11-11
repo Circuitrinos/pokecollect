@@ -21,6 +21,7 @@ import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Loc
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
+import { IMAGE_LANGS, imageLangOf, withImageLang } from "@/lib/imageLang";
 
 type Step = "setup" | "review";
 
@@ -35,7 +36,17 @@ type EditableCandidate = ScanCandidate & {
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
   chosenId?: string | null;        // im Picker gewählte Karte (Bild-Abgleich)
   rematching?: boolean;            // nach dem Ecken-Editor: Abgleich mit dem neuen Zuschnitt läuft
+  key: string;                     // stabile ID — die Liste ändert sich (verwerfen, nachtragen, Exemplare)
+  imageLang?: string | null;       // Bildsprache des Katalogbilds (null = wie geliefert)
+  variantOf?: string | null;       // weiteres Exemplar mit eigenen Einstellungen (kein eigenes Foto im Bild)
+  added?: boolean;                 // vom Nutzer nachgetragene Karte (die Erkennung hatte sie übersehen)
+  saving?: boolean;
+  saved?: { ids: number[]; name: string } | null;   // schon einzeln gespeichert
 };
+
+// Katalogbild in der gewählten Bildsprache (TCGdex, westliche Karten)
+const matchImage = (c: EditableCandidate): string | null =>
+  (c.imageLang ? withImageLang(c.match?.image_url, c.imageLang) : null) ?? c.match?.image_url ?? null;
 
 // TCGdex liefert jede Karte auch klein (/low.webp) – reicht für Picker-Vorschauen.
 function thumbUrl(url: string | null): string | null {
@@ -103,6 +114,12 @@ export default function ScanPage() {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [editorIdx, setEditorIdx] = useState<number | null>(null);
   const sourceBlobRef = useRef<Blob | null>(null);
+  const keySeq = useRef(0);
+  const nextKey = () => `c${++keySeq.current}`;
+  // Async-Ergebnisse per Schlüssel zuordnen (der Index kann sich inzwischen verschoben haben)
+  const patchCand = (key: string, fn: (c: EditableCandidate) => EditableCandidate) =>
+    setCandidates((prev) => prev.map((c) => (c.key === key ? fn(c) : c)));
+  const [addingMissed, setAddingMissed] = useState(false);
   const [camMsg, setCamMsg] = useState<string | null>(null);
   const [autoCapture, setAutoCapture] = useState(true);
   const [vidSize, setVidSize] = useState<{ w: number; h: number } | null>(null);
@@ -328,6 +345,8 @@ export default function ScanPage() {
         imPokedex: setPokedexRep,
         prizePack: false,
         copies: 1,
+        key: nextKey(),
+        imageLang: null,
       }));
       const art = res.data.hinweis_art;
       if (art) {
@@ -349,13 +368,13 @@ export default function ScanPage() {
       setCandidates(list);
       setStep("review");
       // Foto-Zuschnitte je Karte (aus der bbox) für Vorschau erzeugen
-      list.forEach(async (c, idx) => {
+      list.forEach(async (c) => {
         const blob = sourceBlobRef.current;
         if ((!c.raw?.bbox && !c.raw?.quad) || !blob) return;
         try {
           const f = await cropToCardPhoto(blob, { bbox: c.raw.bbox, quad: c.raw.quad, autoOrient: true });
           const u = URL.createObjectURL(f);
-          setCandidates((prev) => prev.map((cc, i) => (i === idx ? { ...cc, cropUrl: u } : cc)));
+          patchCand(c.key, (cc) => ({ ...cc, cropUrl: u }));
         } catch { /* Vorschau optional */ }
       });
     } catch {
@@ -421,26 +440,27 @@ export default function ScanPage() {
   const applyCorners = async (idx: number, quad: number[][], transform: CropTransform) => {
     setEditorIdx(null);
     const blob = sourceBlobRef.current;
-    if (!blob) return;
+    const key = candidates[idx]?.key;
+    if (!blob || !key) return;
     try {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
-      setCandidates((prev) => prev.map((cc, i) =>
-        i === idx ? { ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u,
-          usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true } : cc));
-      void rematch(idx, f);
+      patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u,
+        usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true }));
+      void rematch(key, f);
     } catch { /* Entzerrung optional */ }
   };
 
   // Neue Ecken = neuer Zuschnitt → die Karte damit neu abgleichen (Modus „card":
   // der Bild-Abgleich überspringt die Erkennung). Treffer, Alternativen und
   // Auswahlbedarf kommen neu; Ecken, Foto-Wahl, Anzahl, Prize Pack bleiben.
-  const rematch = async (idx: number, crop: Blob) => {
+  const rematch = async (key: string, crop: Blob) => {
+    const before = candidates.find((c) => c.key === key)?.match?.tcgdex_card_id;
     try {
       const res = await scanApi.scan(crop, { mode: "card", default_language: defaultLang });
       const n = res.data.candidates[0];
-      setCandidates((prev) => prev.map((c, i) => {
-        if (i !== idx) return c;
+      setCandidates((prev) => prev.map((c) => {
+        if (c.key !== key) return c;
         if (!n) return { ...c, rematching: false };
         return {
           ...c, ...n,
@@ -452,12 +472,97 @@ export default function ScanPage() {
           rematching: false,
         };
       }));
-      const before = candidates[idx]?.match?.tcgdex_card_id;
       if (!n) toast(t.scan_rematch_none, { icon: "⚠️" });
       else if (n.match?.tcgdex_card_id && n.match.tcgdex_card_id === before && !n.needs_choice) toast.success(t.scan_rematch_same);
       else toast.success(t.scan_rematched(String((n.suggested as Record<string, unknown>)?.kartenname ?? n.raw.name ?? "?")));
     } catch {
-      setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, rematching: false } : c)));
+      patchCand(key, (c) => ({ ...c, rematching: false }));
+      toast.error(t.scan_error);
+    }
+  };
+
+  // ↻ Diese eine Karte neu erkennen (gleicher Zuschnitt; vorher ggf. Ecken korrigieren)
+  const rescan = async (idx: number) => {
+    const c = candidates[idx];
+    const blob = sourceBlobRef.current;
+    if (!c || !blob) return;
+    patchCand(c.key, (cc) => ({ ...cc, rematching: true }));
+    try {
+      const hasCrop = !!(c.editedQuad || c.raw?.quad || c.raw?.bbox);
+      const crop = hasCrop ? await cropToCardPhoto(blob, cropOptsFor(c)) : blob;
+      await rematch(c.key, crop);
+    } catch {
+      patchCand(c.key, (cc) => ({ ...cc, rematching: false }));
+      toast.error(t.scan_error);
+    }
+  };
+
+  // ✕ Nur diese Karte verwerfen
+  const discardOne = (idx: number) => {
+    setEditorIdx(null);
+    setCandidates((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  // Weiteres Exemplar mit eigenen Einstellungen (andere Folierung, anderer Druck
+  // mit gleichem Namen/Artwork): eigener Eintrag direkt darunter. Steht die Anzahl
+  // über 1, wandert eines dieser Exemplare in den neuen Eintrag.
+  const addVariant = (idx: number) => setCandidates((prev) => {
+    const c = prev[idx];
+    if (!c) return prev;
+    const v: EditableCandidate = {
+      ...c, key: nextKey(), copies: 1, position: null, variantOf: c.variantOf ?? c.key,
+      imPokedex: false, include: true, needs_choice: false, saving: false, saved: null, rematching: false,
+      // das Foto zeigt die andere Karte → Katalogbild, sofern es eins gibt
+      usePhoto: c.match?.image_url ? false : c.usePhoto,
+    };
+    const out = [...prev];
+    if (c.copies > 1) out[idx] = { ...c, copies: c.copies - 1 };
+    out.splice(idx + 1, 0, v);
+    return out;
+  });
+
+  // Mappenseite: Fach einer nachgetragenen Karte aus ihrer Lage schätzen — Raster
+  // aus den erkannten Karten (Spalte/Zeile ~ Mittelpunkt), sonst übers ganze Foto.
+  const estimatePosition = (quad: number[][]): number | null => {
+    if (mode !== "binder") return null;
+    const { cols, rows } = parseLayout(layout);
+    const center = (q: number[][]) => [q.reduce((a, p) => a + p[0], 0) / q.length, q.reduce((a, p) => a + p[1], 0) / q.length];
+    const [cx, cy] = center(quad);
+    const known = candidates
+      .filter((c) => c.position != null && (c.editedQuad ?? c.raw?.quad))
+      .map((c) => ({ p: c.position as number, xy: center((c.editedQuad ?? c.raw!.quad)!) }));
+    const fit = (pts: { i: number; v: number }[], n: number, v: number) => {
+      const distinct = new Set(pts.map((q) => q.i));
+      if (distinct.size < 2) return Math.min(n - 1, Math.max(0, Math.floor(v * n)));
+      const mi = pts.reduce((a, q) => a + q.i, 0) / pts.length, mv = pts.reduce((a, q) => a + q.v, 0) / pts.length;
+      const b = pts.reduce((a, q) => a + (q.i - mi) * (q.v - mv), 0) / pts.reduce((a, q) => a + (q.i - mi) ** 2, 0);
+      return Math.min(n - 1, Math.max(0, Math.round(mi + (v - mv) / (b || 1))));
+    };
+    const col = fit(known.map((k) => ({ i: k.p % cols, v: k.xy[0] })), cols, cx);
+    const row = fit(known.map((k) => ({ i: Math.floor(k.p / cols), v: k.xy[1] })), rows, cy);
+    const pos = row * cols + col;
+    return candidates.some((c) => c.position === pos) ? null : pos;
+  };
+
+  // + Übersehene Karte: im Foto umranden → zuschneiden → erkennen → neuer Eintrag
+  const addMissedCard = async (quad: number[][], transform: CropTransform) => {
+    setAddingMissed(false);
+    const blob = sourceBlobRef.current;
+    if (!blob) return;
+    try {
+      const f = await cropToCardPhoto(blob, { quad, ...transform });
+      const key = nextKey();
+      const position = estimatePosition(quad);
+      const cand: EditableCandidate = {
+        key, position, confidence: 0, uncertain_fields: ["match"],
+        raw: { name: null, set_code: null, number: null, language: null, position, confidence: null, bbox: null, quad },
+        match: null, suggested: { sprache: defaultLang }, foil_options: [], alternatives: [], needs_choice: false,
+        include: false, usePhoto: true, cropUrl: URL.createObjectURL(f), imPokedex: setPokedexRep, prizePack: false,
+        copies: 1, editedQuad: quad, editedOrient: transform, rematching: true, imageLang: null, added: true,
+      };
+      setCandidates((prev) => [...prev, cand]);
+      await rematch(key, f);
+    } catch {
       toast.error(t.scan_error);
     }
   };
@@ -476,7 +581,7 @@ export default function ScanPage() {
         language: (s.sprache as string) ?? "DE",
       });
       const nc = r.data;
-      setCandidates((prev) => prev.map((cc, i) => i === idx ? {
+      setCandidates((prev) => prev.map((cc) => cc.key === c.key ? {
         ...cc,
         match: nc.match,
         foil_options: nc.foil_options,
@@ -508,7 +613,7 @@ export default function ScanPage() {
         language: (s.sprache as string) ?? defaultLang,
       });
       const nc = r.data;
-      setCandidates((prev) => prev.map((cc, i) => i === idx ? {
+      setCandidates((prev) => prev.map((cc) => cc.key === c.key ? {
         ...cc,
         match: nc.match,
         foil_options: nc.foil_options,
@@ -530,90 +635,132 @@ export default function ScanPage() {
       ...c, needs_choice: false, include: true, chosenId: null, match: null, uncertain_fields: ["match"],
     } : c));
 
+  // Karten anlegen und ihre Fotos hochladen (alle offenen oder eine einzelne).
+  const commitItems = async (chosen: EditableCandidate[]) => {
+    const items: ScanCommitItem[] = chosen.map((c) => {
+      const s = c.suggested as Record<string, unknown>;
+      return {
+        kartenname: String(s.kartenname ?? c.raw.name ?? "?"),
+        pokedex_nr: (s.pokedex_nr as number) ?? c.match?.dex_id ?? null,
+        englischer_name: (s.englischer_name as string) ?? c.match?.englischer_name ?? null,
+        set_edition: (s.set_edition as string) ?? null,
+        karten_nr: (s.karten_nr as string) ?? null,
+        seltenheit: (s.seltenheit as string) ?? c.match?.rarity ?? null,
+        folierung: (s.folierung as string) ?? null,
+        muster: (s.muster as string) || null,
+        prize_pack: c.prizePack,
+        sprache: (s.sprache as string) ?? defaultLang,
+        tcgdex_card_id: c.match?.tcgdex_card_id ?? null,
+        set_id: c.match?.set_id ?? null,
+        dex_id: c.match?.dex_id ?? (s.dex_id as number) ?? null,
+        // API-Bild (in der gewählten Bildsprache) nur, wenn der Nutzer NICHT sein eigenes Foto will
+        bild_karte_url: c.usePhoto ? null : matchImage(c),
+        position: c.position ?? null,
+        im_pokedex: target !== "wishlist" && c.imPokedex,
+        prioritaet: target === "wishlist" ? (priority || null) : null,
+        copies: target === "wishlist" ? 1 : c.copies,
+      };
+    });
+    const ps = pageSizeOf(targetCollection?.binder_layout);
+    const res = await scanApi.commit({
+      target,
+      collection_id: target === "collection" ? collectionId : null,
+      start_position: target === "collection" && slot != null
+        ? (mode === "binder" ? Math.floor(slot / ps) * ps : slot) : null,
+      items,
+    });
+    // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
+    // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
+    // Abgleich (die Karte zeigt das Katalogbild). Das erste Exemplar bekommt
+    // Zuschnitt + Original (lernt mit); weitere Exemplare mit „eigenes Foto"
+    // nur den Zuschnitt — sonst zeigten sie den Platzhalter, wenn es kein
+    // Katalogbild gibt. Ein „Exemplar mit anderen Angaben" ist eine andere
+    // Karte als die im Foto: kein Original (wäre ein falsches Trainingsbeispiel).
+    const ids = res.data.card_ids;
+    const copyIds = res.data.copy_ids ?? [];
+    await Promise.all(chosen.map(async (c, k) => {
+      const blob = sourceBlobRef.current;
+      const hasCrop = !!(c.editedQuad || c.raw?.quad || c.raw?.bbox);
+      if (!blob || ids[k] == null || (!c.usePhoto && !hasCrop)) return;
+      if (c.variantOf && !c.usePhoto) return;
+      try {
+        const file = await cropToCardPhoto(blob, cropOptsFor(c));
+        if (c.variantOf) {
+          for (const id of copyIds[k]?.length ? copyIds[k] : [ids[k]]) await cardApi.uploadImage(id, file).catch(() => {});
+          return;
+        }
+        // Originalfoto (ganze Aufnahme) mitspeichern → spätere Nachbearbeitung
+        const original = new File([blob], "orig.jpg", { type: "image/jpeg" });
+        const b = c.raw?.bbox;
+        const quad = c.editedQuad ?? c.raw?.quad
+          ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
+        if (c.usePhoto) await cardApi.uploadImage(ids[k], file, original, quad);
+        else await cardApi.uploadScanPhoto(ids[k], file, original, quad);  // nur zum Lernen
+        if (c.usePhoto) {
+          for (const extra of (copyIds[k] ?? []).filter((id) => id !== ids[k])) {
+            await cardApi.uploadImage(extra, file).catch(() => {});
+          }
+        }
+      } catch { /* Foto-Upload optional */ }
+    }));
+    return res.data;
+  };
+
+  const finishReview = (next: boolean) => {
+    if (next) {
+      backToCapture();
+    } else {
+      stopCamera();
+      router.push(backHref);
+    }
+  };
+
   const handleSave = async (next: boolean) => {
-    const chosen = candidates.filter((c) => c.include);
-    if (!chosen.length) return;
+    const chosen = candidates.filter((c) => c.include && !c.saved);
+    if (!chosen.length) { finishReview(next); return; }
     setBusy(true);
     try {
-      const items: ScanCommitItem[] = chosen.map((c) => {
-        const s = c.suggested as Record<string, unknown>;
-        return {
-          kartenname: String(s.kartenname ?? c.raw.name ?? "?"),
-          pokedex_nr: (s.pokedex_nr as number) ?? c.match?.dex_id ?? null,
-          englischer_name: (s.englischer_name as string) ?? c.match?.englischer_name ?? null,
-          set_edition: (s.set_edition as string) ?? null,
-          karten_nr: (s.karten_nr as string) ?? null,
-          seltenheit: (s.seltenheit as string) ?? c.match?.rarity ?? null,
-          folierung: (s.folierung as string) ?? null,
-          muster: (s.muster as string) || null,
-          prize_pack: c.prizePack,
-          sprache: (s.sprache as string) ?? "DE",
-          tcgdex_card_id: c.match?.tcgdex_card_id ?? null,
-          set_id: c.match?.set_id ?? null,
-          dex_id: c.match?.dex_id ?? (s.dex_id as number) ?? null,
-          // API-Bild nur senden, wenn der Nutzer NICHT sein eigenes Foto will
-          bild_karte_url: c.usePhoto ? null : (c.match?.image_url ?? null),
-          position: c.position ?? null,
-          im_pokedex: target !== "wishlist" && c.imPokedex,
-          prioritaet: target === "wishlist" ? (priority || null) : null,
-          copies: target === "wishlist" ? 1 : c.copies,
-        };
-      });
-      const ps = pageSizeOf(targetCollection?.binder_layout);
-      const res = await scanApi.commit({
-        target,
-        collection_id: target === "collection" ? collectionId : null,
-        start_position: target === "collection" && slot != null
-          ? (mode === "binder" ? Math.floor(slot / ps) * ps : slot) : null,
-        items,
-      });
+      const data = await commitItems(chosen);
       // Weiterscannen: nächstes freies Fach hinter dem letzten bzw. nächste Seite
       if (target === "collection") {
-        const placed = res.data.positions ?? [];
+        const ps = pageSizeOf(targetCollection?.binder_layout);
+        const placed = data.positions ?? [];
         if (slot != null && placed.length) {
-          setSlot(mode === "binder" ? (Math.floor(Math.max(...placed) / ps) + 1) * ps : res.data.next_position ?? null);
+          setSlot(mode === "binder" ? (Math.floor(Math.max(...placed) / ps) + 1) * ps : data.next_position ?? null);
         }
         setSlotRefresh((n) => n + 1);
       }
-      // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
-      // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
-      // Abgleich (die Karte zeigt das Katalogbild). Das erste Exemplar bekommt
-      // Zuschnitt + Original (lernt mit); weitere Exemplare mit „eigenes Foto"
-      // nur den Zuschnitt — sonst zeigten sie den Platzhalter, wenn es kein
-      // Katalogbild gibt.
-      const ids = res.data.card_ids;
-      const copyIds = res.data.copy_ids ?? [];
-      await Promise.all(chosen.map(async (c, k) => {
-        const blob = sourceBlobRef.current;
-        const hasCrop = !!(c.editedQuad || c.raw?.quad || c.raw?.bbox);
-        if (!blob || ids[k] == null || (!c.usePhoto && !hasCrop)) return;
-        try {
-          const file = await cropToCardPhoto(blob, cropOptsFor(c));
-          // Originalfoto (ganze Aufnahme) mitspeichern → spätere Nachbearbeitung
-          const original = new File([blob], "orig.jpg", { type: "image/jpeg" });
-          const b = c.raw?.bbox;
-          const quad = c.editedQuad ?? c.raw?.quad
-            ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
-          if (c.usePhoto) await cardApi.uploadImage(ids[k], file, original, quad);
-          else await cardApi.uploadScanPhoto(ids[k], file, original, quad);  // nur zum Lernen
-          if (c.usePhoto) {
-            for (const extra of (copyIds[k] ?? []).filter((id) => id !== ids[k])) {
-              await cardApi.uploadImage(extra, file).catch(() => {});
-            }
-          }
-        } catch { /* Foto-Upload optional */ }
-      }));
-      toast.success(t.scan_saved(res.data.created));
-      if (next) {
-        backToCapture();
-      } else {
-        stopCamera();
-        router.push(backHref);
-      }
+      toast.success(t.scan_saved(data.created));
+      finishReview(next);
     } catch {
       toast.error(t.scan_save_error);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ✓ Nur diese Karte speichern — die übrigen bleiben zur Prüfung stehen.
+  const saveOne = async (idx: number) => {
+    const c = candidates[idx];
+    if (!c || c.saved || c.saving || c.rematching || c.needs_choice) return;
+    patchCand(c.key, (cc) => ({ ...cc, saving: true }));
+    try {
+      const data = await commitItems([c]);
+      if (target === "collection") {
+        // Dieselbe Mappenseite bzw. Fachfolge für die restlichen Karten des Fotos
+        const ps = pageSizeOf(targetCollection?.binder_layout);
+        const placed = data.positions ?? [];
+        if (mode === "binder" && slot == null && placed.length) setSlot(Math.floor(Math.min(...placed) / ps) * ps);
+        else if (mode !== "binder" && slot != null && data.next_position != null) setSlot(data.next_position);
+        setSlotRefresh((n) => n + 1);
+      }
+      const s = c.suggested as Record<string, unknown>;
+      const name = String((lang === "EN" ? s.englischer_name : null) ?? s.kartenname ?? c.raw.name ?? "?");
+      patchCand(c.key, (cc) => ({ ...cc, saving: false, saved: { ids: data.all_card_ids?.length ? data.all_card_ids : data.card_ids, name } }));
+      toast.success(t.scan_saved(data.created));
+    } catch {
+      patchCand(c.key, (cc) => ({ ...cc, saving: false }));
+      toast.error(t.scan_save_error);
     }
   };
 
@@ -813,16 +960,34 @@ export default function ScanPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-white font-medium">{t.scan_results_title(candidates.length)}</h2>
-            <button type="button" onClick={backToCapture} className="text-gray-500 hover:text-white text-sm">{t.scan_discard}</button>
+            <button type="button" onClick={backToCapture} className="text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
           </div>
+          {sourceUrl && mode !== "single" && (
+            <button type="button" onClick={() => setAddingMissed(true)} title={t.scan_add_missed_hint}
+              data-testid="scan-add-missed"
+              className="w-full rounded-lg border border-dashed border-gray-600 py-2 text-sm text-gray-300 hover:border-gray-400 hover:text-white">
+              ＋ {t.scan_add_missed}
+            </button>
+          )}
 
           {candidates.map((c, idx) => {
             const s = c.suggested as Record<string, unknown>;
             const uncertain = c.uncertain_fields.length > 0;
             const foilOptions = c.foil_options.length ? c.foil_options : (enums?.folierung ?? ["Normal"]);
             const pokedexNr = (s.pokedex_nr as number) ?? c.match?.dex_id ?? null;
+            const catalogImg = matchImage(c);
+            const baseImgLang = imageLangOf(c.match?.image_url);
+            if (c.saved) {
+              return (
+                <div key={c.key} data-testid="scan-card-saved"
+                  className="flex items-center justify-between gap-2 rounded-lg border border-green-800 bg-green-900/20 px-3 py-2 text-sm">
+                  <span className="text-green-300 truncate">✓ {t.scan_card_saved(c.saved.name, c.saved.ids.length)}</span>
+                  <Link href={`/cards/${c.saved.ids[0]}`} className="shrink-0 text-xs text-pokemon-blue hover:underline">{t.scan_open_card}</Link>
+                </div>
+              );
+            }
             return (
-              <div key={idx}
+              <div key={c.key} data-testid="scan-card"
                 className={`rounded-lg border p-3 ${
                   c.needs_choice ? "border-pokemon-yellow"
                   : !c.include ? "border-gray-800 opacity-50" : uncertain ? "border-pokemon-red" : "border-gray-700"
@@ -831,6 +996,8 @@ export default function ScanPage() {
                 <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
                   <span className="text-xs text-gray-400">
                     {pokedexNr != null ? `#${String(pokedexNr).padStart(4, "0")}` : <span className="text-gray-600">{t.scan_no_dex}</span>}
+                    {c.variantOf && <span className="ml-2 rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200">↳ {t.scan_variant_badge}</span>}
+                    {c.added && <span className="ml-2 rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200">{t.scan_added_badge}</span>}
                   </span>
                   <div className="flex items-center gap-3 text-xs flex-wrap justify-end">
                     {target !== "wishlist" && pokedexNr != null && (
@@ -905,12 +1072,19 @@ export default function ScanPage() {
                   <div className="w-32 mx-auto sm:mx-0 sm:w-36 shrink-0">
                     {(() => {
                       const own = c.cropUrl ?? (mode === "single" ? sourceUrl : null);
-                      const big = c.usePhoto ? (own ?? c.match?.image_url ?? null)
-                                             : (c.match?.image_url ?? own ?? null);
+                      const big = c.usePhoto ? (own ?? catalogImg ?? null)
+                                             : (catalogImg ?? own ?? null);
                       return big ? (
                         <a href={big} target="_blank" rel="noreferrer" title={t.scan_view_large} className="relative block">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={big} alt="" className="w-full rounded hover:opacity-90" />
+                          <img src={big} alt="" className="w-full rounded hover:opacity-90"
+                            onError={() => {
+                              // Bild in dieser Sprache gibt es nicht → zurück zur gelieferten Fassung
+                              if (c.imageLang && big === catalogImg) {
+                                toast(t.image_lang_missing, { icon: "🖼" });
+                                patchCand(c.key, (cc) => ({ ...cc, imageLang: null }));
+                              }
+                            }} />
                           {c.rematching && (
                             <span className="absolute inset-0 flex items-center justify-center rounded bg-black/60 text-xs text-white animate-pulse">
                               {t.scan_rechecking}
@@ -924,7 +1098,7 @@ export default function ScanPage() {
                     <div className="mt-1 text-center text-[10px] text-gray-500">
                       {t.scan_confidence}: {Math.round(c.confidence * 100)}%
                     </div>
-                    {(c.cropUrl || (mode === "single" && sourceUrl)) && c.match?.image_url && (
+                    {(c.cropUrl || (mode === "single" && sourceUrl)) && catalogImg && (
                       <label className="mt-1 flex items-center justify-center gap-1 text-[10px] text-gray-300">
                         <input type="checkbox" checked={c.usePhoto} onChange={() => toggleUsePhoto(idx)} />
                         {t.scan_use_photo}
@@ -983,6 +1157,16 @@ export default function ScanPage() {
                       >
                         {LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
                       </select>
+                      {/* Bildsprache: Katalogbild z. B. deutsch zeigen, obwohl der Treffer englisch kam */}
+                      {baseImgLang && (
+                        <select value={c.imageLang ?? ""} title={t.image_lang_hint} aria-label={t.image_lang_label}
+                          data-testid="scan-image-lang"
+                          onChange={(e) => { const v = e.target.value || null; patchCand(c.key, (cc) => ({ ...cc, imageLang: v })); }}
+                          className="min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs">
+                          <option value="">🖼 {t.image_lang_auto} ({baseImgLang})</option>
+                          {IMAGE_LANGS.filter((l) => l !== baseImgLang).map((l) => <option key={l} value={l}>🖼 {l}</option>)}
+                        </select>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-1.5 items-start">
                       {/* Folierung – alle Möglichkeiten; laut Karte mögliche zuerst */}
@@ -1030,23 +1214,64 @@ export default function ScanPage() {
                     </div>
                   </div>
                 </div>
+                {/* Je Karte: neu erkennen, weiteres Exemplar, verwerfen, einzeln speichern */}
+                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-gray-800 pt-2 text-xs">
+                  {sourceUrl && (
+                    <button type="button" onClick={() => void rescan(idx)} disabled={c.rematching || c.saving}
+                      data-testid="scan-rescan"
+                      className="rounded bg-gray-800 px-2 py-1 text-gray-300 hover:text-white disabled:opacity-40">↻ {t.scan_rescan}</button>
+                  )}
+                  <button type="button" onClick={() => addVariant(idx)} title={t.scan_add_variant_hint}
+                    data-testid="scan-add-variant"
+                    className="rounded bg-gray-800 px-2 py-1 text-gray-300 hover:text-white">＋ {t.scan_add_variant}</button>
+                  <span className="flex-1" />
+                  <button type="button" onClick={() => discardOne(idx)} disabled={c.saving}
+                    data-testid="scan-discard-one"
+                    className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-red-300 disabled:opacity-40">✕ {t.scan_discard_one}</button>
+                  <button type="button" onClick={() => void saveOne(idx)}
+                    data-testid="scan-save-one"
+                    disabled={busy || c.saving || c.rematching || c.needs_choice}
+                    className="rounded bg-green-700 px-3 py-1 text-white hover:bg-green-600 disabled:opacity-40">
+                    {c.saving ? t.scan_saving : `✓ ${t.scan_save_one}`}
+                  </button>
+                </div>
               </div>
             );
           })}
 
           <div className="fixed bottom-0 inset-x-0 bg-pokemon-dark/95 border-t border-gray-800 p-3">
             <div className="max-w-3xl mx-auto flex gap-3">
-              <button type="button" onClick={() => void handleSave(false)} disabled={busy || !candidates.some((c) => c.include) || candidates.some((c) => c.rematching)}
-                className="flex-1 bg-gray-700 text-white px-4 py-2.5 rounded hover:bg-gray-600 disabled:opacity-50">
-                {busy ? t.scan_saving : t.scan_save_stop}
-              </button>
-              <button type="button" onClick={() => void handleSave(true)} disabled={busy || !candidates.some((c) => c.include) || candidates.some((c) => c.rematching)}
-                className="flex-[1.4] bg-green-600 text-white px-4 py-2.5 rounded hover:bg-green-700 disabled:opacity-50">
-                {busy ? t.scan_saving : t.scan_save_next}
-              </button>
+              {(() => {
+                // Alles einzeln gespeichert oder verworfen → nur noch weiter bzw. fertig
+                const open = candidates.some((c) => c.include && !c.saved);
+                const blocked = busy || candidates.some((c) => c.rematching || c.saving);
+                return (
+                  <>
+                    <button type="button" onClick={() => void handleSave(false)} disabled={blocked}
+                      data-testid="scan-save-stop"
+                      className="flex-1 bg-gray-700 text-white px-4 py-2.5 rounded hover:bg-gray-600 disabled:opacity-50">
+                      {busy ? t.scan_saving : open ? t.scan_save_stop : t.scan_done}
+                    </button>
+                    <button type="button" onClick={() => void handleSave(true)} disabled={blocked}
+                      data-testid="scan-save-next"
+                      className="flex-[1.4] bg-green-600 text-white px-4 py-2.5 rounded hover:bg-green-700 disabled:opacity-50">
+                      {busy ? t.scan_saving : open ? t.scan_save_next : t.scan_next_photo}
+                    </button>
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>
+      )}
+
+      {addingMissed && sourceUrl && (
+        <CornerEditor
+          imageUrl={sourceUrl}
+          initialQuad={[[0.38, 0.33], [0.62, 0.33], [0.62, 0.67], [0.38, 0.67]]}
+          onCancel={() => setAddingMissed(false)}
+          onApply={(quad, transform) => void addMissedCard(quad, transform)}
+        />
       )}
 
       {editorIdx != null && sourceUrl && candidates[editorIdx] && (
