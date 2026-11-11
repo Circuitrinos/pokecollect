@@ -9,6 +9,7 @@ import { useSets } from "@/lib/useSets";
 import { useSetOptions } from "@/lib/useSetOptions";
 import { formatEur, imageUrl } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 
 // Sealed-Produkte-Seite (Issue #35): Grid mit Foto/Typ/Set(s)/Zustand/Wert,
 // Filter nach Typ/Set/Zustand, Anlage-/Detail-Formular als Modal. Mobile-first.
@@ -16,12 +17,13 @@ import { useI18n } from "@/lib/i18n";
 
 // Tile eines Sealed-Produkts.
 function SealedTile({
-  product, setLabel, onOpen, t,
+  product, setLabel, onOpen, t, lang,
 }: {
   product: SealedProduct;
   setLabel: (code: string) => string;
   onOpen: () => void;
   t: ReturnType<typeof useI18n>["t"];
+  lang: string;
 }) {
   const src = product.bild_thumbnail_pfad
     ? imageUrl(product.bild_thumbnail_pfad, API_BASE, product.hinzugefuegt_am)
@@ -42,7 +44,7 @@ function SealedTile({
         )}
         {product.typ && (
           <span className="absolute top-1 left-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">
-            {product.typ}
+            {valueLabel(product.typ, lang)}
           </span>
         )}
       </div>
@@ -52,7 +54,7 @@ function SealedTile({
           <span className="truncate flex-1">
             {product.set_codes.length ? product.set_codes.map(setLabel).join(", ") : "–"}
           </span>
-          {product.zustand && <span className="shrink-0 text-gray-500">{product.zustand}</span>}
+          {product.zustand && <span className="shrink-0 text-gray-500">{valueLabel(product.zustand, lang)}</span>}
         </div>
         <div className="flex items-center justify-between text-xs">
           <span className="text-yellow-400">{product.wert_eur ? formatEur(product.wert_eur) : ""}</span>
@@ -68,7 +70,7 @@ function SealedTile({
 }
 
 export default function SealedPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { sets } = useSets();
   const setOptions = useSetOptions(sets);
   const [items, setItems] = useState<SealedProduct[]>([]);
@@ -125,7 +127,7 @@ export default function SealedPage() {
         <select value={typ} onChange={(e) => setTyp(e.target.value)}
           className="bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white text-sm">
           <option value="">{t.sealed_all_types}</option>
-          {(enums?.typ ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+          {(enums?.typ ?? []).map((v) => <option key={v} value={v}>{valueLabel(v, lang)}</option>)}
         </select>
         <SearchableSelect
           value={setFilter}
@@ -137,7 +139,7 @@ export default function SealedPage() {
         <select value={zustand} onChange={(e) => setZustand(e.target.value)}
           className="bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white text-sm">
           <option value="">{t.sealed_all_conditions}</option>
-          {(enums?.zustand ?? []).map((v) => <option key={v} value={v}>{v}</option>)}
+          {(enums?.zustand ?? []).map((v) => <option key={v} value={v}>{valueLabel(v, lang)}</option>)}
         </select>
       </div>
 
@@ -148,7 +150,7 @@ export default function SealedPage() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
           {items.map((p) => (
-            <SealedTile key={p.id} product={p} setLabel={setLabel} onOpen={() => setEditing(p)} t={t} />
+            <SealedTile key={p.id} product={p} setLabel={setLabel} onOpen={() => setEditing(p)} t={t} lang={lang} />
           ))}
         </div>
       )}

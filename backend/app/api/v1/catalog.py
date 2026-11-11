@@ -44,6 +44,7 @@ def list_catalog(
     sort: str = Query("set", pattern="^(set|name|dex)$"),
     reverse: bool = False,   # Reihenfolge umkehren; fehlende Werte bleiben am Ende
     then: str = Query("", max_length=60, pattern=sorting.then_pattern(("set", "name", "dex"))),   # Untersortierungen
+    lang: str = Query("DE", pattern="^(DE|EN)$"),   # UI-Sprache: Sortieren nach Name auf Englisch = englischer Name
     # #117: ohne Obergrenze sprengte (page-1)*limit den OFFSET (bigint) → 500
     page: int = Query(1, ge=1, le=PG_INTEGER_MAX),
     limit: int = Query(60, ge=1, le=500),
@@ -88,7 +89,10 @@ def list_catalog(
         lo, hi = GEN_RANGES[generation]
         query = query.where(TcgdexCatalog.dex_id.between(lo, hi))
 
-    query = query.order_by(*sorting.order_clauses(_CATALOG_SORT_KEYS, sort, reverse, then, _CATALOG_SORT_THEN,
+    keys = _CATALOG_SORT_KEYS
+    if lang == "EN":   # „Icognito V" heißt auf Englisch „Unown V" — so auch sortieren
+        keys = {**keys, "name": [(func.coalesce(TcgdexCatalog.name_en, TcgdexCatalog.name), False)]}
+    query = query.order_by(*sorting.order_clauses(keys, sort, reverse, then, _CATALOG_SORT_THEN,
                                                   last=TcgdexCatalog.card_id))
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0

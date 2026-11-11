@@ -1,5 +1,6 @@
 import { CURRENCY, USD_MODE } from "@/lib/currency";
 import { isStandardLegal, standardStatus } from "@/lib/regulation";
+import { uiLocale } from "@/lib/uiLang";
 // Serie-ID → Anzeigename (für geclusterte Set-Dropdowns)
 export const SERIES_LABEL: Record<string, string> = {
   sv: "Karmesin & Purpur", me: "Mega-Entwicklung", swsh: "Schwert & Schild",
@@ -109,11 +110,41 @@ export function generation(pokedexNr: number | null): number | null {
 
 // Formatiert einen Betrag in der Instanz-Währung (lib/currency.ts). Name bleibt
 // aus Kompatibilität „formatEur" — alle Wert-/Kaufpreis-Anzeigen laufen hier durch.
+/** Kartenname in der UI-Sprache: Englisch zeigt den englischen Namen, sobald
+ * es einen gibt (eine deutsche Karte heißt dann „Unown V" statt „Icognito V"). */
+export function cardName(
+  card: { kartenname?: string | null; englischer_name?: string | null } | null | undefined,
+  lang: string,
+): string {
+  if (!card) return "";
+  return (lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname) ?? "";
+}
+
+/** Sprache neuer Karten: die Einstellung, sonst die Sprache der Oberfläche
+ * (wer die App auf Englisch nutzt, sammelt meist englische Karten). */
+export function defaultCardLang(
+  settings: { default_language?: string | null } | null | undefined,
+  uiLang: string,
+): string {
+  return settings?.default_language || (uiLang === "EN" ? "EN" : "DE");
+}
+
+/** Betrag in der Instanzwährung, im Zahlenformat der UI-Sprache
+ * (Deutsch: „12,34 €", Englisch: „€12.34"; USD immer „$12.34"). */
+export function formatMoney(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return "–";
+  return new Intl.NumberFormat(USD_MODE ? "en-US" : uiLocale(), { style: "currency", currency: CURRENCY }).format(n);
+}
+
+/** Euro-Betrag (TCGdex/Cardmarket) — auch in einer USD-Instanz in Euro. */
+export function formatEuroAmount(n: number | null | undefined): string | null {
+  if (n == null) return null;
+  return new Intl.NumberFormat(uiLocale(), { style: "currency", currency: "EUR" }).format(n);
+}
+
 export function formatEur(value: string | null | undefined): string {
   if (!value) return "–";
-  return new Intl.NumberFormat(USD_MODE ? "en-US" : "de-AT", { style: "currency", currency: CURRENCY }).format(
-    parseFloat(value)
-  );
+  return formatMoney(parseFloat(value));
 }
 
 export function imageUrl(

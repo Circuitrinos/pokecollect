@@ -7,6 +7,7 @@ import BinderView from "@/components/BinderView";
 import ViewToggle, { ViewMode } from "@/components/ViewToggle";
 import { useEnums } from "@/lib/useEnums";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 
 const LAYOUT_KEY = "wishlist_binder_layout";
 
@@ -60,7 +61,7 @@ function AddToCollectionOverlay({
 }
 
 export default function WishlistPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [cards, setCards] = useState<Card[]>([]);
   const { enums } = useEnums();
   const [priority, setPriority] = useState<string>("");
@@ -120,7 +121,7 @@ export default function WishlistPage() {
           >
             <option value="">{t.wishlist_all_priorities}</option>
             {(enums?.prioritaet ?? []).map((p) => (
-              <option key={p} value={p}>{p === "Chase" ? `🔥 ${p}` : p}</option>
+              <option key={p} value={p}>{p === "Chase" ? `🔥 ${p}` : valueLabel(p, lang)}</option>
             ))}
           </select>
           <select

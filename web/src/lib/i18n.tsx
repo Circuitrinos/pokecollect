@@ -1,7 +1,8 @@
 "use client";
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 
 import { CURRENCY_SYMBOL as CUR, USD_MODE } from "@/lib/currency";
+import { setUiLang, uiLocale } from "@/lib/uiLang";
 export type Lang = "DE" | "EN";
 
 const DE = {
@@ -701,6 +702,7 @@ const DE = {
   settings_catalog_cache_status_owned: (cached: string) => `${cached} Bilder lokal gecacht`,
   settings_section_collection: "Sammlung",
   settings_default_language: "Standard-Sprache für neue Karten",
+  settings_default_language_auto: "Wie die App-Sprache",
   settings_default_condition: "Standard-Zustand für neue Karten",
   settings_none_option: "– keiner –",
   settings_section_api_keys: "API-Keys",
@@ -1448,7 +1450,7 @@ const EN: typeof DE = {
   stats_combined_total: "Total",
 
   // Date locale per language (BCP-47 for toLocaleDateString)
-  date_locale: "en-GB",
+  date_locale: uiLocale("EN"),   // Browsersprache (en-US, en-GB …)
 
   // SetPicker
   set_create_error: "Could not create set",
@@ -1497,6 +1499,7 @@ const EN: typeof DE = {
   settings_catalog_cache_status_owned: (cached: string) => `${cached} images cached locally`,
   settings_section_collection: "Collection",
   settings_default_language: "Default language for new cards",
+  settings_default_language_auto: "Same as the app language",
   settings_default_condition: "Default condition for new cards",
   settings_none_option: "– none –",
   settings_section_api_keys: "API keys",
@@ -1651,6 +1654,10 @@ function initialLang(): Lang {
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(initialLang);
+  setUiLang(lang);   // vor den Effekten der Kinder: API-Kopf und Zahlenformat
+  useEffect(() => {
+    document.documentElement.lang = lang === "EN" ? "en" : "de";
+  }, [lang]);
 
   const setLang = (l: Lang) => {
     setLangState(l);

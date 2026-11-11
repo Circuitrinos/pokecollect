@@ -81,7 +81,7 @@ def _to_response(raw: dict[str, str], is_admin: bool = True) -> SettingsResponse
         price_update_enabled=raw["price_update_enabled"] == "true",
         price_update_hour=_int_or(raw["price_update_hour"], 3),
         price_source=raw["price_source"] or "30d_avg",
-        default_language=raw["default_language"] or "DE",
+        default_language=raw["default_language"] or "",
         default_condition=raw["default_condition"] or "",
         gemini_model=raw["gemini_model"] or "gemini-2.5-flash",
         gemini_daily_limit=_int_or(raw["gemini_daily_limit"], 0),

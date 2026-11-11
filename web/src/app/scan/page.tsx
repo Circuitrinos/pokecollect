@@ -16,10 +16,11 @@ import RaritySelect from "@/components/RaritySelect";
 import CornerEditor from "@/components/CornerEditor";
 import SlotPicker, { pageSizeOf } from "@/components/SlotPicker";
 import { cropToCardPhoto, loadImg, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
-import { setCodeFromEdition } from "@/lib/utils";
+import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 
 type Step = "setup" | "review";
 
@@ -72,7 +73,7 @@ async function downscaleImage(blob: Blob, maxDim = 1600): Promise<Blob> {
 }
 
 export default function ScanPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const router = useRouter();
   const [status, setStatus] = useState<ScanStatus | null>(null);
   const { enums } = useEnums();
@@ -96,7 +97,7 @@ export default function ScanPage() {
 
   const [step, setStep] = useState<Step>("setup");
   // Standard-Sprache aus den (geteilten) Einstellungen — Issue #14
-  const defaultLang = appSettings?.default_language || "DE";
+  const defaultLang = defaultCardLang(appSettings, lang);
   const [busy, setBusy] = useState(false);
   const [candidates, setCandidates] = useState<EditableCandidate[]>([]);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
@@ -779,7 +780,7 @@ export default function ScanPage() {
                 >
                   <option value="">–</option>
                   {(enums?.prioritaet ?? []).map((p) => (
-                    <option key={p} value={p}>{p}</option>
+                    <option key={p} value={p}>{valueLabel(p, lang)}</option>
                   ))}
                 </select>
               </div>
@@ -1011,7 +1012,7 @@ export default function ScanPage() {
                         className="min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-xs disabled:opacity-40"
                       >
                         <option value="">{t.field_pattern}</option>
-                        {(enums?.muster ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+                        {(enums?.muster ?? []).map((m) => <option key={m} value={m}>{valueLabel(m, lang)}</option>)}
                       </select>
                       {/* Seltenheit mit Symbol (wie beim manuellen Anlegen) */}
                       <div className="min-w-0">

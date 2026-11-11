@@ -7,6 +7,7 @@ import { useMe } from "@/lib/useMe";
 import { APP_VERSION } from "@/lib/version";
 import { openWhatsNew } from "@/lib/whatsnew";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/uiLang";
 import BottomNavSettings from "@/components/BottomNavSettings";
 import SortDirectionButton from "@/components/SortDirectionButton";
 import { Field, INPUT, Section, Toggle, triggerBlobDownload, useSettingsEditor } from "@/components/settings/SettingsUI";
@@ -83,7 +84,7 @@ export default function SettingsPage() {
       setPw({ current: "", next: "", confirm: "" });
       toast.success(t.settings_pw_changed);
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      const msg = apiErrorText(e);
       toast.error(msg ?? t.settings_pw_change_error);
     } finally {
       setPwSaving(false);
@@ -161,6 +162,7 @@ export default function SettingsPage() {
         {/* Listen entsprechen den Backend-Enums (schemas/card.py) */}
         <Field label={t.settings_default_language}>
           <select value={s.default_language} onChange={(e) => set("default_language", e.target.value)} className={INPUT} style={{ width: "auto" }}>
+            <option value="">{t.settings_default_language_auto}</option>
             {["DE", "EN", "CN", "JP", "FR", "ES", "IT"].map((l) => (
               <option key={l} value={l}>{l}</option>
             ))}

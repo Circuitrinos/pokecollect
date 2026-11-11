@@ -27,6 +27,7 @@ from app.api.deps import require_auth
 from app.auth_user import AuthUser, issue_token
 from app.config import settings
 from app.database import SessionLocal
+from app.messages import localize
 from app.models.user import User
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.services import oidc
@@ -183,7 +184,9 @@ def _safe_next(nxt: Optional[str]) -> str:
     return nxt
 
 
-def _fail(ret: str, message: str) -> RedirectResponse:
+def _fail(ret: str, message: str, request: Request | None = None) -> RedirectResponse:
+    if request is not None:
+        message = localize(message, request.headers)
     resp = RedirectResponse(f"{ret}/login?sso_error={quote(message[:300])}", status_code=302)
     resp.delete_cookie(COOKIE, path=COOKIE_PATH)
     return resp
@@ -208,7 +211,7 @@ async def oidc_login(request: Request, next: str = "/", origin: str = ""):
     try:
         disc = await oidc.discovery()
     except oidc.OIDCError as exc:
-        return _fail(ret, str(exc))
+        return _fail(ret, str(exc), request)
     verifier, challenge = oidc.new_pkce()
     state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     cookie = jwt.encode(
@@ -242,12 +245,12 @@ async def oidc_callback(
             options={"require": ["exp"]},
         )
     except jwt.PyJWTError:
-        return _fail("", "Anmeldung abgelaufen oder unterbrochen — bitte erneut versuchen")
+        return _fail("", "Anmeldung abgelaufen oder unterbrochen — bitte erneut versuchen", request)
     ret = ck.get("ret") or ""
     if error:
-        return _fail(ret, error_description or error)
+        return _fail(ret, error_description or error, request)
     if not code or not state or not secrets.compare_digest(state, str(ck.get("st", ""))):
-        return _fail(ret, "Ungültiger Anmeldestatus — bitte erneut versuchen")
+        return _fail(ret, "Ungültiger Anmeldestatus — bitte erneut versuchen", request)
     try:
         disc = await oidc.discovery()
         tokens = await oidc.exchange_code(disc, code, ck["ru"], ck["cv"])
@@ -265,7 +268,7 @@ async def oidc_callback(
             db.close()
     except (oidc.OIDCError, LoginRefused) as exc:
         log.warning("SSO-Login fehlgeschlagen: %s", exc)
-        return _fail(ret, str(exc))
+        return _fail(ret, str(exc), request)
     if created:
         background_tasks.add_task(provision_new_user, user_id)
     resp = RedirectResponse(

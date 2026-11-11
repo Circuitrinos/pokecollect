@@ -12,6 +12,7 @@ import { useCardForm } from "@/lib/useCardForm";
 import { formatEur } from "@/lib/utils";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
 import { priceSourceKey, priceSourceRate, priceSourceVariant } from "@/lib/priceSource";
 
@@ -73,7 +74,8 @@ export default function EditForm({
         <div key={key}>
           <dt className="text-gray-500 text-xs">{label}</dt>
           <dd className="text-white">
-            {type === "boolean" ? (value ? t.field_yes : t.field_no) : (String(value ?? "–"))}
+            {type === "boolean" ? (value ? t.field_yes : t.field_no)
+              : type === "select" ? (valueLabel(value as string | null, lang) || "–") : (String(value ?? "–"))}
           </dd>
         </div>
       );

@@ -1,5 +1,8 @@
 "use client";
 import { USD_MODE } from "@/lib/currency";
+import { defaultCardLang, formatEuroAmount } from "@/lib/utils";
+import { useSettings } from "@/lib/useSettings";
+import { getUiLang, uiLocale } from "@/lib/uiLang";
 import CatalogCardImage from "@/components/CatalogCardImage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -42,12 +45,17 @@ function fmtCatalogEurStamp(iso?: string | null): { short: string; date: Date } 
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const jahr = dt.getUTCFullYear();
   const laufendesJahr = new Date().getUTCFullYear();
-  const short = jahr === laufendesJahr ? `${dd}.${mm}.` : `${dd}.${mm}.${String(jahr).slice(-2)}`;
+  // Englisch: Kurzform im Format der Browsersprache (8/9 bzw. 09/08)
+  const short = getUiLang() === "EN"
+    ? dt.toLocaleDateString(uiLocale(), { month: "numeric", day: "numeric", timeZone: "UTC",
+        ...(jahr === laufendesJahr ? {} : { year: "2-digit" as const }) })
+    : jahr === laufendesJahr ? `${dd}.${mm}.` : `${dd}.${mm}.${String(jahr).slice(-2)}`;
   return { short, date: dt };
 }
 
 export default function CatalogPage() {
   const { t, lang } = useI18n();
+  const { settings: appSettings } = useSettings();
   const [data, setData] = useState<CatalogListResponse | null>(null);
   const { sets } = useSets();
   const [illustrators, setIllustrators] = useState<string[]>([]);
@@ -98,7 +106,7 @@ export default function CatalogPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, unknown> = { sort, reverse, page, limit: 60 };
+      const params: Record<string, unknown> = { sort, reverse, page, limit: 60, lang };
       if (thenParam) params.then = thenParam;
       if (q.trim()) params.q = q.trim();
       if (setCode) params.set_code = setCode;
@@ -110,14 +118,14 @@ export default function CatalogPage() {
     } finally {
       setLoading(false);
     }
-  }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam, page]);
+  }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam, page, lang]);
 
   useEffect(() => { const h = setTimeout(load, 300); return () => clearTimeout(h); }, [load]);
   useEffect(() => { setPage(1); }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam]);
 
   const addWishlist = async (c: CatalogItem) => {
     try {
-      await catalogApi.addWishlist(c.card_id);
+      await catalogApi.addWishlist(c.card_id, { sprache: defaultCardLang(appSettings, lang) });
       setAdded((a) => ({ ...a, [c.card_id]: true }));
       toast.success(t.catalog_added_wishlist);
     } catch { toast.error(t.collections_error); }
@@ -176,12 +184,12 @@ export default function CatalogPage() {
   };
 
   const bulkWishlist = () =>
-    runBulk((id) => catalogApi.addWishlist(id), (n) => t.catalog_bulk_wishlist_done(n));
+    runBulk((id) => catalogApi.addWishlist(id, { sprache: defaultCardLang(appSettings, lang) }), (n) => t.catalog_bulk_wishlist_done(n));
 
   const bulkCollection = () => {
     const cid = Number(bulkCollId);
     if (!cid) return;
-    return runBulk((id) => catalogApi.addCollection(id, cid), (n) => t.catalog_bulk_collection_done(n));
+    return runBulk((id) => catalogApi.addCollection(id, cid, { sprache: defaultCardLang(appSettings, lang) }), (n) => t.catalog_bulk_collection_done(n));
   };
 
   return (
@@ -323,7 +331,7 @@ export default function CatalogPage() {
                         <span className="truncate flex-1">
                           {zeigeUsd
                             ? `$ ${c.price_usd!.toFixed(2)}`
-                            : `${c.price_eur!.toFixed(2).replace(".", ",")} €`}
+                            : lang === "EN" ? formatEuroAmount(c.price_eur) : `${c.price_eur!.toFixed(2).replace(".", ",")} €`}
                         </span>
                         {eurStamp && (
                           <span className="text-gray-500 font-normal shrink-0"

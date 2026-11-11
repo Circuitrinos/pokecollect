@@ -8,6 +8,8 @@ from urllib.parse import unquote_plus
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +24,7 @@ from app.api.v1 import router as v1_router
 from app.api.bild_spiegel import router as bild_spiegel_router
 from app.services.cron import start_scheduler
 from app.schemas._validators import _CONTROL_CHARS
+from app.messages import localize
 
 logging.basicConfig(level=logging.INFO)
 
@@ -479,7 +482,14 @@ async def validierungsfehler_ohne_eingabe(request: Request, exc: RequestValidati
         {k: _kodierbar(v) for k, v in f.items() if k not in ("input", "ctx")}
         for f in exc.errors()
     ]
-    return JSONResponse(status_code=422, content={"detail": fehler})
+    return JSONResponse(status_code=422, content={"detail": localize(fehler, request.headers)})
+
+
+# Englische Oberfläche: Fehlermeldungen auf Englisch (app/messages.py).
+@app.exception_handler(StarletteHTTPException)
+async def http_fehler_uebersetzt(request: Request, exc: StarletteHTTPException):
+    exc.detail = localize(exc.detail, request.headers)
+    return await http_exception_handler(request, exc)
 
 
 # #117: Netz für den Rest der Klasse. Ein Wert, den die Datenbank nicht
@@ -494,14 +504,14 @@ async def validierungsfehler_ohne_eingabe(request: Request, exc: RequestValidati
 @app.exception_handler(DataError)
 async def datenbank_wertfehler(request: Request, exc: DataError):
     logging.getLogger(__name__).warning("DataError bei %s %s: %s", request.method, request.url.path, exc.orig)
-    return JSONResponse(status_code=422, content={"detail": "Ein Wert liegt außerhalb des gültigen Bereichs"})
+    return JSONResponse(status_code=422, content={"detail": localize("Ein Wert liegt außerhalb des gültigen Bereichs", request.headers)})
 
 
 @app.middleware("http")
 async def steuerzeichen_in_url_ablehnen(request: Request, call_next):
     query = unquote_plus(request.scope.get("query_string", b"").decode("latin-1"), errors="replace")
     if _CONTROL_CHARS.search(request.scope.get("path", "")) or _CONTROL_CHARS.search(query):
-        return JSONResponse(status_code=422, content={"detail": "Steuerzeichen in Pfad oder Query sind nicht erlaubt"})
+        return JSONResponse(status_code=422, content={"detail": localize("Steuerzeichen in Pfad oder Query sind nicht erlaubt", request.headers)})
     return await call_next(request)
 
 

@@ -1,7 +1,7 @@
 {
   "name": "PokéCollect",
   "short_name": "PokéCollect",
-  "description": "Pokémon TCG Sammlungs-App",
+  "description": "Pokémon TCG collection app",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

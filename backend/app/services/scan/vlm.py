@@ -36,44 +36,43 @@ from app.schemas.scan import ScanRawRead
 log = logging.getLogger(__name__)
 
 # ── Lese-Auftrag (identisch für jedes VLM) ───────────────────────────────────
-PROMPT = """Du bist ein Experte für Pokémon-Sammelkarten (TCG).
-Analysiere das Bild. Es zeigt entweder EINE Karte (ggf. mit angeschnittenen
-Nachbarkarten am Rand) oder MEHRERE Karten (z.B. eine ganze Binder-/
-Sammelmappen-Seite mit einem Raster aus Kartenfächern).
+PROMPT = """You are an expert on Pokémon trading cards (TCG).
+Analyse the image. It shows either ONE card (possibly with neighbouring cards cut
+off at the edges) or SEVERAL cards (e.g. a whole binder page with a grid of
+card pockets).
 
-WICHTIG — welche Karten du auswertest:
-- Werte NUR vollständig (oder nahezu vollständig) sichtbare Karten aus. Ist eine
-  Karte klar der Bildmittelpunkt bzw. die deutlich größte, ist SIE die Zielkarte.
-- IGNORIERE nur teilweise sichtbare Nachbarkarten, die am oberen, unteren oder
-  seitlichen Bildrand angeschnitten sind — sie gehören NICHT zur Zielkarte.
-- IGNORIERE Register-, Trenn- und Beschriftungsstreifen (Tab-Labels) der
-  Sammelmappe; das sind KEINE Karten.
+IMPORTANT — which cards to report:
+- Report ONLY cards that are fully (or almost fully) visible. If one card is clearly
+  the centre of the image or by far the largest, IT is the target card.
+- IGNORE neighbouring cards that are only partly visible because they are cut off at
+  the top, bottom or side of the image — they are NOT part of the target card.
+- IGNORE binder index, divider and label strips (tab labels); they are NOT cards.
 
-Der ZUVERLÄSSIGE Schlüssel einer Karte ist die aufgedruckte Sammelnummer plus das
-Set-Kürzel/-Symbol — NICHT der Name. Lies daher Nummer und Set besonders sorgfältig.
+The RELIABLE key of a card is the printed collector number plus the set code/symbol —
+NOT the name. So read the number and the set especially carefully.
 
-Gib für JEDE so ausgewählte Pokémon-Karte ein Objekt zurück mit:
-- "name": AUSSCHLIESSLICH der Kartenname aus der Titelzeile OBEN auf der Karte
-  (z.B. "Glurak ex", "Pikachu"). Übernimm NIEMALS Text aus Attacken, Fähigkeiten,
-  Evolutions-Hinweisen, Sammelmappen-Labels oder sonstigem Fließtext als Namen.
-  Wenn der Titel nicht sicher lesbar ist, setze null — rate NICHT.
-- "number": die aufgedruckte Sammelnummer GENAU wie sie (meist unten) auf der
-  Karte steht, im Format "NNN/NNN" (z.B. "113/217", "068/172") bzw. wie gedruckt;
-  null wenn unlesbar. Zusammen mit dem Set der eindeutige Schlüssel.
-- "set_code": das kleine aufgedruckte Set-Kürzel bzw. Set-Symbol unten (z.B.
-  "PAF", "OBF", "MEW", "151"); null wenn unlesbar. Ebenfalls Teil des Schlüssels.
-- "language": Sprache der Karte als Kürzel: "DE", "EN", "JP", "CN", "FR", "ES", "IT"; null wenn unklar
-- "position": die Position im Raster, von links nach rechts und oben nach unten gezählt, beginnend bei 0; bei Einzelkarte 0
-- "box_2d": die Bounding-Box NUR dieser einen Karte als [ymin, xmin, ymax, xmax],
-  jeweils ganzzahlig von 0 bis 1000 (auf Bildhöhe/-breite normiert), möglichst eng
-  um die Karte — OHNE angeschnittene Nachbarn oder Register-Labels
-- "corners": die VIER Eckpunkte der Karte als [[x,y],[x,y],[x,y],[x,y]] in der
-  Reihenfolge oben-links, oben-rechts, unten-rechts, unten-links; x,y ganzzahlig
-  0–1000. Für perspektivische Entzerrung – exakt an den Kartenecken, auch wenn die Karte schräg liegt.
-- "confidence": deine Sicherheit 0.0–1.0, wie zuverlässig du NUMMER UND Name gelesen hast
+For EACH Pokémon card selected this way, return an object with:
+- "name": ONLY the card name from the title line at the TOP of the card, as printed
+  (e.g. "Charizard ex", "Glurak ex", "Pikachu"). NEVER take text from attacks,
+  abilities, evolution notes, binder labels or other body text as the name.
+  If the title can't be read reliably, set null — do NOT guess.
+- "number": the printed collector number EXACTLY as it appears on the card (usually at
+  the bottom), in the format "NNN/NNN" (e.g. "113/217", "068/172") or as printed;
+  null if unreadable. Together with the set it is the unique key.
+- "set_code": the small printed set code or set symbol at the bottom (e.g.
+  "PAF", "OBF", "MEW", "151"); null if unreadable. Also part of the key.
+- "language": language of the card as a code: "DE", "EN", "JP", "CN", "FR", "ES", "IT"; null if unclear
+- "position": the position in the grid, counted left to right and top to bottom, starting at 0; 0 for a single card
+- "box_2d": the bounding box of ONLY this one card as [ymin, xmin, ymax, xmax],
+  each an integer from 0 to 1000 (normalised to image height/width), as tight as possible
+  around the card — WITHOUT cut-off neighbours or binder labels
+- "corners": the FOUR corner points of the card as [[x,y],[x,y],[x,y],[x,y]] in the
+  order top-left, top-right, bottom-right, bottom-left; x,y integers
+  0–1000. Used for perspective correction – exactly at the card corners, even if the card is tilted.
+- "confidence": your certainty 0.0–1.0 of how reliably you read the NUMBER AND the name
 
-Leere Fächer sowie angeschnittene Rand-Karten NICHT ausgeben.
-Antworte AUSSCHLIESSLICH mit einem JSON-Array von Objekten, ohne Erklärungstext."""
+Do NOT return empty pockets or cards cut off at the edge.
+Answer ONLY with a JSON array of objects, without any explanatory text."""
 
 
 # ── Fehlerarten (maschinenlesbar, zugleich `hinweis_art` in schemas/scan.py) ──

@@ -1,3 +1,4 @@
+import { getUiLang } from "@/lib/uiLang";
 import axios from "axios";
 
 // Zentrale API-Basis-URL — einzige Quelle, keine Kopien in Seiten (Issue #14).
@@ -19,6 +20,7 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  config.headers["X-UI-Lang"] = getUiLang();   // Fehlermeldungen in der UI-Sprache
   return config;
 });
 
@@ -569,7 +571,8 @@ export const settingsApi = {
 // Downloads laufen als authentifizierte Blob-GETs über die axios-Instanz —
 // ein nackter <a href> hätte keinen Authorization-Header und liefe in 401.
 export const dataApi = {
-  exportCsv: () => api.get<Blob>("/data/export.csv", { responseType: "blob" }),
+  // Englisch: Komma-CSV mit englischen Spalten (englisches Excel/Sheets)
+  exportCsv: () => api.get<Blob>("/data/export.csv", { responseType: "blob", params: { lang: getUiLang() } }),
   backup: () => api.get<Blob>("/data/backup", { responseType: "blob" }),
   // Scan-Fotos + bestätigte Karten als Trainings-/Testdatensatz (Admin)
   scanDataset: () => api.get<Blob>("/data/scan-dataset", { responseType: "blob" }),

@@ -86,9 +86,11 @@ export function useCardForm<T extends CardFormShape>(
             const fillName = !f.kartenname || autoFilled.current.kartenname;
             const fillEn = !f.englischer_name || autoFilled.current.englischer_name;
             autoFilled.current = { kartenname: fillName, englischer_name: fillEn };
+            // Kartenname = aufgedruckter Name: deutsch nur für deutsche Karten
+            const cardLang = String((f as Record<string, unknown>).sprache ?? "DE").toUpperCase();
             return {
               ...f,
-              kartenname: fillName ? names.de : f.kartenname,
+              kartenname: fillName ? (cardLang === "DE" ? names.de : names.en) : f.kartenname,
               englischer_name: fillEn ? names.en : f.englischer_name,
             } as T;
           });

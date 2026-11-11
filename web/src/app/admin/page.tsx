@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import { scanApi, catalogApi, dataApi, usersApi, AppSettingsUpdate, ScanDatasetSummary, ScanUsage, ScanModelSuggestion, UserRow } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/uiLang";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { Field, INPUT, Section, Toggle, triggerBlobDownload, useSettingsEditor } from "@/components/settings/SettingsUI";
 
@@ -179,7 +180,7 @@ export default function AdminPage() {
       // Harte Neuladung: alle Caches/Listen spiegeln danach den Backup-Stand.
       setTimeout(() => window.location.reload(), 800);
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      const msg = apiErrorText(e);
       toast.error(msg ?? t.settings_restore_error);
       setRestoring(false);
     }
@@ -190,7 +191,7 @@ export default function AdminPage() {
       const r = await usersApi.update(id, patch);
       setUsers(r.data);
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      const msg = apiErrorText(e);
       toast.error(msg ?? t.users_update_error);
     }
   };

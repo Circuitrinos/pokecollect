@@ -9,16 +9,17 @@ import PhotoPanel from "@/components/carddetail/PhotoPanel";
 import EditForm from "@/components/carddetail/EditForm";
 import CollectionsPanel from "@/components/carddetail/CollectionsPanel";
 import ImageLightbox from "@/components/ImageLightbox";
-import { cardImageSrc } from "@/lib/utils";
+import { cardImageSrc, cardName } from "@/lib/utils";
 import { cardNeighbors } from "@/lib/cardNav";
 import { useEnums } from "@/lib/useEnums";
 import { useSets } from "@/lib/useSets";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 import toast from "react-hot-toast";
 
 // ── Inline-Komponente: Pokédex-Ersetzungs-Bestätigungsdialog ─────────────────
 function PokedexReplaceModal({
-  conflictCard, currentCard, apiBase, onConfirm, onCancel, t,
+  conflictCard, currentCard, apiBase, onConfirm, onCancel, t, lang,
 }: {
   conflictCard: Card;
   currentCard: Card;
@@ -26,6 +27,7 @@ function PokedexReplaceModal({
   onConfirm: () => void;
   onCancel: () => void;
   t: ReturnType<typeof useI18n>["t"];
+  lang: string;
 }) {
   const { src: conflictSrc } = cardImageSrc(conflictCard, apiBase, true);
   const { src: newSrc } = cardImageSrc(currentCard, apiBase, true);
@@ -34,7 +36,7 @@ function PokedexReplaceModal({
       <div className="bg-gray-900 rounded-xl border border-gray-700 p-6 max-w-xl w-full shadow-2xl">
         <h3 className="text-white font-bold text-lg mb-1">⚠️ {t.pokedex_replace_title}</h3>
         <p className="text-gray-400 text-sm mb-5">
-          {t.pokedex_replace_desc(currentCard.pokedex_nr!, currentCard.kartenname)}
+          {t.pokedex_replace_desc(currentCard.pokedex_nr!, cardName(currentCard, lang))}
         </p>
         <div className="grid grid-cols-2 gap-4 mb-6">
           <div className="bg-gray-800 rounded-lg p-3 text-center">
@@ -44,7 +46,7 @@ function PokedexReplaceModal({
                 <Image src={conflictSrc} alt={conflictCard.kartenname} fill className="object-cover" />
               )}
             </div>
-            <div className="text-white text-xs font-medium truncate">{conflictCard.kartenname}</div>
+            <div className="text-white text-xs font-medium truncate">{cardName(conflictCard, lang)}</div>
             <div className="text-gray-500 text-[10px] truncate">{conflictCard.set_edition ?? "–"}</div>
             {conflictCard.karten_nr && (
               <div className="text-gray-400 text-[10px]">{conflictCard.karten_nr}</div>
@@ -62,7 +64,7 @@ function PokedexReplaceModal({
                 <Image src={newSrc} alt={currentCard.kartenname} fill className="object-cover" />
               )}
             </div>
-            <div className="text-white text-xs font-medium truncate">{currentCard.kartenname}</div>
+            <div className="text-white text-xs font-medium truncate">{cardName(currentCard, lang)}</div>
             <div className="text-gray-500 text-[10px] truncate">{currentCard.set_edition ?? "–"}</div>
             {currentCard.karten_nr && (
               <div className="text-gray-400 text-[10px]">{currentCard.karten_nr}</div>
@@ -95,7 +97,7 @@ export default function CardDetailPage() {
   const params = useParams();
   const id = params?.id as string;
   const router = useRouter();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [card, setCard] = useState<Card | null>(null);
   const { enums } = useEnums();
   const { sets, refresh: refreshSets } = useSets();
@@ -199,7 +201,7 @@ export default function CardDetailPage() {
   };
 
   const handleDelete = async () => {
-    if (!confirm(t.detail_delete_confirm(card.kartenname))) return;
+    if (!confirm(t.detail_delete_confirm(cardName(card, lang)))) return;
     await cardApi.delete(Number(id));
     handleBack();
   };
@@ -301,7 +303,7 @@ export default function CardDetailPage() {
                   >
                     <option value="">{t.detail_wishlist_choose_priority}</option>
                     {(enums?.prioritaet ?? []).map((p) => (
-                      <option key={p} value={p}>{p === "Chase" ? `🔥 ${p}` : p}</option>
+                      <option key={p} value={p}>{p === "Chase" ? `🔥 ${p}` : valueLabel(p, lang)}</option>
                     ))}
                   </select>
                 </div>
@@ -310,7 +312,7 @@ export default function CardDetailPage() {
                   <span className="text-gray-400">
                     {t.detail_wishlist_priority}:{" "}
                     <span className={card.prioritaet === "Chase" ? "text-orange-400 font-semibold" : "text-white"}>
-                      {card.prioritaet === "Chase" ? `🔥 ${card.prioritaet}` : card.prioritaet}
+                      {card.prioritaet === "Chase" ? `🔥 ${card.prioritaet}` : valueLabel(card.prioritaet, lang)}
                     </span>
                   </span>
                   <button type="button"
@@ -343,6 +345,7 @@ export default function CardDetailPage() {
           onConfirm={() => doSetPokedex(true)}
           onCancel={() => { setShowPokedexModal(false); setConflictCard(null); }}
           t={t}
+          lang={lang}
         />
       )}
 

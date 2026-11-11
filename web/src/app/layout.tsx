@@ -9,7 +9,7 @@ import WhatsNewModal from "@/components/WhatsNewModal";
 
 export const metadata: Metadata = {
   title: "PokéCollect",
-  description: "Pokémon TCG Sammlungs-App",
+  description: "Pokémon TCG collection app",
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "PokéCollect" },
   icons: {
@@ -30,7 +30,9 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="de">
+    // Die Sprache setzt der I18nProvider nach der gewählten UI-Sprache
+    // (sonst bietet der Browser an, die englische Seite „aus dem Deutschen" zu übersetzen)
+    <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-pokemon-dark">
         <I18nProvider>
           {/* AuthGuard: ohne Token → /login; verhindert Flackern + tokenlose

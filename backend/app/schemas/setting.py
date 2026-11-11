@@ -13,7 +13,7 @@ DEFAULTS: dict[str, str] = {
     "price_update_enabled": "true",
     "price_update_hour": "3",
     "price_source": "30d_avg",
-    "default_language": "DE",
+    "default_language": "",          # leer = wie die Sprache der Oberfläche (Frontend)
     "default_condition": "",
     "cardmarket_app_token": "",
     "cardmarket_app_secret": "",

@@ -3,11 +3,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cardApi, StatsResponse } from "@/lib/api";
 import StatsDonut from "@/components/StatsDonut";
-import { formatEur } from "@/lib/utils";
+import { cardName, formatEur } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
 export default function StatsPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [stats, setStats] = useState<StatsResponse | null>(null);
 
   useEffect(() => {
@@ -152,7 +152,7 @@ export default function StatsPage() {
               <tr key={c.id} className="border-b border-gray-800 hover:bg-gray-800">
                 <td className="py-1.5">
                   <Link href={`/cards/${c.id}`} className="text-white hover:text-yellow-400">
-                    {c.kartenname}
+                    {cardName(c, lang)}
                   </Link>
                 </td>
                 <td className="text-gray-400">{c.set_edition ?? "–"}</td>
@@ -170,7 +170,7 @@ export default function StatsPage() {
         <div className="space-y-1 text-sm">
           {stats.zuletzt_hinzugefuegt.map((c) => (
             <div key={c.id} className="flex justify-between items-center py-1 border-b border-gray-800">
-              <Link href={`/cards/${c.id}`} className="text-white hover:text-yellow-400">{c.kartenname}</Link>
+              <Link href={`/cards/${c.id}`} className="text-white hover:text-yellow-400">{cardName(c, lang)}</Link>
               <span className="text-gray-500 text-xs">
                 {new Date(c.hinzugefuegt_am).toLocaleDateString(t.date_locale)}
               </span>

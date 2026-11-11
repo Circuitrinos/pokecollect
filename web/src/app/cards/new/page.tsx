@@ -10,13 +10,14 @@ import { useEnums } from "@/lib/useEnums";
 import { useSets } from "@/lib/useSets";
 import { useSettings } from "@/lib/useSettings";
 import { useI18n } from "@/lib/i18n";
+import { defaultCardLang } from "@/lib/utils";
 import { CardFormValues, useCardForm } from "@/lib/useCardForm";
 
 function NewCardForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const collectionId = searchParams?.get("collection") ?? null;
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { enums } = useEnums();
   const { sets, refresh: refreshSets } = useSets();
   const { settings: appSettings } = useSettings();
@@ -37,9 +38,10 @@ function NewCardForm() {
     if (!appSettings) return;
     setForm((f) => ({
       ...f,
-      sprache: f.sprache === "DE" ? (appSettings.default_language || "DE") : f.sprache,
+      sprache: f.sprache === "DE" ? defaultCardLang(appSettings, lang) : f.sprache,
       zustand: f.zustand ?? (appSettings.default_condition || null),
     }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appSettings]);
 
   const set = (key: string, value: unknown) => {

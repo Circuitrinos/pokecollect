@@ -135,7 +135,7 @@ def test_settings_defaults(client):
     assert r.status_code == 200
     body = r.json()
     assert body["cards_per_page"] > 0
-    assert body["default_language"] in ("DE", "EN")
+    assert body["default_language"] in ("", "DE", "EN")
 
 
 def test_settings_update_roundtrip(client):

@@ -2,6 +2,7 @@
 import { useId } from "react";
 import { PokemonSet } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { valueLabel } from "@/lib/enumLabels";
 import RaritySelect from "@/components/RaritySelect";
 
 // Gemeinsame Feld-Bausteine für die Karten-Formulare (Neuanlage + Detail-Edit,
@@ -96,6 +97,7 @@ export function SelectField({ fieldKey, label, value, onChange, options, languag
   dense?: boolean;
 }) {
   const id = useId();
+  const { lang } = useI18n();
   // Seltenheit bekommt den Symbol-Picker statt eines nackten Selects
   if (fieldKey === "seltenheit") {
     return (
@@ -118,7 +120,7 @@ export function SelectField({ fieldKey, label, value, onChange, options, languag
         className={inputCls(dense)}
       >
         <option value="">–</option>
-        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+        {options.map((o) => <option key={o} value={o}>{valueLabel(o, lang)}</option>)}
       </select>
     </div>
   );

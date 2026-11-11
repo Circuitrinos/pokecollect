@@ -9,6 +9,7 @@ import { useEnums } from "@/lib/useEnums";
 import { useSettings } from "@/lib/useSettings";
 import { SelectField } from "@/components/CardFormFields";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
+import { defaultCardLang, formatEuroAmount } from "@/lib/utils";
 
 type Props = {
   card: CatalogItem;
@@ -38,7 +39,7 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
 
   useEffect(() => {
     if (!settings) return;
-    setSprache(settings.default_language || "DE");
+    setSprache(defaultCardLang(settings, lang));
     setZustand(settings.default_condition || null);
   }, [settings]);
 
@@ -67,7 +68,8 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
   const d = detail ?? card;
   // Set-Name in UI-Sprache: die Katalogzeile führt den deutschen, set_name_en den englischen
   const setName = lang === "EN" && d.set_name_en ? d.set_name_en : d.set_name;
-  const fmtEur = (n?: number | null) => (n != null ? `${n.toFixed(2).replace(".", ",")} €` : null);
+  const fmtEur = (n?: number | null) =>
+    (n == null ? null : lang === "EN" ? formatEuroAmount(n) : `${n.toFixed(2).replace(".", ",")} €`);
   const fmtUsd = (n?: number | null) => (n != null ? `$ ${n.toFixed(2)}` : null);
   const variantsStr =
     [d.variants_normal ? "Normal" : null, d.variants_reverse ? "Reverse" : null,
@@ -83,7 +85,7 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
   const fmtDate = (iso?: string | null) => {
     if (!iso) return null;
     const dt = new Date(iso);
-    return isNaN(dt.getTime()) ? null : dt.toLocaleDateString(lang === "EN" ? "en-GB" : "de-DE");
+    return isNaN(dt.getTime()) ? null : dt.toLocaleDateString(t.date_locale);
   };
   const withStand = (val: React.ReactNode, iso?: string | null) => {
     const s = fmtDate(iso);

@@ -24,7 +24,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import Integer, func, select, text
 from starlette.background import BackgroundTask
@@ -61,27 +61,58 @@ def _jsonify(value):
     return value
 
 
-def _csv_cell(value) -> str:
-    """DB-Wert → Excel-freundliche CSV-Zelle (deutsches Excel: Semikolon+Komma)."""
+def _csv_cell(value, english: bool = False) -> str:
+    """DB-Wert → Excel-freundliche CSV-Zelle (deutsches Excel: Semikolon+Komma;
+    englisches Excel: Komma+Punkt, yes/no)."""
     if value is None:
         return ""
     if isinstance(value, bool):
+        if english:
+            return "yes" if value else "no"
         return "ja" if value else "nein"
     if isinstance(value, Decimal):
-        return str(value).replace(".", ",")
+        return str(value) if english else str(value).replace(".", ",")
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
+    if english and isinstance(value, str):
+        return _CSV_VALUES_EN.get(value, value)
     return str(value)
+
+
+# Englischer Export: verständliche Spaltennamen statt der deutschen DB-Namen
+# (nicht genannte Spalten behalten ihren Namen) und englische Auswahlwerte.
+_CSV_HEADERS_EN = {
+    "user_id": "user_id", "kartenname": "card_name", "pokedex_nr": "pokedex_no",
+    "englischer_name": "english_name", "set_edition": "set", "karten_nr": "card_number",
+    "seltenheit": "rarity", "kartenversion": "card_version", "folierung": "foiling",
+    "muster": "pattern", "erste_edition": "first_edition", "sprache": "language",
+    "besessen": "owned", "wunschliste": "wishlist", "im_pokedex": "in_pokedex",
+    "prioritaet": "priority", "wert_eur": "value", "wert_aktualisiert": "value_updated",
+    "kaufpreis_eur": "purchase_price", "kaufdatum": "purchase_date", "notizen": "notes",
+    "zustand": "condition", "bild_pokedex_url": "pokedex_image_url", "bild_karte_url": "card_image_url",
+    "bild_karte_pfad": "card_image_path", "bild_thumbnail_pfad": "thumbnail_path",
+    "bild_original_pfad": "original_photo_path", "bild_quad": "photo_corners",
+    "bild_scan_pfad": "scan_photo_path", "hinzugefuegt_am": "added_at", "aktualisiert_am": "updated_at",
+}
+_CSV_VALUES_EN = {
+    "Hoch": "High", "Mittel": "Medium", "Niedrig": "Low",
+    "Sterne": "Stars", "Energie": "Energy", "Sonstiges": "Other",
+}
 
 
 # ── CSV-Export ────────────────────────────────────────────────────────────────
 
 @router.get("/export.csv")
-def export_csv(user: AuthUser = Depends(require_auth)):
+def export_csv(
+    user: AuthUser = Depends(require_auth),
+    lang: str = Query("DE", pattern="^(DE|EN)$"),
+):
     """
     Alle PokemonCard-Felder des angemeldeten Benutzers als CSV. UTF-8 MIT BOM + Semikolon-Delimiter,
-    damit (deutsches) Excel die Datei per Doppelklick korrekt öffnet.
+    damit (deutsches) Excel die Datei per Doppelklick korrekt öffnet. lang=EN: Komma-Delimiter,
+    Dezimalpunkt, englische Spaltennamen — so öffnet englisches Excel/Sheets sie richtig.
     """
+    english = lang == "EN"
     columns = [c.name for c in PokemonCard.__table__.columns]
 
     # Zeilen VOR dem Response-Bau materialisieren: seit FastAPI 0.106 werden
@@ -90,7 +121,7 @@ def export_csv(user: AuthUser = Depends(require_auth)):
     db = user_session(user.id)   # nur die eigenen Karten (app/tenancy.py)
     try:
         rows = [
-            [_csv_cell(getattr(card, c)) for c in columns]
+            [_csv_cell(getattr(card, c), english) for c in columns]
             for card in db.query(PokemonCard).order_by(PokemonCard.id).all()
         ]
     finally:
@@ -99,8 +130,8 @@ def export_csv(user: AuthUser = Depends(require_auth)):
     def _iter():
         yield codecs.BOM_UTF8  # BOM → Excel erkennt UTF-8
         buf = io.StringIO()
-        writer = csv.writer(buf, delimiter=";", lineterminator="\r\n")
-        writer.writerow(columns)
+        writer = csv.writer(buf, delimiter="," if english else ";", lineterminator="\r\n")
+        writer.writerow([_CSV_HEADERS_EN.get(c, c) for c in columns] if english else columns)
         for row in rows:
             writer.writerow(row)
         yield buf.getvalue().encode("utf-8")
