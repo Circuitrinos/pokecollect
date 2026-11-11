@@ -4,6 +4,28 @@ import toast from "react-hot-toast";
 import { API_BASE, PictureCandidates, catalogApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { spiegelUrl } from "@/lib/utils";
+import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
+import { cropToCardPhoto, CropTransform, loadImg } from "@/lib/cardCrop";
+
+const WHOLE: number[][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
+const CATALOG_WIDTH = 734;     // Breite eines zugeschnittenen Katalogbilds (wie pokemontcg.io hires)
+
+/** Großes Bild für den Vorschlag verkleinern (die Ecken sind normiert, die Auflösung zählt nicht). */
+async function shrink(blob: Blob, maxSide = 1600): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImg(url);
+    const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+    if (k >= 1 && blob.size < 4_000_000) return blob;
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k);
+    c.height = Math.round(img.height * k);
+    c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise<Blob>((res) => c.toBlob((b) => res(b ?? blob), "image/jpeg", 0.9));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 // Bild finden (Admin): Vorschläge aus offenen Quellen (TCGdex in anderen
 // Sprachen, pokemontcg.io, pokemon.com) — oder ein Bild aus der Websuche, das
@@ -20,6 +42,11 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pasted, setPasted] = useState<{ blob: Blob; url: string } | null>(null);
+  // Zuschneiden: Original des eingefügten Bilds (für erneutes Zuschneiden) und offener Eck-Editor
+  const originalRef = useRef<Blob | null>(null);
+  const [cropUrl, setCropUrl] = useState<string | null>(null);
+  const cropOpenRef = useRef(false);
+  const smallRef = useRef<Blob | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [failed, setFailed] = useState<Set<string>>(new Set());   // Vorschläge, die nicht laden
 
@@ -31,19 +58,55 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
     return () => { alive = false; };
   }, [cardId]);
 
+  const openCrop = useCallback((blob: Blob) => {
+    cropOpenRef.current = true;
+    setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
+  }, []);
+  const closeCrop = () => {
+    cropOpenRef.current = false;
+    setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+  };
   const takeBlob = useCallback((blob: Blob | null | undefined) => {
     if (!blob || !blob.type.startsWith("image/")) return false;
+    originalRef.current = blob;
+    smallRef.current = null;
     setPasted((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { blob, url: URL.createObjectURL(blob) }; });
+    openCrop(blob);          // gleich zuschneiden — der Vorschlag findet die Kartenkanten
     return true;
-  }, []);
+  }, [openCrop]);
+
+  // Eck-Editor: grobe Ecken → Kartenkanten vom Bild-Abgleich
+  const suggestCrop = async (quad: number[][]): Promise<CornerSuggestion | null> => {
+    const orig = originalRef.current;
+    if (!orig) return null;
+    smallRef.current ??= await shrink(orig);
+    const r = await catalogApi.pictureOutline(cardId, smallRef.current, quad);
+    return r.data.quad ? { quad: r.data.quad, ok: true, label: t.pic_crop_found } : null;
+  };
+  const applyCrop = async (quad: number[][], transform: CropTransform) => {
+    const orig = originalRef.current;
+    closeCrop();
+    if (!orig) return;
+    try {
+      const file = await cropToCardPhoto(orig, { quad, ...transform, width: CATALOG_WIDTH });
+      setPasted((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { blob: file, url: URL.createObjectURL(file) }; });
+    } catch {
+      toast.error(t.pic_failed);
+    }
+  };
 
   // Strg+V überall im Dialog
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
+      if (cropOpenRef.current) return;
       const item = Array.from(e.clipboardData?.items ?? []).find((i) => i.type.startsWith("image/"));
       if (item && takeBlob(item.getAsFile())) e.preventDefault();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (cropOpenRef.current) { cropOpenRef.current = false; setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; }); return; }
+      onClose();
+    };
     window.addEventListener("paste", onPaste);
     window.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("paste", onPaste); window.removeEventListener("keydown", onKey); };
@@ -128,6 +191,10 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
           <div className="flex flex-wrap justify-center gap-2">
             <button type="button" onClick={() => void readClipboard()} className="rounded bg-gray-700 px-3 py-1 text-white hover:bg-gray-600">📋 {t.pic_paste}</button>
             <button type="button" onClick={() => fileRef.current?.click()} className="rounded bg-gray-700 px-3 py-1 text-white hover:bg-gray-600">📁 {t.pic_upload}</button>
+            {pasted && originalRef.current && (
+              <button type="button" onClick={() => originalRef.current && openCrop(originalRef.current)} data-testid="picture-crop"
+                className="rounded bg-gray-700 px-3 py-1 text-white hover:bg-gray-600">✂ {t.pic_crop}</button>
+            )}
             {pasted && (
               <button type="button" disabled={busy} onClick={() => void applyPasted()} data-testid="picture-use-pasted"
                 className="rounded bg-green-700 px-3 py-1 text-white hover:bg-green-600 disabled:opacity-50">✓ {t.pic_use}</button>
@@ -137,6 +204,13 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
             onChange={(e) => { takeBlob(e.target.files?.[0]); e.target.value = ""; }} />
         </div>
       </div>
+      {cropUrl && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <CornerEditor imageUrl={cropUrl} initialQuad={WHOLE} title={t.pic_crop_title} hint={t.pic_crop_hint}
+            onCancel={closeCrop} onApply={(quad, transform) => void applyCrop(quad, transform)}
+            suggest={suggestCrop} suggestOnOpen />
+        </div>
+      )}
     </div>
   );
 }

@@ -962,6 +962,13 @@ export const catalogApi = {
   pictures: (cardId: string) => api.get<PictureCandidates>(`/catalog/${encodeURIComponent(cardId)}/pictures`),
   usePicture: (cardId: string, url: string) =>
     api.post<PictureResult>(`/catalog/${encodeURIComponent(cardId)}/picture`, { url }),
+  // Zuschneiden im Bild-Finder: grobe Ecken an die Kartenkanten anlegen (matcher /outline)
+  pictureOutline: (cardId: string, file: Blob, quad: number[][] | null) => {
+    const form = new FormData();
+    form.append("file", file, "picture.jpg");
+    if (quad) form.append("quad", JSON.stringify(quad));
+    return api.post<{ quad: number[][] | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
+  },
   uploadPicture: (cardId: string, file: Blob) => {
     const form = new FormData();
     form.append("file", file, "picture");

@@ -5,7 +5,7 @@ Read-only; per Stern auf die Wunschliste / in Sammlungen übernehmbar.
 
 import math
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -345,6 +345,33 @@ async def upload_picture(card_id: str, request: Request, file: UploadFile = File
     except ValueError:
         raise HTTPException(status_code=400, detail="Bilddatei konnte nicht verarbeitet werden")
     return _picture_result(db, row, request, updated)
+
+
+@router.post("/{card_id}/picture/outline", dependencies=[Depends(require_admin)])
+async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str = Form(""),
+                          db: Session = Depends(get_db)):
+    """Bild zuschneiden (Bild-Finder): grobe Ecken an die Kartenkanten anlegen. → {"quad": … | null}."""
+    import json
+
+    import httpx
+
+    _catalog_row(db, card_id)
+    data = await file.read(picture_finder.OUTLINE_MAX_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+    if len(data) > picture_finder.OUTLINE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 12 MB)")
+    try:
+        q = json.loads(quad) if quad else None
+        q = [[float(x), float(y)] for x, y in q] if q else None
+    except (ValueError, TypeError):
+        q = None
+    if q is not None and (len(q) != 4 or not all(-0.5 <= v <= 1.5 for p in q for v in p)):
+        raise HTTPException(status_code=422, detail="Ungültige Ecken")
+    try:
+        return {"quad": await picture_finder.outline(data, q)}
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
 
 
 @router.post("/{card_id}/wishlist")

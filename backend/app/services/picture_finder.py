@@ -199,3 +199,22 @@ def manual_file(card_id: str) -> Optional[Path]:
         return p if p is not None and p.is_file() else None
     finally:
         db.close()
+
+
+OUTLINE_MAX_BYTES = 12 * 1024 * 1024    # matcher MAX_BYTES
+
+
+async def outline(data: bytes, quad: Optional[list]) -> Optional[list]:
+    """Grobe Ecken eines Bilds (Zuschneiden im Bild-Finder) an die echten
+    Kartenkanten anlegen — matcher /outline. → Ecken (0..1) oder None;
+    wirft httpx.HTTPError, wenn der Dienst nicht antwortet."""
+    import json
+
+    form = {"quad": json.dumps(quad)} if quad else {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        r = await client.post(f"{settings.matcher_url.rstrip('/')}/outline",
+                              files={"file": ("picture.jpg", data, "image/jpeg")}, data=form)
+    if r.status_code != 200:
+        raise httpx.HTTPError(f"matcher {r.status_code}")
+    q = r.json().get("quad")
+    return q if isinstance(q, list) and len(q) == 4 else None

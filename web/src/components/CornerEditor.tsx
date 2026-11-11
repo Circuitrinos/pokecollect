@@ -14,7 +14,7 @@ import { useI18n } from "@/lib/i18n";
 export type CornerSuggestion = { quad: number[][]; ok: boolean; label: string };
 
 export default function CornerEditor({
-  imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest,
+  imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest, suggestOnOpen = false,
 }: {
   imageUrl: string;
   initialQuad: number[][];
@@ -29,6 +29,8 @@ export default function CornerEditor({
   // Nach jedem losgelassenen Eckpunkt: eingeschwungene Ecken vorschlagen (Fix crop
   // mit Bild-Abgleich). null = Karte in diesen Ecken nicht erkannt.
   suggest?: (quad: number[][], transform: CropTransform) => Promise<CornerSuggestion | null>;
+  // gleich beim Öffnen einen Vorschlag holen (z. B. Bild aus der Websuche zuschneiden)
+  suggestOnOpen?: boolean;
 }) {
   const { t } = useI18n();
   const [quad, setQuadState] = useState<number[][]>(initialQuad);
@@ -83,6 +85,10 @@ export default function CornerEditor({
   };
   const runSuggestRef = useRef(runSuggest);
   runSuggestRef.current = runSuggest;
+  useEffect(() => {
+    if (suggestOnOpen) runSuggestRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const applySuggestion = () => {
     if (sugg?.state !== "done") return;
     setQuad(sugg.quad);
@@ -228,7 +234,7 @@ export default function CornerEditor({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-2 sm:p-4"
+      className="fixed inset-0 z-[70] bg-black/85 flex items-center justify-center p-2 sm:p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
       <div className="bg-pokemon-card border border-gray-700 rounded-lg p-3 sm:p-4 w-full max-w-lg max-h-[95vh] flex flex-col">

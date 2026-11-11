@@ -87,6 +87,11 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
   `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
   Each match is also logged with that breakdown.
+- `POST /outline` (multipart): `file` (any picture), optionally `quad` (rough corners,
+  fractions). Snaps the rough corners to the card-shaped outline the detector finds there
+  (or, without corners, the most card-like outline; a picture that is just the card comes
+  back whole). Returns `quad` (card's TL first) or null. Used by the app's picture finder to
+  crop pictures pasted from an image search.
 - `POST /verify` (multipart): `file` (a saved, straightened scan photo), `card_id`, optionally
   `original` + `quad` (the corners it was cut along). Compares the photo with that card's
   catalog images only (learned photos are left out, they would match themselves) and returns

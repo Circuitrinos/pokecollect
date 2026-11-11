@@ -190,12 +190,13 @@ function applyOrient(srcCanvas: HTMLCanvasElement, o: CropTransform): HTMLCanvas
  */
 export async function cropToCardPhoto(
   blob: Blob,
-  opts?: { bbox?: number[] | null; quad?: number[][] | null; autoOrient?: boolean } & CropTransform,
+  opts?: { bbox?: number[] | null; quad?: number[][] | null; autoOrient?: boolean; width?: number } & CropTransform,
 ): Promise<File> {
   const url = URL.createObjectURL(blob);
   try {
     const img = await loadImg(url);
-    const W = 460, H = Math.round((W * 88) / 63);
+    // Breite des Ergebnisses: Kartenfotos 460 px, Katalogbilder (Bild finden) größer
+    const W = opts?.width ?? 460, H = Math.round((W * 88) / 63);
     let canvas = document.createElement("canvas");
     let usedQuad = false;
 

@@ -805,6 +805,10 @@ const DE = {
   pic_drop: "Bild hierher ziehen, einfügen (Strg+V) oder Datei wählen",
   pic_use: "Dieses Bild verwenden",
   pic_saved: (n: number) => n > 0 ? `Bild gespeichert — auch für ${n} eigene Karte(n)` : "Bild gespeichert",
+  pic_crop: "Zuschneiden",
+  pic_crop_title: "Bild zuschneiden",
+  pic_crop_hint: "Nur die Karte behalten: die Ecken grob um die Karte ziehen — der Bild-Abgleich legt sie an die Kanten. „Abbrechen“ behält das ganze Bild.",
+  pic_crop_found: "Kartenkanten gefunden",
   // Decks
   nav_decks: "Decks",
   scan_target_deck: "Deck",
@@ -1795,6 +1799,10 @@ const EN: typeof DE = {
   pic_drop: "Drop a picture here, paste it (Ctrl+V) or choose a file",
   pic_use: "Use this picture",
   pic_saved: (n: number) => n > 0 ? `Picture saved — also for ${n} of your cards` : "Picture saved",
+  pic_crop: "Crop",
+  pic_crop_title: "Crop the picture",
+  pic_crop_hint: "Keep just the card: drag the corners roughly around it — the image matcher snaps them to the edges. \"Cancel\" keeps the whole picture.",
+  pic_crop_found: "card edges found",
   // Decks
   nav_decks: "Decks",
   scan_target_deck: "Deck",

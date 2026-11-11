@@ -382,6 +382,85 @@ def _detect_request(data: bytes) -> dict:
         _detect_lock.release()
 
 
+@app.post("/outline")
+async def outline(file: UploadFile = File(...), quad: str = Form("")) -> dict:
+    """
+    Snap rough corners to the card's real edges (the app's crop editor for
+    pictures without a catalog reference, e.g. one pasted from an image
+    search): the card-shaped outline the detector finds that best overlaps the
+    rough corners. → {"quad": [[x, y]…] (fractions, card's TL first) or null, "iou"}.
+    """
+    if state["status"] != "ready":
+        raise HTTPException(503, f"matcher not ready: {state['status']}")
+    data = await file.read()
+    if not data or len(data) > MAX_BYTES:
+        raise HTTPException(400, "empty or oversized image")
+    return await run_in_threadpool(_outline_request, data, quad)
+
+
+OUTLINE_MIN_IOU = 0.45
+
+
+def _plain_margin(img: np.ndarray, quad: np.ndarray) -> bool:
+    """Is everything outside the outline plain background (near white or black, not colourful)?"""
+    mask = np.full(img.shape[:2], 255, np.uint8)
+    cv2.fillConvexPoly(mask, quad.astype(np.int32), 0)
+    mask = cv2.erode(mask, np.ones((5, 5), np.uint8))
+    if mask.sum() == 0:
+        return True
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    sat = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 1]
+    light = float(lab[:, :, 0][mask > 0].mean())
+    return (light > 225 or light < 30) and float(sat[mask > 0].mean()) < 40
+
+
+def _outline_request(data: bytes, quad: str) -> dict:
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "unreadable image")
+    h, w = img.shape[:2]
+    k = min(1.0, 1600 / max(h, w))
+    if k < 1.0:
+        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
+    try:
+        q = json.loads(quad) if quad else None
+        rough = np.float32(np.float32(q) * [w, h]) if isinstance(q, list) and len(q) == 4 else None
+    except (ValueError, TypeError):
+        rough = None
+    if rough is None:
+        rough = detect.whole_image_as_card(img)
+    cands = [d.quad for d in detect.detect_cards(img, max_cards=24, nested=True)]
+    # also look closely around the rough corners (a small card in a big screenshot)
+    x, y, bw, bh = cv2.boundingRect(rough.astype(np.int32))
+    mx, my = int(0.2 * bw), int(0.2 * bh)
+    x0, y0, x1, y1 = max(0, x - mx), max(0, y - my), min(w, x + bw + mx), min(h, y + bh + my)
+    if (x1 - x0) * (y1 - y0) < 0.8 * w * h and x1 - x0 > 40 and y1 - y0 > 40:
+        cands += [d.quad + np.float32([x0, y0]) for d in detect.detect_cards(img[y0:y1, x0:x1], max_cards=12, nested=True)]
+
+    area = lambda c: float(cv2.contourArea(c.astype(np.float32)))   # noqa: E731
+    card_shaped = [c for c in cands if detect._rectangularity(c) <= 2.5]
+    card_image = 0.62 <= w / h <= 0.82
+    if area(rough) > 0.9 * w * h:
+        # no real hint (corners on the image border): the most card-like big outline
+        pool = [c for c in card_shaped if area(c) >= 0.05 * w * h]
+        best = max(pool, key=lambda c: area(c) * float(np.exp(-detect._rectangularity(c)))) if pool else None
+        # a big outline inside a card-shaped picture is the card's own border
+        # frame unless what lies around it is plain background (white/black)
+        if best is not None and card_image and area(best) > 0.6 * w * h and not _plain_margin(img, best):
+            best = None
+    else:
+        good = [c for c in card_shaped if detect._iou(rough, c) >= OUTLINE_MIN_IOU]
+        best = max(good, key=lambda c: detect._iou(rough, c) - 0.05 * detect._rectangularity(c)) if good else None
+    if best is None and card_image and area(rough) > 0.9 * w * h:
+        best = detect.whole_image_as_card(img)      # the picture is the card itself
+    if best is None:
+        return {"quad": None, "iou": 0.0, "candidates": len(cands)}
+    best = detect.portrait_order(best)
+    out = (np.clip(best / [w, h], 0.0, 1.0)).round(4).tolist()
+    return {"quad": out, "iou": round(float(detect._iou(rough, best)), 3), "candidates": len(cands)}
+
+
 @app.post("/match")
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
                 rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5)) -> dict:

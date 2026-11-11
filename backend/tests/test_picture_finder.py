@@ -1,5 +1,6 @@
 """Bild finden: Vorschläge, Übernahme einer Bildadresse, eingefügtes Bild, Spiegel für lokale Katalogbilder."""
 import asyncio
+import json
 import io
 from pathlib import Path
 
@@ -117,3 +118,33 @@ def test_pictures_admin_only(row):
         assert bc.post(f"{API}/catalog/{CID}/picture/upload", files={"file": ("p.png", _png(), "image/png")}).status_code == 403
     finally:
         _drop_user(bob)
+
+
+def test_picture_outline_forwards_to_the_matcher(client, row, monkeypatch):
+    """Bild-Finder → Zuschneiden: grobe Ecken gehen an matcher /outline, nur Admins."""
+    import httpx
+    from app.services import picture_finder
+
+    seen = {}
+
+    async def outline(data, quad):
+        seen.update(data=data, quad=quad)
+        return [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+
+    monkeypatch.setattr(picture_finder, "outline", outline)
+    rough = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    r = client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
+                    data={"quad": json.dumps(rough)})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]}
+    assert seen == {"data": b"img", "quad": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}
+    assert client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
+                       data={"quad": "[[5,5],[1,0],[1,1],[0,1]]"}).status_code == 422
+    assert client.post(f"{API}/catalog/nope-1/picture/outline",
+                       files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 404
+
+    async def down(data, quad):
+        raise httpx.HTTPError("down")
+    monkeypatch.setattr(picture_finder, "outline", down)
+    assert client.post(f"{API}/catalog/{CID}/picture/outline",
+                       files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 503
