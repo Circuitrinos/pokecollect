@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import toast from "react-hot-toast";
-import { Collection, PokemonSet, collectionApi, cardApi } from "@/lib/api";
+import { Collection, PokemonSet, SharedCollection, collectionApi, cardApi, sharedApi } from "@/lib/api";
 import GoalProgress from "@/components/GoalProgress";
 import SetPicker from "@/components/SetPicker";
 import { useEnums } from "@/lib/useEnums";
@@ -14,6 +14,8 @@ export default function CollectionsPage() {
   const { enums } = useEnums();
   const { sets, refresh: refreshSets } = useSets();
   const [collections, setCollections] = useState<Collection[]>([]);
+  // Sammlungen, die Freunde mit mir teilen (nur ansehen)
+  const [shared, setShared] = useState<SharedCollection[]>([]);
   const [loading, setLoading] = useState(true);
   const [ownedCount, setOwnedCount] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -42,6 +44,7 @@ export default function CollectionsPage() {
   useEffect(() => {
     load();
     cardApi.list({ besessen: true, limit: 1 }).then((r) => setOwnedCount(r.data.total)).catch(() => {});
+    sharedApi.list().then((r) => setShared(r.data)).catch(() => {});
   }, []);
 
   const resetNewForm = () => {
@@ -298,7 +301,10 @@ export default function CollectionsPage() {
                       {c.typ === "set_ziel" && c.fortschritt ? (
                         <GoalProgress progress={c.fortschritt} className="mt-2" />
                       ) : (
-                        <p className="text-gray-500 text-xs mt-1">{t.collections_card_count(c.karten_anzahl)}</p>
+                        <p className="text-gray-500 text-xs mt-1">
+                          {t.collections_card_count(c.karten_anzahl)}
+                          {c.geteilt_mit ? ` · ${t.share_count(c.geteilt_mit)}` : ""}
+                        </p>
                       )}
                     </Link>
                   </div>
@@ -318,6 +324,30 @@ export default function CollectionsPage() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Von Freunden geteilt (nur ansehen) */}
+      {shared.length > 0 && (
+        <section className="mt-8" data-testid="collections-shared">
+          <h2 className="text-white font-semibold mb-3">{t.friends_shared_title}</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {shared.map((c) => (
+              <Link key={c.id} href={`/shared/${c.id}`}
+                className="block bg-pokemon-card rounded-lg p-4 border border-purple-900/70 hover:border-purple-500 transition-colors">
+                <h3 className="text-lg font-semibold text-white hover:text-pokemon-yellow truncate">
+                  {c.name}
+                  <span className="ml-2 align-middle text-[10px] font-normal bg-purple-900/60 text-purple-200 rounded px-1.5 py-0.5">
+                    {t.shared_view_only}
+                  </span>
+                </h3>
+                {c.beschreibung && <p className="text-gray-400 text-sm truncate">{c.beschreibung}</p>}
+                <p className="text-gray-500 text-xs mt-1">
+                  {t.shared_by(c.owner.display_name || c.owner.username)} · {t.collections_card_count(c.karten_anzahl)}
+                </p>
+              </Link>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

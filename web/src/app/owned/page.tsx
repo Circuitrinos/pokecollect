@@ -37,6 +37,12 @@ export default function AllOwnedPage() {
     }
   }, [filters, page, appSettings]);
 
+  // Filter aus der Adresse übernehmen (z. B. aus dem Admin-Bereich: ?bild_status=kein_export)
+  useEffect(() => {
+    const status = new URLSearchParams(window.location.search).get("bild_status");
+    if (status) { setFilters((f) => ({ ...f, bild_status: status })); setFiltersOpen(true); }
+  }, []);
+
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {

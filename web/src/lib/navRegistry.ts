@@ -81,18 +81,6 @@ export function visibleNavTargets(isAdmin: boolean): NavTarget[] {
 // immer in dieser Reihenfolge (deterministisch, unabhängig von der Klickfolge).
 export const NAV_KEYS_IN_ORDER: NavKey[] = NAV_TARGETS.map((t) => t.key);
 
-// Technischer Default der BottomNav = die bisherigen 5 Schnellzugriffe.
-export const DEFAULT_BOTTOM_NAV: NavKey[] = [
-  "collections",
-  "pokedex",
-  "scan",
-  "wishlist",
-  "settings",
-];
-
-// Sinnvolle Obergrenze für Schnellzugriffe unten (Platz am Handy).
-export const MAX_BOTTOM_NAV = 5;
-
 export function isNavKey(x: unknown): x is NavKey {
   return typeof x === "string" && NAV_KEYS_IN_ORDER.includes(x as NavKey);
 }

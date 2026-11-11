@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { useI18n } from "@/lib/i18n";
 import { NavTarget, isNavActive, navHref, visibleNavTargets } from "@/lib/navRegistry";
 import { useMe } from "@/lib/useMe";
@@ -12,7 +13,16 @@ export default function BottomNav() {
   // Konfigurierbare Schnellzugriffe (localStorage, Issue #34). Alle Ziele lesen
   // aus der zentralen Registry — nichts hier hartkodiert (DRY).
   const { keys } = useBottomNavConfig();
-  const targets = visibleNavTargets(useMe()?.is_admin ?? false);
+  // Mehr Ziele als Platz: die Leiste scrollt seitlich; das aktive Ziel wird
+  // beim Seitenwechsel in die Mitte geholt.
+  const barRef = useRef<HTMLElement>(null);
+  const isAdmin = useMe()?.is_admin ?? false;
+  useEffect(() => {
+    const bar = barRef.current;
+    const el = bar?.querySelector<HTMLElement>("[data-active]");
+    if (bar && el) bar.scrollLeft = el.offsetLeft - (bar.clientWidth - el.clientWidth) / 2;
+  }, [pathname, keys.length, isAdmin]);
+  const targets = visibleNavTargets(isAdmin);
 
   // Scan-Seite hat eine eigene fixierte Aktionsleiste → Bottom-Nav ausblenden;
   // vor dem Login (Issue #1) ebenfalls kein App-Chrome
@@ -26,7 +36,7 @@ export default function BottomNav() {
   if (items.length === 0) return null;
 
   return (
-    <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-pokemon-card border-t border-gray-800 flex items-stretch justify-around pb-[env(safe-area-inset-bottom)]">
+    <nav ref={barRef} className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-pokemon-card border-t border-gray-800 flex items-stretch overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden pb-[env(safe-area-inset-bottom)]">
       {items.map((target) => {
         const { key, Icon, labelKey } = target;
         const href = navHref(target, pathname);
@@ -38,12 +48,13 @@ export default function BottomNav() {
             key={key}
             href={href}
             aria-current={active ? "page" : undefined}
-            className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] text-[10px] ${
+            data-active={active || undefined}
+            className={`flex-1 shrink-0 min-w-[64px] flex flex-col items-center justify-center gap-0.5 py-2 min-h-[56px] text-[10px] ${
               active ? "text-pokemon-yellow" : "text-gray-400"
             }`}
           >
-            <span className={primary ? "bg-pokemon-blue text-white rounded-full p-1.5 -mt-3 shadow-lg" : ""}>
-              <Icon size={primary ? 22 : 20} />
+            <span className={primary ? "bg-pokemon-blue text-white rounded-full p-1 shadow-lg" : ""}>
+              <Icon size={20} />
             </span>
             <span className="truncate max-w-[64px]">{t[labelKey]}</span>
           </Link>

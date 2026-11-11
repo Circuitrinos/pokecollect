@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import Integer, func, text
+from sqlalchemy import Integer, func, select, text
 from starlette.background import BackgroundTask
 
 from app.api.deps import require_admin, require_auth
@@ -34,7 +34,7 @@ from app.auth_user import AuthUser
 from app.config import settings
 from app.database import Base, engine, user_session
 from app.models.card import PokemonCard
-from app.services import bild_spiegel
+from app.services import bild_spiegel, scan_export
 from app.services.card_images import MEDIA_PATH_COLUMNS, safe_media_path
 
 logger = logging.getLogger(__name__)
@@ -317,6 +317,31 @@ Use: evaluation and fine-tuning of the card matcher (embed_experiment:
 """
 
 
+@router.get("/scan-dataset/summary", dependencies=[Depends(require_admin)])
+def scan_dataset_summary():
+    """Wie viele Kartenfotos in den Export kommen und welche nicht (und warum), je Konto."""
+    from app.models.user import User
+
+    def n(cond):
+        return func.count(PokemonCard.id).filter(cond)
+
+    with engine.connect() as conn:   # Core: bewusst ohne Benutzer-Filter (Admin-Übersicht)
+        rows = conn.execute(
+            select(User.username, User.display_name,
+                   n(scan_export.exportable()).label("exportable"),
+                   n(scan_export.not_exportable()).label("not_exportable"),
+                   n(scan_export.no_card()).label("no_card"),
+                   n(scan_export.no_original()).label("no_original"))
+            .select_from(User)
+            .join(PokemonCard, PokemonCard.user_id == User.id, isouter=True)
+            .group_by(User.id, User.username, User.display_name)
+            .order_by(User.username)
+        ).mappings().all()
+    users = [dict(r) for r in rows]
+    total = {k: sum(u[k] for u in users) for k in ("exportable", "not_exportable", "no_card", "no_original")}
+    return {**total, "users": [u for u in users if u["exportable"] or u["not_exportable"]]}
+
+
 @router.get("/scan-dataset", dependencies=[Depends(require_admin)])
 def scan_dataset():
     """
@@ -334,9 +359,7 @@ def scan_dataset():
                                c.set_edition, c.karten_nr, c.sprache, c.prize_pack,
                                func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).label("crop"),
                                c.bild_original_pfad, c.bild_quad)
-            .where(c.tcgdex_card_id.isnot(None),
-                   func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).isnot(None),
-                   c.bild_original_pfad.isnot(None))
+            .where(scan_export.exportable())
             .order_by(c.id)
         ).mappings().all()
 

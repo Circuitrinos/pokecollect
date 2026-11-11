@@ -29,7 +29,7 @@ from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.services.catalog_lookup import catalog_row_for
-from app.services import card_bulk, image_fallback, pokemon_com, regulation, sorting
+from app.services import card_bulk, image_fallback, pokemon_com, regulation, scan_export, sorting
 from app.services.tcgdex import is_allowed_image_url
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
@@ -83,7 +83,7 @@ def list_cards(
     generation: Optional[int] = None,
     search: Optional[str] = None,
     pokedex_nr: Optional[int] = None,
-    bild_status: Optional[str] = Query(None, pattern="^(eigenes_foto|externe_url|platzhalter)$"),
+    bild_status: Optional[str] = Query(None, pattern="^(eigenes_foto|externe_url|platzhalter|kein_export)$"),
     sort: str = Query("pokedex_nr", pattern="^(pokedex_nr|wert|hinzugefuegt_am|set|regulation)$"),
     reverse: bool = False,   # Reihenfolge umkehren; fehlende Werte bleiben am Ende
     # Untersortierungen: zuvor gewählte Sortierungen, z.B. "set,-wert"
@@ -200,6 +200,8 @@ def list_cards(
     elif bild_status == "platzhalter":
         q = q.where(PokemonCard.bild_karte_pfad.is_(None))
         q = q.where(PokemonCard.bild_pokedex_url.is_(None))
+    elif bild_status == "kein_export":     # Foto, das nicht in den Scan-Datensatz kommt
+        q = q.where(scan_export.not_exportable())
     if generation:
         r = GEN_RANGES.get(generation)
         if r:

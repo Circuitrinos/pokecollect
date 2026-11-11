@@ -1,10 +1,10 @@
 "use client";
 // Freunde: per genauem Benutzernamen anfragen, Anfragen annehmen/ablehnen,
-// Freunde entfernen — und Sammlungen, die Freunde mit dir teilen (nur ansehen).
+// Freunde entfernen. Mit dir geteilte Sammlungen stehen auf der Sammlungen-Seite.
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { friendsApi, sharedApi, FriendsOverview, FriendUser, SharedCollection } from "@/lib/api";
+import { friendsApi, FriendsOverview, FriendUser } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
 import { useI18n } from "@/lib/i18n";
 
@@ -30,14 +30,11 @@ export default function FriendsPage() {
   const { t } = useI18n();
   const me = useMe();
   const [data, setData] = useState<FriendsOverview | null>(null);
-  const [shared, setShared] = useState<SharedCollection[] | null>(null);
   const [username, setUsername] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const loadShared = () => sharedApi.list().then((r) => setShared(r.data)).catch(() => setShared([]));
   useEffect(() => {
     friendsApi.overview().then((r) => setData(r.data)).catch(() => toast.error(t.settings_load_error));
-    loadShared();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,7 +44,6 @@ export default function FriendsPage() {
       const r = await call();
       setData(r.data);
       if (ok) toast.success(ok);
-      loadShared();
       return true;
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
@@ -125,6 +121,9 @@ export default function FriendsPage() {
             ))}
           </ul>
         )}
+        <p className="text-gray-500 text-xs">
+          {t.friends_shared_where} <Link href="/collections" className="text-blue-400 hover:underline">{t.nav_collections} →</Link>
+        </p>
       </section>
 
       {data.outgoing.length > 0 && (
@@ -140,29 +139,6 @@ export default function FriendsPage() {
           </ul>
         </section>
       )}
-
-      <section className={SECTION} data-testid="friends-shared">
-        <h2 className={H2}>{t.friends_shared_title}</h2>
-        {!shared ? (
-          <p className="text-gray-500 text-sm">{t.detail_loading}</p>
-        ) : shared.length === 0 ? (
-          <p className="text-gray-500 text-sm">{t.friends_shared_none}</p>
-        ) : (
-          <ul className="divide-y divide-gray-700">
-            {shared.map((c) => (
-              <li key={c.id}>
-                <Link href={`/shared/${c.id}`} className="flex items-center justify-between gap-3 py-2 hover:bg-gray-800/50 rounded px-1">
-                  <span className="min-w-0">
-                    <span className="block text-white text-sm truncate">{c.name}</span>
-                    <span className="block text-gray-500 text-xs">{t.shared_by(nameOf(c.owner))} · {t.collections_card_count(c.karten_anzahl)}</span>
-                  </span>
-                  <span className="text-gray-400 text-sm">→</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
     </div>
   );
 }

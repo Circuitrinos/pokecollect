@@ -39,7 +39,7 @@ export default function SharedCollectionPage() {
     return (
       <div className="max-w-2xl mx-auto space-y-3" data-testid="shared-missing">
         <p className="text-gray-400">{t.shared_not_found}</p>
-        <Link href="/friends" className="text-blue-400 text-sm hover:underline">← {t.nav_friends}</Link>
+        <Link href="/collections" className="text-blue-400 text-sm hover:underline">← {t.nav_collections}</Link>
       </div>
     );
   }
@@ -55,7 +55,7 @@ export default function SharedCollectionPage() {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-4">
-        <Link href="/friends" className="text-gray-500 hover:text-white text-sm">← {t.nav_friends}</Link>
+        <Link href="/collections" className="text-gray-500 hover:text-white text-sm">← {t.nav_collections}</Link>
       </div>
       <div className="flex items-start justify-between mb-6 flex-wrap gap-3">
         <div className="min-w-0">

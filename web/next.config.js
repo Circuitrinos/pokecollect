@@ -17,8 +17,15 @@
 // Bild-URL (dort gilt der Laufzeit-Wert), entsteht genau hier ein Bruch.
 const apiOrigin = new URL(process.env.NEXT_PUBLIC_API_URL || "http://localhost:3010");
 
+// Kennung dieses Builds (jedes neue Image hat eine andere): Service Worker und
+// Seiten erkennen daran ein Update und laden die neue Fassung (siehe
+// src/app/sw.js/route.ts, src/components/PWARegister.tsx). BUILD_STAMP von
+// außen gewinnt, sonst der Zeitpunkt des Builds.
+const buildStamp = process.env.BUILD_STAMP || String(Date.now());
+
 const nextConfig = {
   output: "standalone",
+  env: { NEXT_PUBLIC_BUILD_STAMP: buildStamp },
   // #72 Panel-Nacharbeit: Lint gehoert ins explizite Gate (scripts/gates.sh) und
   // den CI-Schritt "npm run lint --max-warnings 0" -- NICHT in `next build`.
   // Ohne diese Zeile lintet Next (14 wie 15) beim Build automatisch, sobald eslint +

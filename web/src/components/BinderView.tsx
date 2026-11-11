@@ -73,6 +73,9 @@ const PAGE_CHROME_Y = 26 + 16;  // p-3 oben+unten + Rahmen + Seitenzahl darunter
 const MIN_POCKET = 56;
 const SPREAD_GAP = 16;
 const SIZE_KEY = "binder_card_size";
+// Bereich des Größenreglers (Taschenbreite in px)
+const SIZE_MIN = 70;
+const SIZE_MAX = 260;
 
 export default function BinderView({
   items, apiBase, placeholderEnabled = true, layout,
@@ -114,7 +117,7 @@ export default function BinderView({
   const [cardSize, setCardSize] = useState<number>(() => {
     if (typeof window !== "undefined") {
       const s = Number(localStorage.getItem(SIZE_KEY));
-      if (s >= 70 && s <= 260) return s;
+      if (s >= SIZE_MIN && s <= SIZE_MAX) return s;
     }
     return 140;
   });
@@ -164,14 +167,17 @@ export default function BinderView({
   // Platz, und so hoch, dass sie (hochgescrollt) samt Blätter-Leiste über der
   // Bottom-Nav sichtbar ist. Die Kartengröße aus ⚙ gilt als Obergrenze.
   const small = viewport.w > 0 && (viewport.w < 768 || viewport.h < 600);
+  // Ohne Grenze SIZE_MAX, NICHT die aktuelle Größe: sonst lag das Regler-Maximum
+  // immer bei der eingestellten Größe — kleiner ging, größer nie wieder.
   const fitW = containerWidth > 0
-    ? Math.floor((containerWidth - PAGE_PAD - (cols - 1) * GAP) / cols) : cardSize;
+    ? Math.floor((containerWidth - PAGE_PAD - (cols - 1) * GAP) / cols) : SIZE_MAX;
   const reserveY = (viewport.w < 768 ? 56 : 0) + 64;   // Bottom-Nav + Blätter-Leiste
   const fitH = small
-    ? Math.floor(((viewport.h - reserveY - PAGE_CHROME_Y - (rows - 1) * GAP) / rows) * (63 / 88)) : cardSize;
+    ? Math.floor(((viewport.h - reserveY - PAGE_CHROME_Y - (rows - 1) * GAP) / rows) * (63 / 88)) : SIZE_MAX;
   const maxFit = Math.max(MIN_POCKET, Math.min(fitW, fitH));        // größte Tasche, die passt
   const pocket = twoPage ? cardSize : Math.max(MIN_POCKET, Math.min(cardSize, maxFit));
   const compact = pocket < 120;    // schmale Taschen: nur Name + Seltenheit
+  const sliderMax = Math.max(SIZE_MIN, Math.min(SIZE_MAX, maxFit));
 
   const safePage = Math.min(Math.max(0, page), totalPages - 1);
 
@@ -521,9 +527,10 @@ export default function BinderView({
           <label className="flex items-center gap-2 text-sm text-gray-400">
             {t.binder_card_size}
             <input
-              type="range" min={70} max={Math.max(70, Math.min(260, maxFit))} step={10}
-              value={Math.min(cardSize, Math.max(70, maxFit))}
-              onChange={(e) => setSize(Number(e.target.value))}
+              type="range" min={SIZE_MIN} max={sliderMax} step={10}
+              value={Math.min(cardSize, Math.max(SIZE_MIN, maxFit))}
+              // Ganz rechts = so groß, wie es passt (der 10er-Schritt trifft das Maximum sonst nicht)
+              onChange={(e) => { const v = Number(e.target.value); setSize(v > sliderMax - 10 ? SIZE_MAX : v); }}
               className="accent-pokemon-yellow"
             />
           </label>

@@ -571,6 +571,7 @@ export const dataApi = {
   backup: () => api.get<Blob>("/data/backup", { responseType: "blob" }),
   // Scan-Fotos + bestätigte Karten als Trainings-/Testdatensatz (Admin)
   scanDataset: () => api.get<Blob>("/data/scan-dataset", { responseType: "blob" }),
+  scanDatasetSummary: () => api.get<ScanDatasetSummary>("/data/scan-dataset/summary"),
   // Destruktiv — das Backend verlangt confirm="JA_WIRKLICH"; das UI sichert
   // zusätzlich mit Checkbox + Bestätigungsdialog ab.
   restore: (file: File) => {
@@ -844,4 +845,10 @@ export const friendsApi = {
 export const sharedApi = {
   list: () => api.get<SharedCollection[]>("/shared"),
   get: (id: number) => api.get<SharedCollectionDetail>(`/shared/${id}`),
+};
+
+// Admin: welche Kartenfotos in den Scan-Datensatz kommen (je Konto)
+export type ScanDatasetCounts = { exportable: number; not_exportable: number; no_card: number; no_original: number };
+export type ScanDatasetSummary = ScanDatasetCounts & {
+  users: (ScanDatasetCounts & { username: string; display_name: string | null })[];
 };

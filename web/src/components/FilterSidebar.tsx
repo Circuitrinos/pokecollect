@@ -6,6 +6,7 @@ import { rarityOptionLabel } from "@/components/RarityBadge";
 import SearchableSelect, { SelectOption } from "@/components/SearchableSelect";
 import SortDirectionButton from "@/components/SortDirectionButton";
 import SortThenLine from "@/components/SortThenLine";
+import { useMe } from "@/lib/useMe";
 import { decodeThen, encodeThen, nextThen } from "@/lib/sortChain";
 import { useIsDesktop } from "@/lib/useIsDesktop";
 import { useSetOptions } from "@/lib/useSetOptions";
@@ -59,6 +60,7 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
   useEffect(() => {
     catalogApi.illustrators().then((r) => setIllustrators(r.data)).catch(() => {});
   }, []);
+  const isAdmin = useMe()?.is_admin ?? false;
   const update = (key: keyof Filters, value: unknown) =>
     onChange({ ...filters, [key]: value === "" ? undefined : value });
   // Neue Sortierung: die bisherige wird Untersortierung (in ihrer Richtung)
@@ -246,6 +248,7 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
           <option value="eigenes_foto">{t.filter_own_photo}</option>
           <option value="externe_url">{t.filter_external_url}</option>
           <option value="platzhalter">{t.filter_placeholder_only}</option>
+          {isAdmin && <option value="kein_export">{t.filter_not_exported}</option>}
         </select>
       </div>
 

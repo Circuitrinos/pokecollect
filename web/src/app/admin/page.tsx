@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { scanApi, catalogApi, dataApi, usersApi, AppSettingsUpdate, ScanUsage, ScanModelSuggestion, UserRow } from "@/lib/api";
+import { scanApi, catalogApi, dataApi, usersApi, AppSettingsUpdate, ScanDatasetSummary, ScanUsage, ScanModelSuggestion, UserRow } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
 import { useI18n } from "@/lib/i18n";
 import { MARK_LETTERS } from "@/lib/regulation";
@@ -40,6 +40,7 @@ export default function AdminPage() {
   const [restoring, setRestoring] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreAck, setRestoreAck] = useState(false);
+  const [scanSummary, setScanSummary] = useState<ScanDatasetSummary | null>(null);
   // Scan-Stufe B (Issue #57): bild-fähige Modell-Vorschläge für die Combobox.
   const [modelList, setModelList] = useState<ScanModelSuggestion[]>([]);
   const [modelSource, setModelSource] = useState<"live" | "curated" | null>(null);
@@ -75,6 +76,7 @@ export default function AdminPage() {
     catalogApi.meta().then((r) => setCatalogMeta(r.data)).catch(() => {});
     catalogApi.regulation().then((r) => setRegStatus(r.data)).catch(() => {});
     usersApi.list().then((r) => setUsers(r.data)).catch(() => setUsers(null));
+    dataApi.scanDatasetSummary().then((r) => setScanSummary(r.data)).catch(() => {});
   }, [isAdmin]);
 
   // Modell-Vorschläge laden, sobald ein Cloud-Provider aktiv ist / gewechselt wird.
@@ -489,6 +491,27 @@ export default function AdminPage() {
             {exportingScans ? t.settings_data_busy : t.settings_scan_dataset}
           </button>
         </div>
+        {scanSummary && (
+          <div className="space-y-2 text-xs" data-testid="scan-export-summary">
+            <p className="text-gray-400">{t.admin_export_ok(scanSummary.exportable)}</p>
+            {scanSummary.not_exportable > 0 && (
+              <div className="rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-amber-200 space-y-1">
+                <p className="font-medium">⚠ {t.admin_export_warn(scanSummary.not_exportable)}</p>
+                <ul className="list-disc pl-4 text-amber-100/90">
+                  {scanSummary.no_card > 0 && <li>{t.admin_export_no_card(scanSummary.no_card)}</li>}
+                  {scanSummary.no_original > 0 && <li>{t.admin_export_no_original(scanSummary.no_original)}</li>}
+                </ul>
+                <p className="text-amber-100/80">
+                  {scanSummary.users.filter((u) => u.not_exportable > 0)
+                    .map((u) => `${u.display_name || u.username}: ${u.not_exportable}`).join(" · ")}
+                </p>
+                {scanSummary.users.some((u) => u.username === me.username && u.not_exportable > 0) && (
+                  <Link href="/owned?bild_status=kein_export" className="inline-block text-blue-300 hover:underline">{t.admin_export_find}</Link>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="border-t border-gray-700 pt-3 space-y-3">
           <p className="text-white text-sm font-medium">{t.settings_restore_title}</p>
           <p className="text-gray-500 text-xs">{t.settings_restore_hint}</p>

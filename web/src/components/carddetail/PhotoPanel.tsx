@@ -8,6 +8,8 @@ import CardFinder from "@/components/carddetail/CardFinder";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { imageUrl, cardImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { useMe } from "@/lib/useMe";
+import { scanExportProblems } from "@/lib/scanExport";
 
 // Foto-Spalte der Kartendetailseite (Issue #14): Anzeige, Aufnahme/Upload,
 // Eck-Editor (Zuschnitt/Entzerrung), Bild-URL und Löschen. Herausgeschnitten
@@ -27,6 +29,8 @@ type Props = {
 
 export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageClick, onSwipeCard }: Props) {
   const { t } = useI18n();
+  // Nur Admins: Hinweis, wenn das Foto nicht in den Scan-Trainingsdatensatz kommt
+  const exportProblems = useMe()?.is_admin ? scanExportProblems(card) : [];
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -277,6 +281,15 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       </button>
       {finderOpen && (
         <CardFinder card={card} onClose={() => setFinderOpen(false)} onLinked={(c) => onCardSaved(c)} />
+      )}
+      {exportProblems.length > 0 && (
+        <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200" data-testid="scan-export-warning">
+          <p className="font-medium">⚠ {t.scan_export_card_warn}</p>
+          <ul className="mt-1 list-disc pl-4 space-y-0.5 text-amber-100/90">
+            {exportProblems.includes("no_card") && <li>{t.scan_export_no_card}</li>}
+            {exportProblems.includes("no_original") && <li>{t.scan_export_no_original}</li>}
+          </ul>
+        </div>
       )}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />

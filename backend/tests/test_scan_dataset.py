@@ -176,3 +176,45 @@ def test_scanfoto_braucht_original(client, pokes):
         assert pokes == []
     finally:
         client.delete(f"{API}/cards/{cid}")
+
+
+def test_nicht_exportierbare_fotos_zaehlen_und_finden(client, pokes):
+    """Admin-Übersicht + Kartenfilter: Fotos ohne bestätigte Karte oder ohne Original."""
+    from app.database import SessionLocal
+    from app.models.card import PokemonCard
+    bob = _make_user("bob-sum")
+    bc = _client_for(bob)
+    ok = _card(client, "sv03-140")
+    ohne_original = _card(client, "sv03-141")
+    ohne_karte = _card(client, "sv03-142")
+    bob_ohne = _card(bc, "base1-5")
+    try:
+        _upload(client, ok, _jpeg((1, 2, 3)), QUAD)
+        _upload(client, ohne_original, None)                     # ältere App / hochgeladenes Foto
+        _upload(client, ohne_karte, _jpeg((4, 5, 6)), QUAD)
+        _upload(bc, bob_ohne, None)
+        db = SessionLocal()
+        try:
+            db.get(PokemonCard, ohne_karte, execution_options={"all_users": True}).tcgdex_card_id = None
+            db.commit()
+        finally:
+            db.close()
+        before = client.get(f"{API}/data/scan-dataset/summary")
+        assert before.status_code == 200, before.text
+        s = before.json()
+        users = {u["username"]: u for u in s["users"]}
+        assert users["bob-sum"]["not_exportable"] == 1 and users["bob-sum"]["exportable"] == 0
+        assert s["not_exportable"] >= 3 and s["no_card"] >= 1 and s["no_original"] >= 2
+        assert bc.get(f"{API}/data/scan-dataset/summary").status_code == 403
+        # Filter in der eigenen Kartenliste
+        r = client.get(f"{API}/cards", params={"bild_status": "kein_export", "limit": 5000})
+        ids = {c["id"] for c in r.json()["items"]}
+        assert {ohne_original, ohne_karte} <= ids and ok not in ids and bob_ohne not in ids
+        # Export und Übersicht stimmen überein
+        z = zipfile.ZipFile(io.BytesIO(client.get(f"{API}/data/scan-dataset").content))
+        exported = {json.loads(x)["id"] for x in z.read("labels.jsonl").decode().splitlines()}
+        assert ok in exported and not ({ohne_original, ohne_karte, bob_ohne} & exported)
+    finally:
+        for cid in (ok, ohne_original, ohne_karte):
+            client.delete(f"{API}/cards/{cid}")
+        _drop_user(bob)
