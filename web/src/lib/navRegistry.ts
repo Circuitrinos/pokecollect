@@ -57,8 +57,9 @@ export type NavTarget = {
 };
 
 export const NAV_TARGETS: NavTarget[] = [
-  { key: "pokedex", href: "/", Icon: LayoutGrid, labelKey: "nav_collection", exact: true },
+  // Sammlungen zuerst: sie sind die Startseite ("/" leitet dorthin um)
   { key: "collections", href: "/collections", Icon: Library, labelKey: "nav_collections" },
+  { key: "pokedex", href: "/pokedex", Icon: LayoutGrid, labelKey: "nav_collection" },
   { key: "catalog", href: "/catalog", Icon: BookOpen, labelKey: "nav_catalog" },
   { key: "scan", href: "/scan", Icon: ScanLine, labelKey: "nav_scan_short" },
   { key: "wishlist", href: "/wishlist", Icon: Star, labelKey: "nav_wishlist" },
@@ -82,8 +83,8 @@ export const NAV_KEYS_IN_ORDER: NavKey[] = NAV_TARGETS.map((t) => t.key);
 
 // Technischer Default der BottomNav = die bisherigen 5 Schnellzugriffe.
 export const DEFAULT_BOTTOM_NAV: NavKey[] = [
-  "pokedex",
   "collections",
+  "pokedex",
   "scan",
   "wishlist",
   "settings",
@@ -107,7 +108,7 @@ export function scanHref(pathname: string): string {
   const q = new URLSearchParams();
   const m = pathname.match(/^\/collections\/(\d+)(?:\/|$)/);
   if (m) q.set("collection", m[1]);
-  if (pathname !== "/" && !pathname.startsWith("/scan")) q.set("from", pathname);
+  if (pathname !== "/" && pathname !== "/collections" && !pathname.startsWith("/scan")) q.set("from", pathname);
   const s = q.toString();
   return s ? `/scan?${s}` : "/scan";
 }

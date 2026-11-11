@@ -57,7 +57,7 @@ test.describe("Mobil — Anmeldung", () => {
 
 test.describe("Mobil — Kernflüsse", () => {
   test("die Oberfläche schaltet wirklich auf die schmale Fassung", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/pokedex");
     await expect(page.locator("nav.fixed")).toBeVisible();
     // Gegenprobe: die Kopfzeilen-Links sind unter der md-Grenze ausgeblendet.
     // Ohne sie wäre „nav.fixed sichtbar" auch bei einem breiten Schirm wahr.
@@ -77,7 +77,7 @@ test.describe("Mobil — Kernflüsse", () => {
       kartenname: name, pokedex_nr: 25, set_edition: "SVI", karten_nr: "063",
     });
     try {
-      await page.goto("/");
+      await page.goto("/pokedex");
       const kachel = page.locator(`a[href="/cards/${id}"]`);
       await expect(kachel).toBeVisible();
 

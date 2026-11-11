@@ -83,13 +83,13 @@ test.describe("Kernflüsse", () => {
   test("Kartenliste zeigt den Bestand und führt in die Detailansicht", async ({ page, request }) => {
     const t = await token(request);
     const name = einmalName("RT-Liste");
-    // pokedex_nr ist Pflicht für diese Ansicht: die Startseite ist der Pokédex
-    // und fragt mit pokedex_view=true — Karten ohne Nummer stehen dort nie.
+    // pokedex_nr ist Pflicht für diese Ansicht: der Pokédex (/pokedex)
+    // fragt mit pokedex_view=true — Karten ohne Nummer stehen dort nie.
     const id = await karteAnlegen(request, t, {
       kartenname: name, pokedex_nr: 25, set_edition: "SVI", karten_nr: "063", sprache: "DE",
     });
     try {
-      await page.goto("/");
+      await page.goto("/pokedex");
       const kachel = page.locator(`a[href="/cards/${id}"]`);
       await expect(kachel).toBeVisible();
       await expect(page.getByText(name).first()).toBeVisible();
@@ -164,7 +164,7 @@ test.describe("Kernflüsse", () => {
       });
       expect(hoch.status(), await hoch.text()).toBe(200);
 
-      await page.goto("/");
+      await page.goto("/pokedex");
       const foto = page.locator(`a[href="/cards/${idFoto}"] img`).first();
       await expect(foto).toBeVisible();
       await expect

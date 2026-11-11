@@ -18,15 +18,15 @@ export default function Navbar() {
       {/* Burger (☰, oben links): vollständige Navigation aus der Registry —
           mobil unverzichtbar, am Desktop Ergänzung zu den Links (Issue #34) */}
       <BurgerMenu />
-      <Link href="/" className="text-lg sm:text-xl font-bold text-pokemon-yellow shrink-0">
+      <Link href="/collections" className="text-lg sm:text-xl font-bold text-pokemon-yellow shrink-0">
         PokéCollect
       </Link>
       <span className="text-gray-600 text-xs hidden sm:inline">v{APP_VERSION}</span>
 
       {/* Desktop-Links (auf Mobile übernimmt die Bottom-Nav) */}
       <div className="hidden md:flex items-center gap-6">
-        <Link href="/" className="text-gray-300 hover:text-white text-sm">{t.nav_collection}</Link>
         <Link href="/collections" className="text-gray-300 hover:text-white text-sm">{t.nav_collections}</Link>
+        <Link href="/pokedex" className="text-gray-300 hover:text-white text-sm">{t.nav_collection}</Link>
         <Link href="/wishlist" className="text-gray-300 hover:text-white text-sm">{t.nav_wishlist}</Link>
         <Link href="/stats" className="text-gray-300 hover:text-white text-sm">{t.nav_statistics}</Link>
       </div>

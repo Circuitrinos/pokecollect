@@ -138,7 +138,7 @@ const restoreView = collection.view_mode !== "binder" ? collection.view_mode : n
 if (restoreView) await api("PUT", `/collections/${collection.id}`, token, { view_mode: "binder" });
 try {
   const desk = await open(DESKTOP);
-  await shot(desk.page, "/", "01_pokedex.png", { prepare: closeFilters });
+  await shot(desk.page, "/pokedex", "01_pokedex.png", { prepare: closeFilters });
   await shot(desk.page, `/cards/${card.id}`, "02_card_detail.png");
   await shot(desk.page, `/collections/${collection.id}`, "03_binder.png");
   await shot(desk.page, "/stats", "04_statistics.png", { fullPage: true });

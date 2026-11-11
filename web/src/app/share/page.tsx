@@ -38,7 +38,7 @@ export default function SharePage() {
     <div className="max-w-md mx-auto py-10 text-center space-y-4">
       <h1 className="text-white text-lg font-semibold">{t.share_title}</h1>
       <p className="text-gray-400 text-sm" data-testid="share-msg">{msg ?? t.share_working}</p>
-      {msg && <Link href="/" className="text-pokemon-blue text-sm hover:underline">{t.nav_collection}</Link>}
+      {msg && <Link href="/pokedex" className="text-pokemon-blue text-sm hover:underline">{t.nav_collection}</Link>}
     </div>
   );
 }
