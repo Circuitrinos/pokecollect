@@ -3,13 +3,15 @@
 // wählt per Checkbox, welche Ziele als Schnellzugriff unten erscheinen. Deckel
 // bei MAX_BOTTOM_NAV; alles Nicht-Gewählte bleibt über das Burger-Menü (☰)
 // erreichbar. Speicherung per-Gerät in localStorage (Issue #34).
-import { MAX_BOTTOM_NAV, NAV_TARGETS } from "@/lib/navRegistry";
+import { MAX_BOTTOM_NAV, visibleNavTargets } from "@/lib/navRegistry";
+import { useMe } from "@/lib/useMe";
 import { useBottomNavConfig } from "@/lib/useBottomNav";
 import { useI18n } from "@/lib/i18n";
 
 export default function BottomNavSettings() {
   const { t } = useI18n();
   const { keys, toggle } = useBottomNavConfig();
+  const isAdmin = useMe()?.is_admin ?? false;
   const atMax = keys.length >= MAX_BOTTOM_NAV;
 
   return (
@@ -17,7 +19,7 @@ export default function BottomNavSettings() {
       <p className="text-gray-400 text-xs">{t.settings_nav_hint}</p>
       <p className="text-gray-600 text-xs">{t.settings_nav_max(MAX_BOTTOM_NAV)}</p>
       <div className="space-y-1">
-        {NAV_TARGETS.map((target) => {
+        {visibleNavTargets(isAdmin).map((target) => {
           const { key, Icon, labelKey } = target;
           const checked = keys.includes(key);
           // Bei erreichtem Deckel nicht-gewählte Optionen sperren.

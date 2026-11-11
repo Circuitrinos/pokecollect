@@ -71,6 +71,7 @@ class CollectionResponse(CollectionBase):
     ziel_sprache: Optional[str] = None
     ziel_master_set: bool = False
     fortschritt: Optional[ProgressResponse] = None  # nur bei typ="set_ziel"
+    geteilt_mit: int = 0                            # mit so vielen Freunden geteilt
 
     model_config = {"from_attributes": True}
 

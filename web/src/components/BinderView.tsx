@@ -55,6 +55,8 @@ type Props = {
   isSelectable?: (card: Card) => boolean;
   /** Meldet die Karten der gerade sichtbaren Seite(n) – für „alle auf der Seite". */
   onVisibleIdsChange?: (ids: number[]) => void;
+  /** false: Karten öffnen keine Detailseite (z.B. Sammlung eines Freundes). */
+  linkCards?: boolean;
 };
 
 export const ASSIGN_DRAG_TYPE = "application/x-pokecollect-add";
@@ -76,7 +78,7 @@ export default function BinderView({
   items, apiBase, placeholderEnabled = true, layout,
   onLayoutChange, editable = false, onMoveToSlot, onAddAtSlot, onScanAtSlot,
   binderSlots, onAddPage, onDeleteLastPage, storageKey, highlightIds, ghosts,
-  selection, isSelectable, onVisibleIdsChange,
+  selection, isSelectable, onVisibleIdsChange, linkCards = true,
 }: Props) {
   const { t, lang } = useI18n();
   const { cols, rows } = parseLayout(layout);
@@ -403,12 +405,14 @@ export default function BinderView({
                     isSel ? "border-pokemon-blue bg-pokemon-blue text-white" : "border-white/80 bg-black/40 text-transparent"}`}>✓</span>
                 )}
                 <Link
-                  href={`/cards/${card.id}`}
+                  href={linkCards ? `/cards/${card.id}` : "#"}
+                  title={linkCards ? undefined : name}
                   draggable={false}
                   className="block w-full h-full"
                   role={selecting ? "checkbox" : undefined}
                   aria-checked={selecting ? isSel : undefined}
                   onClick={(e) => {
+                    if (!linkCards) { e.preventDefault(); return; }
                     if (longPress.suppressed(card.id)) { e.preventDefault(); return; }
                     if (selecting) { e.preventDefault(); if (canSelect) selection!.toggle(card.id); return; }
                     if (moving) {

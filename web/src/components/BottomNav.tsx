@@ -2,7 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
-import { NAV_TARGETS, NavTarget, isNavActive, navHref } from "@/lib/navRegistry";
+import { NavTarget, isNavActive, navHref, visibleNavTargets } from "@/lib/navRegistry";
+import { useMe } from "@/lib/useMe";
 import { useBottomNavConfig } from "@/lib/useBottomNav";
 
 export default function BottomNav() {
@@ -11,13 +12,14 @@ export default function BottomNav() {
   // Konfigurierbare Schnellzugriffe (localStorage, Issue #34). Alle Ziele lesen
   // aus der zentralen Registry — nichts hier hartkodiert (DRY).
   const { keys } = useBottomNavConfig();
+  const targets = visibleNavTargets(useMe()?.is_admin ?? false);
 
   // Scan-Seite hat eine eigene fixierte Aktionsleiste → Bottom-Nav ausblenden;
   // vor dem Login (Issue #1) ebenfalls kein App-Chrome
   if (pathname.startsWith("/scan") || pathname === "/login" || pathname === "/auth/callback") return null;
 
   const items = keys
-    .map((k) => NAV_TARGETS.find((target) => target.key === k))
+    .map((k) => targets.find((target) => target.key === k))
     .filter((x): x is NavTarget => Boolean(x));
 
   // Leere Auswahl → keine Leiste (alles bleibt über das Burger-Menü erreichbar).

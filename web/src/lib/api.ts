@@ -215,7 +215,28 @@ export type Collection = {
   ziel_sprache: string | null;
   ziel_master_set: boolean;
   fortschritt: CollectionProgress | null; // nur bei typ="set_ziel"
+  geteilt_mit?: number;                   // mit so vielen Freunden geteilt
 };
+
+// Freunde + geteilte Sammlungen (nur ansehen)
+export type FriendUser = { id: number; username: string; display_name: string | null };
+export type Friend = FriendUser & { since: string | null };
+export type FriendRequest = { id: number; user: FriendUser; created_at: string | null };
+export type FriendsOverview = { friends: Friend[]; incoming: FriendRequest[]; outgoing: FriendRequest[] };
+export type SharedCollection = {
+  id: number;
+  name: string;
+  beschreibung: string | null;
+  owner: FriendUser;
+  karten_anzahl: number;
+  binder_layout: string;
+  binder_slots: number | null;
+  view_mode: "grid" | "binder";
+  grid_sort: Collection["grid_sort"];
+  grid_sort_reverse: boolean;
+  grid_sort_then: string;
+};
+export type SharedCollectionDetail = SharedCollection & { cards: CollectionCard[] };
 
 // Soll-Slot einer Set-Sammlung: Katalog-Karte + erfüllt-Status (Issue #16)
 export type SollSlot = {
@@ -421,6 +442,9 @@ export const collectionApi = {
   setPositions: (id: number, positions: { card_id: number; position: number }[]) =>
     api.put(`/collections/${id}/cards/positions`, { positions }),
   forCard: (cardId: number) => api.get<Collection[]>(`/cards/${cardId}/collections`),
+  shares: (id: number) => api.get<FriendUser[]>(`/collections/${id}/shares`),
+  setShares: (id: number, friendIds: number[]) =>
+    api.put<FriendUser[]>(`/collections/${id}/shares`, { friend_ids: friendIds }),
   // Soll-Liste / Fortschritt einer Set-Sammlung (Issue #16)
   soll: (id: number) => api.get<SollSlot[]>(`/collections/${id}/soll`),
   addSoll: (id: number, tcgdexCardId: string, sollFolierung?: string | null) =>
@@ -807,4 +831,17 @@ export const scanApi = {
   commit: (payload: ScanCommitRequest) =>
     api.post<{ created: number; card_ids: number[]; all_card_ids?: number[]; copy_ids?: number[][];
       positions?: number[]; next_position?: number | null }>("/scan/commit", payload),
+};
+
+export const friendsApi = {
+  overview: () => api.get<FriendsOverview>("/friends"),
+  request: (username: string) => api.post<FriendsOverview>("/friends/requests", { username }),
+  accept: (requestId: number) => api.post<FriendsOverview>(`/friends/requests/${requestId}/accept`),
+  dropRequest: (requestId: number) => api.delete<FriendsOverview>(`/friends/requests/${requestId}`),
+  remove: (friendId: number) => api.delete<FriendsOverview>(`/friends/${friendId}`),
+};
+
+export const sharedApi = {
+  list: () => api.get<SharedCollection[]>("/shared"),
+  get: (id: number) => api.get<SharedCollectionDetail>(`/shared/${id}`),
 };

@@ -8,9 +8,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { NAV_TARGETS, isNavActive, navHref } from "@/lib/navRegistry";
+import { isNavActive, navHref, visibleNavTargets } from "@/lib/navRegistry";
+import { useMe } from "@/lib/useMe";
 
 export default function BurgerMenu() {
+  const isAdmin = useMe()?.is_admin ?? false;
   const { t } = useI18n();
   const pathname = usePathname() ?? "/";
   const [open, setOpen] = useState(false);
@@ -111,7 +113,7 @@ export default function BurgerMenu() {
               </button>
             </div>
             <nav className="flex-1 overflow-y-auto py-2" aria-label={t.nav_menu_title}>
-              {NAV_TARGETS.map((target) => {
+              {visibleNavTargets(isAdmin).map((target) => {
                 const active = isNavActive(pathname, target);
                 const { key, Icon, labelKey } = target;
                 const href = navHref(target, pathname);

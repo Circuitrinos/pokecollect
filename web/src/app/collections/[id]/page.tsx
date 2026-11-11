@@ -15,6 +15,8 @@ import { useSelection } from "@/lib/useSelection";
 import { GRID_SORTS, GridSort, sortCards } from "@/lib/cardSort";
 import { sortDir } from "@/lib/sortDirection";
 import SortDirectionButton from "@/components/SortDirectionButton";
+import ShareDialog from "@/components/ShareDialog";
+import { Share2 } from "lucide-react";
 import { sortThenText } from "@/components/SortThenLine";
 import { SortStep, decodeThen, encodeThen, nextThen } from "@/lib/sortChain";
 import BulkBar, { SelectToggle } from "@/components/BulkBar";
@@ -45,6 +47,7 @@ export default function CollectionDetailPage() {
   const [binderVisible, setBinderVisible] = useState<number[]>([]);   // Karten der sichtbaren Binder-Seite(n)
   // Sortierung im Raster (serverseitig je Sammlung); „manual" = Binder-Reihenfolge, umsortierbar
   const [gridSort, setGridSort] = useState<GridSort>("manual");
+  const [showShare, setShowShare] = useState(false);
   const [gridReverse, setGridReverse] = useState(false);
   // Untersortierungen: zuvor gewählte Sortierungen (Binder-Reihenfolge beginnt neu)
   const [gridThen, setGridThen] = useState<SortStep[]>([]);
@@ -311,8 +314,8 @@ export default function CollectionDetailPage() {
             <p className="text-gray-500 text-xs mt-1">{t.collections_card_count(collection?.karten_anzahl ?? cards.length)}</p>
           )}
         </div>
-        {!isGoal && (
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+        {!isGoal && (<>
             <ViewToggle value={view} onChange={changeView} />
             {view === "grid" && !isGoal && cards.length > 1 && (
               <span className="flex items-center gap-1.5">
@@ -339,9 +342,20 @@ export default function CollectionDetailPage() {
             >
               {t.collection_create_new}
             </Link>
-          </div>
-        )}
+        </>)}
+          {collection && (
+            <button type="button" onClick={() => setShowShare(true)} data-testid="share-button"
+              className="inline-flex items-center gap-1.5 bg-gray-700 text-white text-sm px-3 py-1.5 rounded hover:bg-gray-600">
+              <Share2 className="h-4 w-4" aria-hidden />
+              {collection.geteilt_mit ? t.share_count(collection.geteilt_mit) : t.share_button}
+            </button>
+          )}
+        </div>
       </div>
+      {showShare && collection && (
+        <ShareDialog collectionId={collection.id} name={collection.name} onClose={() => setShowShare(false)}
+          onSaved={(n) => setCollection((c) => (c ? { ...c, geteilt_mit: n } : c))} />
+      )}
 
       {/* Zuweisungs-Panel */}
       {!isGoal && showAssign && (

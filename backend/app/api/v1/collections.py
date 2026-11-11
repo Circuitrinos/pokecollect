@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.card import PokemonCard
 from app.models.collection import Collection, CollectionSoll, collection_cards
+from app.models.friends import CollectionShare
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.card import CardResponse
 from app.schemas.collection import (
@@ -12,6 +13,9 @@ from app.schemas.collection import (
     CollectionUpdate, PositionsRequest, ProgressResponse, ReorderRequest,
     SlotRequest, SollSlotCreate, SollSlotResponse, SollSlotUpdate,
 )
+from app.schemas.friends import FriendUser, SharesUpdate
+from app.services import friends as friends_svc
+from app.tenancy import current_user_id
 from app.services import catalog as catalog_svc
 from app.services import set_goal
 from app.services.collection_slots import next_free_position
@@ -54,6 +58,8 @@ def _to_response(db: Session, coll: Collection, count: int) -> CollectionRespons
         fortschritt=(
             ProgressResponse(**set_goal.progress(db, coll)) if typ == "set_ziel" else None
         ),
+        geteilt_mit=db.scalar(select(func.count()).select_from(CollectionShare)
+                              .where(CollectionShare.collection_id == coll.id)) or 0,
     )
 
 
@@ -315,3 +321,36 @@ def get_progress(collection_id: int, db: Session = Depends(get_db)):
     """Fortschritt "X / Soll" eines Sammelziels."""
     coll = _collection_or_404(collection_id, db)
     return ProgressResponse(**set_goal.progress(db, coll))
+
+
+# ── Mit Freunden teilen (nur ansehen) ─────────────────────────────────────────
+
+def _share_list(db: Session, collection_id: int) -> list[FriendUser]:
+    ids = set(db.scalars(select(CollectionShare.friend_id).where(CollectionShare.collection_id == collection_id)))
+    users = friends_svc.active_users(db, ids)
+    return sorted((FriendUser(id=u.id, username=u.username, display_name=u.display_name) for u in users.values()),
+                  key=lambda u: (u.display_name or u.username).lower())
+
+
+@router.get("/{collection_id}/shares", response_model=list[FriendUser])
+def get_shares(collection_id: int, db: Session = Depends(get_db)):
+    _collection_or_404(collection_id, db)          # nur die eigene Sammlung
+    return _share_list(db, collection_id)
+
+
+@router.put("/{collection_id}/shares", response_model=list[FriendUser])
+def set_shares(collection_id: int, data: SharesUpdate, db: Session = Depends(get_db)):
+    """Freigabe-Liste ersetzen; nur bestehende Freunde sind erlaubt."""
+    _collection_or_404(collection_id, db)
+    uid = current_user_id(db)
+    wanted = set(data.friend_ids)
+    if uid is None or not wanted <= friends_svc.friend_ids(db, uid):
+        raise HTTPException(status_code=422, detail="Nur mit Freunden teilbar")
+    current = set(db.scalars(select(CollectionShare.friend_id).where(CollectionShare.collection_id == collection_id)))
+    for fid in current - wanted:
+        db.execute(CollectionShare.__table__.delete().where(
+            CollectionShare.collection_id == collection_id, CollectionShare.friend_id == fid))
+    for fid in wanted - current:
+        db.add(CollectionShare(collection_id=collection_id, friend_id=fid))
+    db.commit()
+    return _share_list(db, collection_id)

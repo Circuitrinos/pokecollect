@@ -19,6 +19,8 @@ type Props = {
   renderOverlay?: (card: Card) => ReactNode;
   /** Auswahl-Modus: Tippen wählt (nur besessene Karten), statt die Karte zu öffnen. */
   selection?: { active: boolean; ids: Set<number>; toggle: (id: number) => void } | null;
+  /** false: Karten öffnen keine Detailseite (z.B. Sammlung eines Freundes). */
+  linkCards?: boolean;
 };
 
 const RARITY_BORDER: Record<string, string> = {
@@ -41,7 +43,7 @@ const RARITY_BORDER: Record<string, string> = {
   "Promo":                     "border-teal-400",
 };
 
-export default function CardGrid({ cards, apiBase, placeholderEnabled = true, renderOverlay, selection }: Props) {
+export default function CardGrid({ cards, apiBase, placeholderEnabled = true, renderOverlay, selection, linkCards = true }: Props) {
   const { t, lang } = useI18n();
 
   if (!cards.length) {
@@ -76,8 +78,10 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
             className={selectable ? "cursor-pointer" : "cursor-not-allowed"}>
             {children}
           </div>
-        ) : (
+        ) : linkCards ? (
           <Link href={`/cards/${card.id}`} onClick={() => rememberCardOrder(cards.map((c) => c.id))}>{children}</Link>
+        ) : (
+          <div title={displayName}>{children}</div>
         );
 
         return (

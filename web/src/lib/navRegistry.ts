@@ -12,6 +12,8 @@ import {
   BarChart3,
   Package,
   Settings,
+  ShieldCheck,
+  Users,
 } from "lucide-react";
 
 // Stabile Schlüssel für localStorage — bewusst getrennt vom Pfad, damit ein
@@ -23,8 +25,10 @@ export type NavKey =
   | "scan"
   | "wishlist"
   | "stats"
+  | "friends"
   | "sealed"
-  | "settings";
+  | "settings"
+  | "admin";
 
 // i18n-Keys der Labels (alle string-wertig in web/src/lib/i18n.tsx) — als Union
 // getippt, damit t[labelKey] ohne Cast wieder ein string ist.
@@ -35,8 +39,10 @@ export type NavLabelKey =
   | "nav_scan_short"
   | "nav_wishlist"
   | "nav_statistics"
+  | "nav_friends"
   | "nav_sealed"
-  | "nav_settings";
+  | "nav_settings"
+  | "nav_admin";
 
 export type NavTarget = {
   key: NavKey;
@@ -46,6 +52,8 @@ export type NavTarget = {
   // exact: aktiver Zustand nur bei exakter Pfadgleichheit (nötig für "/", das
   // sonst jeden Pfad als Präfix matchen würde).
   exact?: boolean;
+  // nur für Admins sichtbar (Menü, BottomNav und deren Konfiguration)
+  adminOnly?: boolean;
 };
 
 export const NAV_TARGETS: NavTarget[] = [
@@ -55,11 +63,18 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: "scan", href: "/scan", Icon: ScanLine, labelKey: "nav_scan_short" },
   { key: "wishlist", href: "/wishlist", Icon: Star, labelKey: "nav_wishlist" },
   { key: "stats", href: "/stats", Icon: BarChart3, labelKey: "nav_statistics" },
+  { key: "friends", href: "/friends", Icon: Users, labelKey: "nav_friends" },
   // Sealed-Seite baut Issue #35 parallel — Link jetzt schon aufnehmen, auch wenn
   // die Route bis zum Merge von #35 noch 404t.
   { key: "sealed", href: "/sealed", Icon: Package, labelKey: "nav_sealed" },
   { key: "settings", href: "/settings", Icon: Settings, labelKey: "nav_settings" },
+  { key: "admin", href: "/admin", Icon: ShieldCheck, labelKey: "nav_admin", adminOnly: true },
 ];
+
+/** Ziele, die dieser Benutzer sehen darf (Admin-Ziele nur für Admins). */
+export function visibleNavTargets(isAdmin: boolean): NavTarget[] {
+  return NAV_TARGETS.filter((target) => !target.adminOnly || isAdmin);
+}
 
 // Kanonische Reihenfolge der Schlüssel — die BottomNav zeigt gewählte Ziele
 // immer in dieser Reihenfolge (deterministisch, unabhängig von der Klickfolge).
