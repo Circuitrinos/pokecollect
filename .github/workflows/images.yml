@@ -14,9 +14,17 @@ permissions:
   contents: read
   packages: write
 
+# A newer push replaces a build that is still queued or running (:latest only
+# needs the newest commit), so one stuck run can't hold up the next.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Without a limit a hung build runs for 6 hours. A normal build takes a few minutes.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
