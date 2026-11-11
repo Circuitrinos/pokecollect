@@ -15,6 +15,7 @@ import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
 import { priceSourceKey, priceSourceRate, priceSourceVariant } from "@/lib/priceSource";
+import FoilVariants from "@/components/carddetail/FoilVariants";
 
 // Detail-/Edit-Spalte der Kartendetailseite (Issue #14): Anzeige aller Felder,
 // Edit-Modus über die gemeinsame Formular-Logik (CardFormFields/useCardForm,
@@ -282,6 +283,10 @@ export default function EditForm({
         {(Boolean(((form as Record<string, unknown>).folierung as string | null)?.includes("Holo"))
           || Boolean((form as Record<string, unknown>).muster)) &&
           field("muster", t.field_pattern, "select", enums?.muster)}
+        <FoilVariants key="foil_variants" card={card} editing={editing}
+          folierung={(form as Record<string, unknown>).folierung as string | null}
+          muster={(form as Record<string, unknown>).muster as string | null}
+          onPick={(c) => setForm((f) => ({ ...f, folierung: c.folierung, muster: c.muster }))} />
         {field("sprache", t.field_language, "select", enums?.sprache)}
         {field("zustand", t.field_condition, "select", enums?.zustand)}
         {field("besessen", t.field_owned, "boolean")}

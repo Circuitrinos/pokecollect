@@ -223,6 +223,22 @@ def list_cards(
     )
 
 
+def catalog_variants(row: TcgdexCatalog) -> dict:
+    """Welche Drucke es von der Karte gibt: TCGdex-Varianten + TCGplayer-Muster-Produkte."""
+    from app.services.tcgcsv import PATTERN_TO_MUSTER
+
+    keys = [k for k in (row.patterns or "").split(",") if k]
+    if row.price_usd_pokeball is not None and "pokeball" not in keys:
+        keys.append("pokeball")
+    if row.price_usd_masterball is not None and "masterball" not in keys:
+        keys.append("masterball")
+    order = list(PATTERN_TO_MUSTER)
+    keys.sort(key=lambda k: order.index(k) if k in order else len(order))
+    return {"normal": row.variants_normal, "reverse": row.variants_reverse, "holo": row.variants_holo,
+            "first_edition": row.variants_firstedition,
+            "patterns": [PATTERN_TO_MUSTER.get(k, k) for k in keys]}
+
+
 def _card_response(db: Session, card: PokemonCard) -> CardResponse:
     """
     CardResponse + TCGplayer-$-Beilage aus dem Katalog-Cache (Epic #41; case-
@@ -251,6 +267,7 @@ def _card_response(db: Session, card: PokemonCard) -> CardResponse:
             resp.katalog_preis_usd_stand = row.price_usd_updated
         if row.regulation_checked:
             resp.legal_expanded = row.legal_expanded
+        resp.katalog_varianten = catalog_variants(row)
     # Herkunft des zuletzt gesetzten Werts (jüngster Verlaufseintrag) — das UI
     # beschriftet den Wert damit statt pauschal „Cardmarket" zu behaupten.
     resp.wert_quelle = db.scalar(

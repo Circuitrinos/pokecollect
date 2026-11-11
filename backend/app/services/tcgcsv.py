@@ -130,7 +130,24 @@ def product_pattern(product: dict) -> Optional[str]:
         return "masterball"
     if "pokeballpattern" in n:
         return "pokeball"
+    # Ascended Heroes (2026): je Pokémon zwei Reverse-Drucke — Energie-Symbol
+    # oder ein Ball/Team-Rocket-Symbol, bei TCGplayer als „(Energy Symbol
+    # Pattern)", „(Love Ball)", „(Friend Ball)" … geführt
+    if "(energysymbol" in n:
+        return "energy"
+    for ball in ("love", "quick", "friend", "dusk"):
+        if f"({ball}ball" in n:
+            return f"{ball}ball"
+    if "(teamrocket" in n or "(rocketpattern" in n:
+        return "teamrocket"
     return None
+
+
+# Muster-Schlüssel (Katalog, TCGplayer-Produkte) → Wert im Feld „Muster" der Karte
+PATTERN_TO_MUSTER = {
+    "pokeball": "Pokéball", "masterball": "Masterball", "energy": "Energie", "loveball": "Love Ball",
+    "quickball": "Quick Ball", "friendball": "Friend Ball", "duskball": "Dusk Ball", "teamrocket": "Team Rocket R",
+}
 
 
 def usd_for_subtype(prices: list[dict], product_id: int, subtype: str) -> Optional[float]:

@@ -1,5 +1,44 @@
 # Changelog
 
+## [v1.14.0] – 2026-11-11 (Decks, Bildsuche, Zuschnitte mit Vorschlag, Folien-Muster) — backup
+
+**Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect neue
+Tabellen für Decks und neue Spalten an (Deck je Karte, Stufe und Trainer-Art im
+Katalog, Play!-Stempel, Muster-Drucke); vorhandene Daten bleiben unverändert.
+Auch den Bild-Abgleich (matcher) aktualisieren — Zuschnitt-Vorschläge und die
+Folien-Werkzeuge brauchen seine neue Version.
+
+### Neu
+- **Decks:** Decklisten mit Legalitätsprüfung (60 Karten, höchstens 4 gleichen
+  Namens, Basis-Pokémon, ACE SPEC, Strahlende Pokémon, Standard/Expanded/
+  Unbegrenzt), Import und Export im Format von Pokémon TCG Live, „Mit eigenen
+  Karten füllen“ (genauer Druck zuerst, dann die günstigsten), Scannen direkt
+  ins Deck. Jede Karte steckt in höchstens einem Deck und zeigt es (🃏).
+- **Bild finden** (Admin) für Katalogkarten ohne Bild: Vorschläge aus anderen
+  Sprachen und pokemontcg.io, Google-/Bing-Suche, Bild einfügen oder hochladen;
+  eigene Karten ohne Bild bekommen es mit. Katalogfilter „Ohne Bild“.
+- **Zuschnitt korrigieren mit Vorschlag:** grobe Ecken genügen — nach jedem
+  Loslassen schlägt der Bild-Abgleich die genauen vor (gestrichelt, grün wenn
+  er passt); übernehmen oder bei den eigenen Ecken bleiben.
+- **Schwache Scans → „Alle Zuschnitte korrigieren“:** probiert die Vorschläge
+  für alle schwachen Scans, zeigt alt und neu nebeneinander und speichert erst
+  nach Bestätigung („Alle bestandenen übernehmen“).
+- **Play!-Stempel markieren** auf Prize-Pack-Fotos (Kartenseite, Admin-Liste)
+  — Trainingsdaten für einen Stempel-Detektor im Scan-Datensatz.
+- **Folien-Muster:** die Kartenseite zeigt, welche Drucke es gibt („Gibt es
+  als: Reverse Holo · Pokéball …“), ein Tipp setzt Folierung und Muster, „?“
+  erklärt die Muster. Neue Muster: Love/Quick/Friend/Dusk Ball, Cracked Ice,
+  Crosshatch; Ascended-Heroes-Muster werden erkannt.
+- **Scan-Datensatz:** Folierung, Muster und Katalogbild je Foto, Stempel-Boxen
+  (stamp.yaml); im Bild-Abgleich die Werkzeuge holo_diff.py (Folie per
+  Differenz zum Katalogbild) und holo_cluster.py (Folien in Gruppen sortieren).
+
+### Geändert
+- **Zuschnitt-Vorschläge** schwingen ein: der Bild-Abgleich schneidet entlang
+  seines Vorschlags neu und bessert nach, bis die Ecken stillstehen.
+- Bilder von images.pokemontcg.io sind als Kartenbild erlaubt (optional
+  POKEMONTCG_API_KEY).
+
 ## [v1.13.0] – 2026-11-11 (Scan-Prüfung, Scan-Kontrolle je Karte, englische Oberfläche) — backup
 
 **Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect eine

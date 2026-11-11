@@ -783,6 +783,14 @@ const DE = {
   corner_suggest_weak: (stats: string) => `Vorschlag noch schwach · ${stats}`,
   corner_suggest_none: "Karte in diesen Ecken nicht erkannt — Ecken selbst setzen",
   corner_suggest_use: "Vorschlag übernehmen",
+  foil_exists_as: "Gibt es als:",
+  foil_guide_title: "Folierung & Muster bestimmen",
+  foil_guide: "1. Wo glänzt die Folie? Nur im Bild = Holo · überall außer im Bild = Reverse Holo · gar nicht = Normal.\n"
+    + "2. Ein besonderes Bild in der Folie? Nur dann ein Muster wählen — das übliche Reverse-Muster der Serie (z. B. Typ-Symbole in Kacheln) bleibt leer.\n"
+    + "• Pokéball / Masterball: kleine Bälle überall in der Reverse-Folie (Prismatic Evolutions, Black Bolt/White Flare; 151 nur JP/KR/CN)\n"
+    + "• Energie, Love/Quick/Friend/Dusk Ball, Team Rocket R: Ascended Heroes (2026), zwei Reverse-Drucke je Pokémon\n"
+    + "• Cosmos: Punkte und Kreise (Holo bis 2011, heute oft Promos) · Cracked Ice: scharfe Splitter wie Glasbruch (Themendecks, Blister-Promos) · Crosshatch: feines Kreuzmuster (Play!-Pokémon-Preiskarten)\n"
+    + "Faustregel: führt TCGplayer die Karte als eigenes Produkt („(Poke Ball Pattern)\"), hat sie ein Muster. Die Knöpfe oben zeigen, was es von dieser Karte gibt.",
   fix_crop: "Zuschnitt korrigieren",
   fix_crop_saved: "Zuschnitt gespeichert",
   pic_find: "Bild finden",
@@ -1765,6 +1773,14 @@ const EN: typeof DE = {
   corner_suggest_weak: (stats: string) => `Suggestion still weak · ${stats}`,
   corner_suggest_none: "Card not recognized in these corners — set them yourself",
   corner_suggest_use: "Use suggestion",
+  foil_exists_as: "Exists as:",
+  foil_guide_title: "Telling foiling & pattern apart",
+  foil_guide: "1. Where does the foil shine? Only in the art = Holo · everywhere except the art = Reverse Holo · nowhere = Normal.\n"
+    + "2. Is there a special picture in the foil? Only then pick a pattern — the series' usual reverse design (e.g. type symbols in tiles) stays empty.\n"
+    + "• Pokéball / Masterball: small balls all over the reverse foil (Prismatic Evolutions, Black Bolt/White Flare; 151 only JP/KR/CN)\n"
+    + "• Energy, Love/Quick/Friend/Dusk Ball, Team Rocket R: Ascended Heroes (2026), two reverse prints per Pokémon\n"
+    + "• Cosmos: dots and circles (holo until 2011, now often promos) · Cracked Ice: sharp shards like broken glass (theme decks, blister promos) · Crosshatch: fine criss-cross (Play! Pokémon prize cards)\n"
+    + "Rule of thumb: if TCGplayer lists the card as its own product (\"(Poke Ball Pattern)\"), it has a pattern. The buttons above show which prints exist of this card.",
   fix_crop: "Fix crop",
   fix_crop_saved: "Crop saved",
   pic_find: "Find picture",

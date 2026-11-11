@@ -501,6 +501,8 @@ async def fill_region_from_tcgplayer(db: Session, region: str = "ja") -> dict:
                 # AUTHORITATIV (found-or-NULL) — sonst hielte der gemeinsame
                 # Zeitstempel einen verschwundenen Varianten-Preis ewig frisch
                 # (Panel-Fund). Ohne Preisdaten (Ausfall) nichts anfassen.
+                # Welche Muster-Drucke es von dieser Karte gibt (eigene TCGplayer-Produkte)
+                vals["patterns"] = ",".join(sorted(k for k in slots if k != "base")) or None
                 if price_rows:
                     vals["price_usd_holo"] = tcgcsv.usd_for_subtype(
                         price_rows, pid, "Holofoil") if pid is not None else None

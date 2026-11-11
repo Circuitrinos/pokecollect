@@ -116,6 +116,7 @@ def test_fill_cached_varianten_preise(db, monkeypatch):
     assert row.price_usd_reverse == Decimal("0.26")
     assert row.price_usd_pokeball == Decimal("0.60")
     assert row.price_usd_masterball == Decimal("12.78")
+    assert row.patterns == "masterball,pokeball"
     assert row.price_usd_updated is not None     # Stand gilt für alle $-Spalten
     # kein Normal-Subtyp → market_usd_for fällt auf den ersten Preissatz zurück
     # (etablierte Semantik: bei holo-only-Karten IST Holofoil die Grundform;
@@ -253,6 +254,28 @@ def test_product_pattern_schreibvarianten():
     assert product_pattern({"name": "X (Masterball Pattern)"}) == "masterball"
     assert product_pattern({"name": "Gothitelle"}) is None
     assert product_pattern({}) is None
+    # Ascended Heroes: Energie-Symbol und Bälle/Team Rocket als eigene Produkte
+    assert product_pattern({"name": "Raboot (Energy Symbol Pattern)"}) == "energy"
+    assert product_pattern({"name": "Swirlix (Love Ball)"}) == "loveball"
+    assert product_pattern({"name": "Drampa (Friend Ball)"}) == "friendball"
+    assert product_pattern({"name": "X (Quick Ball Pattern)"}) == "quickball"
+    assert product_pattern({"name": "X (Dusk Ball)"}) == "duskball"
+    assert product_pattern({"name": "Team Rocket's Meowth"}) is None
+
+
+def test_card_shows_which_prints_exist(client, db):
+    """Kartenseite: Drucke laut Katalog (Varianten + Muster-Produkte) zum Wählen von Folierung/Muster."""
+    db.add(TcgdexCatalog(card_id="test63-pv", region="west", variants_normal=False, variants_reverse=True,
+                         variants_holo=False, patterns="energy,loveball", price_usd_pokeball=Decimal("0.5")))
+    db.commit()
+    card = PokemonCard(kartenname=_TESTNAME, besessen=True, tcgdex_card_id="test63-pv")
+    db.add(card)
+    db.commit()
+    v = client.get(f"/api/v1/cards/{card.id}").json()["katalog_varianten"]
+    assert v == {"normal": False, "reverse": True, "holo": False, "first_edition": None,
+                 "patterns": ["Pokéball", "Energie", "Love Ball"]}
+    enums = client.get("/api/v1/cards/meta/enums").json()["muster"]
+    assert {"Love Ball", "Cracked Ice", "Crosshatch"} <= set(enums)
 
 
 def test_fill_muster_only_nummer_setzt_keine_basisdaten(db, monkeypatch):

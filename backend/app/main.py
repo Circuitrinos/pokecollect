@@ -383,6 +383,8 @@ def _run_light_migrations():
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS trainer_type TEXT",
         # Play!-Stempel im Kartenfoto (Trainingsdaten für einen Stempel-Detektor)
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS stamp_quad TEXT",
+        # Muster-Drucke je Katalogkarte (TCGplayer: Pokéball, Masterball, Energie-Symbol, Love Ball …)
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS patterns TEXT",
     ]
     with engine.begin() as conn:
         for stmt in stmts:

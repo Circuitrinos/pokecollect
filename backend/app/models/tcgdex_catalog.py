@@ -85,6 +85,9 @@ class TcgdexCatalog(Base):
     price_usd_reverse = Column(Numeric(10, 2), nullable=True)
     price_usd_pokeball = Column(Numeric(10, 2), nullable=True)
     price_usd_masterball = Column(Numeric(10, 2), nullable=True)
+    # Muster-Drucke, die es von der Karte gibt (TCGplayer-Produkte, z. B.
+    # "pokeball,masterball" oder "energy,loveball"), NULL = keine/unbekannt
+    patterns = Column(Text, nullable=True)
     variants_normal = Column(Boolean, nullable=True)
     variants_reverse = Column(Boolean, nullable=True)
     variants_holo = Column(Boolean, nullable=True)

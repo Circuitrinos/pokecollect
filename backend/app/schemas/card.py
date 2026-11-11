@@ -38,8 +38,8 @@ FOLIERUNG_VALUES = ["Normal", "Holo", "Reverse Holo"]
 # Muster/Pattern der Folierung als eigene Dimension. Auswahlfeld statt
 # Checkboxen (Owner-Grilling): Muster schließen sich gegenseitig aus.
 MUSTER_VALUES = [
-    "Pokéball", "Masterball", "Cosmos", "Etched", "Bubble",
-    "Sterne", "Energie", "Team Rocket R", "Sonstiges",
+    "Pokéball", "Masterball", "Energie", "Love Ball", "Quick Ball", "Friend Ball", "Dusk Ball",
+    "Team Rocket R", "Cosmos", "Cracked Ice", "Crosshatch", "Etched", "Bubble", "Sterne", "Sonstiges",
 ]
 
 SPRACHE_VALUES = ["DE", "EN", "CN", "JP", "FR", "ES", "IT"]
@@ -214,6 +214,9 @@ class CardResponse(CardBase):
     bild_scan_pfad: Optional[str] = None
     # Gibt es ein Katalogbild, auf das sich umschalten lässt? (nur Einzelkarten)
     katalog_bild: Optional[bool] = None
+    # Drucke, die es von dieser Karte laut Katalog gibt (Folierung/Muster wählen):
+    # {"normal", "reverse", "holo", "first_edition": bool|None, "patterns": ["Pokéball", …]}
+    katalog_varianten: Optional[dict] = None
     # Deck, in dem die Karte steckt (höchstens eines)
     deck_id: Optional[int] = None
     deck_name: Optional[str] = None

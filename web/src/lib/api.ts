@@ -95,6 +95,9 @@ export type Card = {
   bild_original_pfad: string | null;
   bild_scan_pfad?: string | null;     // eigenes Scan-Foto, während das Katalogbild angezeigt wird
   katalog_bild?: boolean | null;      // Katalogbild vorhanden (nur Einzelkarten)
+  // Drucke laut Katalog (Folierung/Muster wählen), nur Einzelkarten-Antworten
+  katalog_varianten?: { normal: boolean | null; reverse: boolean | null; holo: boolean | null;
+    first_edition: boolean | null; patterns: string[] } | null;
   deck_id?: number | null;            // Deck, in dem die Karte steckt (höchstens eines)
   deck_name?: string | null;
   // TCGdex-Anreicherung (v0.7.0)
