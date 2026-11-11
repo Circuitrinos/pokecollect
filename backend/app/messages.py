@@ -69,6 +69,7 @@ EN: dict[str, str] = {
     "Kein Kartenbild in dieser Sprache": "There is no card image in this language",
     "Kein Originalfoto zum Neu-Zuschneiden": "There is no original photo to crop again",
     "Scan-Prüfung nicht gefunden": "Scan check not found",
+    "Bild-Abgleich nicht erreichbar": "The image matcher can't be reached",
     # Bilder
     "Bild nicht verfügbar": "Image not available",
     "Bild zu groß (max. 12 MB)": "Image too large (max. 12 MB)",

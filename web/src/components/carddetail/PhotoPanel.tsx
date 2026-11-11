@@ -389,7 +389,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       </div>
       {check?.status === "low" && (
         <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200" data-testid="weak-scan-warning">
-          ⚠ {t.weak_card_warn(check.inliers, check.corner_err)}{check.suggested_quad ? ` ${t.weak_card_suggest}` : ""}
+          ⚠ {t.weak_card_warn(check.inliers, check.inliers >= 12 ? check.corner_err : null)}{check.suggested_quad ? ` ${t.weak_card_suggest}` : ""}
         </div>
       )}
       {canRecrop ? (

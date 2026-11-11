@@ -3,8 +3,12 @@
 GET  /scan-quality             Stand des Auftrags, Zähler, Liste (Standard: schwache)
 POST /scan-quality/run         Prüfung starten (nur Geändertes; full=true: alles)
 POST /scan-quality/{id}/dismiss  als in Ordnung markieren (bis sich das Foto ändert)
+POST /scan-quality/{id}/check    diese Karte sofort neu prüfen (nach dem Korrigieren)
 """
 
+import json
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 
@@ -13,8 +17,19 @@ from app.auth_user import AuthUser
 from app.database import SessionLocal, engine
 from app.models.card import PokemonCard
 from app.models.scan_check import ScanCheck
+from app.models.tcgdex_catalog import TcgdexCatalog
 from app.models.user import User
 from app.services import scan_export, scan_quality
+from app.services.bild_spiegel import spiegel_pfad
+from app.services.tcgdex import is_allowed_image_url
+
+
+def _quad(raw):
+    try:
+        q = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return q if isinstance(q, list) and len(q) == 4 else None
 
 router = APIRouter(prefix="/scan-quality", tags=["scan-quality"], dependencies=[Depends(require_admin)])
 
@@ -27,6 +42,7 @@ def overview(
 ):
     c = PokemonCard.__table__.c
     s = ScanCheck.__table__.c
+    k = TcgdexCatalog.__table__.c
     with engine.connect() as conn:   # Core: alle Benutzer (Admin-Werkzeug)
         counts = dict(conn.execute(select(s.status, func.count()).group_by(s.status)).all())
         candidates = conn.execute(
@@ -35,12 +51,14 @@ def overview(
         ).scalar_one()
         rows = conn.execute(
             select(s.card_id, s.status, s.inliers, s.art_inliers, s.corner_err, s.templates,
-                   s.suggested_quad.isnot(None).label("has_suggestion"), s.checked_at,
+                   s.suggested_quad, s.checked_at,
                    c.user_id, c.kartenname, c.englischer_name, c.set_edition, c.karten_nr,
-                   c.tcgdex_card_id, c.bild_original_pfad, scan_export.photo().label("photo"),
+                   c.tcgdex_card_id, c.bild_original_pfad, c.bild_quad, c.bild_karte_url,
+                   scan_export.photo().label("photo"), k.image_url.label("catalog_url"),
                    User.username)
             .select_from(ScanCheck.__table__.join(PokemonCard.__table__, c.id == s.card_id)
-                         .join(User.__table__, User.id == c.user_id, isouter=True))
+                         .join(User.__table__, User.id == c.user_id, isouter=True)
+                         .join(TcgdexCatalog.__table__, k.card_id == c.tcgdex_card_id, isouter=True))
             .where(s.status == status)
             .order_by(s.inliers.asc(), s.corner_err.desc().nulls_first(), s.card_id)
             .limit(limit)
@@ -54,7 +72,12 @@ def overview(
         "items": [{
             "card_id": r["card_id"], "status": r["status"], "inliers": r["inliers"],
             "art_inliers": r["art_inliers"], "corner_err": r["corner_err"], "templates": r["templates"],
-            "has_suggestion": bool(r["has_suggestion"]),
+            "has_suggestion": r["suggested_quad"] is not None,
+            "suggested_quad": _quad(r["suggested_quad"]), "quad": _quad(r["bild_quad"]),
+            "original": r["bild_original_pfad"],
+            # Katalogbild zum Vergleich (gespiegelt, wie auf der Kartenseite)
+            "catalog_image": spiegel_pfad(r["catalog_url"] if is_allowed_image_url(r["catalog_url"])
+                                          else r["bild_karte_url"]),
             "checked_at": r["checked_at"].isoformat() if r["checked_at"] else None,
             "own": r["user_id"] == user.id, "username": r["username"],
             "name": r["kartenname"], "english_name": r["englischer_name"], "set": r["set_edition"],
@@ -68,6 +91,17 @@ def overview(
 async def run(full: bool = False):
     scan_quality.start(full)
     return scan_quality.STATE
+
+
+@router.post("/{card_id}/check")
+async def check(card_id: int):
+    try:
+        res = await scan_quality.check_one(card_id)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+    if res is None:
+        raise HTTPException(status_code=404, detail="Scan-Prüfung nicht gefunden")
+    return res
 
 
 @router.post("/{card_id}/dismiss")

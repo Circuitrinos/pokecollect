@@ -514,7 +514,12 @@ export type ScanQualityItem = {
   templates: number; has_suggestion: boolean; checked_at: string | null; own: boolean;
   username: string | null; name: string; english_name: string | null; set: string | null;
   number: string | null; tcgdex_card_id: string | null; photo: string | null; has_original: boolean;
+  original: string | null; quad: number[][] | null; suggested_quad: number[][] | null;
+  catalog_image: string | null;   // gespiegeltes Katalogbild zum Vergleich
 };
+
+export type ScanRecheck = { status: string; inliers: number; corner_err: number | null;
+  suggested_quad: number[][] | null; photo: string | null };
 
 export type ScanQualityOverview = {
   job: { running: boolean; done: number; total: number; low: number; started_at: string | null;
@@ -529,6 +534,7 @@ export const scanQualityApi = {
   overview: (status = "low") => api.get<ScanQualityOverview>("/scan-quality", { params: { status } }),
   run: (full = false) => api.post("/scan-quality/run", null, { params: { full } }),
   dismiss: (cardId: number) => api.post(`/scan-quality/${cardId}/dismiss`),
+  check: (cardId: number) => api.post<ScanRecheck>(`/scan-quality/${cardId}/check`),
 };
 
 // ── Anmeldung / Mehrbenutzer ──────────────────────────────────────────────

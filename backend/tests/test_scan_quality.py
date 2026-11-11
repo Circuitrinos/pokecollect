@@ -66,6 +66,8 @@ def test_check_list_dismiss_and_recrop(client, fake_matcher):
         assert [i["card_id"] for i in body["items"] if i["card_id"] in (bad, good, nref)] == [bad]
         item = next(i for i in body["items"] if i["card_id"] == bad)
         assert item["has_suggestion"] and item["own"] and item["corner_err"] == 0.11
+        assert item["suggested_quad"] == BETTER and item["quad"] == QUAD and item["original"]
+        assert "catalog_image" in item
         assert body["counts"]["low"] >= 1 and body["counts"]["no_reference"] >= 1
         assert client.get(f"{API}/scan-quality", params={"status": "no_reference"}).json()["items"][0]["card_id"] == nref
 
@@ -89,8 +91,11 @@ def test_check_list_dismiss_and_recrop(client, fake_matcher):
         assert after["bild_quad"] == BETTER
         assert after["bild_karte_pfad"] != before["bild_karte_pfad"]          # neuer Dateiname → neu lernen
         assert client.get(f"{API}/cards/{bad}/scan-check").json() is None
-        asyncio.run(scan_quality.run())
+        r = client.post(f"{API}/scan-quality/{bad}/check")       # gleich neu prüfen (Liste „Schwache Scans")
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "low" and r.json()["photo"] == after["bild_karte_pfad"]
         assert bad in fake_matcher
+        assert client.post(f"{API}/scan-quality/999999999/check").status_code == 404
 
         # Als in Ordnung markieren
         assert client.post(f"{API}/scan-quality/{bad}/dismiss").status_code == 200

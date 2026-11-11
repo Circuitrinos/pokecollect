@@ -61,15 +61,14 @@ def _photo_key(photo: str, quad: Optional[str], original: Optional[str]) -> str:
     return f"{photo}|{mtime}|{original or ''}|{quad or ''}"
 
 
-def _rows() -> list[dict]:
+def _rows(card_id: Optional[int] = None) -> list[dict]:
     c = PokemonCard.__table__.c
+    q = (select(c.id, c.tcgdex_card_id, scan_export.photo().label("photo"), c.bild_original_pfad, c.bild_quad)
+         .where(scan_export.has_photo(), c.tcgdex_card_id.isnot(None)).order_by(c.id))
+    if card_id is not None:
+        q = q.where(c.id == card_id)
     with engine.connect() as conn:   # Core: alle Benutzer (Admin-Werkzeug)
-        return [dict(r) for r in conn.execute(
-            select(c.id, c.tcgdex_card_id, scan_export.photo().label("photo"),
-                   c.bild_original_pfad, c.bild_quad)
-            .where(scan_export.has_photo(), c.tcgdex_card_id.isnot(None))
-            .order_by(c.id)
-        ).mappings().all()]
+        return [dict(r) for r in conn.execute(q).mappings().all()]
 
 
 async def verify_one(client: httpx.AsyncClient, row: dict) -> Optional[dict]:
@@ -149,6 +148,23 @@ async def run(full: bool = False) -> None:
         STATE.update(running=False, finished_at=datetime.utcnow().isoformat())
         log.info("Scan-Prüfung: %d/%d geprüft, %d schwach%s", STATE["done"], STATE["total"], STATE["low"],
                  f", Fehler: {STATE['error']}" if STATE["error"] else "")
+
+
+async def check_one(card_id: int) -> Optional[dict]:
+    """Eine Karte sofort (neu) prüfen — nach „Zuschnitt korrigieren" in der Liste.
+    None: Karte ohne prüfbares Foto; wirft httpx.HTTPError, wenn der Dienst fehlt."""
+    rows = await asyncio.to_thread(_rows, card_id)
+    if not rows:
+        return None
+    r = rows[0]
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+        res = await verify_one(client, r)
+    if res is None:
+        raise httpx.HTTPError("matcher")
+    key = _photo_key(r["photo"], r["bild_quad"], r["bild_original_pfad"])
+    status = await asyncio.to_thread(_store, card_id, key, res)
+    return {"status": status, "inliers": int(res.get("inliers") or 0), "corner_err": res.get("corner_err"),
+            "suggested_quad": res.get("suggested_quad"), "photo": r["photo"]}
 
 
 def start(full: bool = False) -> bool:
