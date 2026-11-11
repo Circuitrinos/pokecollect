@@ -4,12 +4,14 @@ GET  /scan-quality             Stand des Auftrags, Zähler, Liste (Standard: sch
 POST /scan-quality/run         Prüfung starten (nur Geändertes; full=true: alles)
 POST /scan-quality/{id}/dismiss  als in Ordnung markieren (bis sich das Foto ändert)
 POST /scan-quality/{id}/check    diese Karte sofort neu prüfen (nach dem Korrigieren)
+POST /scan-quality/{id}/try      einen Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren")
+GET  /scan-quality/stamps        Prize-Pack-Fotos zum Markieren des Play!-Stempels (Trainingsdaten)
 """
 
 import json
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 
 from app.api.deps import require_admin
@@ -30,6 +32,21 @@ def _quad(raw):
     except ValueError:
         return None
     return q if isinstance(q, list) and len(q) == 4 else None
+
+
+MAX_TRY_BYTES = 15 * 1024 * 1024
+
+
+def _valid_quad(raw: str):
+    """4×[x,y], normiert (etwas Rand erlaubt) — sonst None."""
+    q = _quad(raw)
+    try:
+        pts = [[float(x), float(y)] for x, y in q] if q else None
+    except (TypeError, ValueError):
+        return None
+    if not pts or not all(-0.5 <= v <= 1.5 for p in pts for v in p):
+        return None
+    return pts
 
 router = APIRouter(prefix="/scan-quality", tags=["scan-quality"], dependencies=[Depends(require_admin)])
 
@@ -87,6 +104,40 @@ def overview(
     }
 
 
+@router.get("/stamps")
+def stamps(
+    user: AuthUser = Depends(require_admin),
+    marked: bool = False,
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Prize-Pack-Karten mit eigenem Foto: Stempel markiert oder noch nicht (alle Konten)."""
+    c = PokemonCard.__table__.c
+    photo = func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad)
+    base = (c.prize_pack.is_(True)) & photo.isnot(None)
+    with engine.connect() as conn:   # Core: alle Benutzer (Admin-Werkzeug)
+        done = conn.execute(select(func.count()).select_from(PokemonCard.__table__)
+                            .where(base, c.stamp_quad.isnot(None))).scalar_one()
+        total = conn.execute(select(func.count()).select_from(PokemonCard.__table__).where(base)).scalar_one()
+        rows = conn.execute(
+            select(c.id, c.user_id, c.kartenname, c.englischer_name, c.set_edition, c.karten_nr,
+                   c.tcgdex_card_id, c.stamp_quad, c.aktualisiert_am, photo.label("photo"), User.username)
+            .select_from(PokemonCard.__table__.join(User.__table__, User.id == c.user_id, isouter=True))
+            .where(base, c.stamp_quad.isnot(None) if marked else c.stamp_quad.is_(None))
+            .order_by((c.user_id == user.id).desc(), c.id.desc())
+            .limit(limit)
+        ).mappings().all()
+    return {
+        "counts": {"photos": total, "marked": done, "unmarked": total - done},
+        "items": [{
+            "card_id": r["id"], "own": r["user_id"] == user.id, "username": r["username"],
+            "name": r["kartenname"], "english_name": r["englischer_name"], "set": r["set_edition"],
+            "number": r["karten_nr"], "tcgdex_card_id": r["tcgdex_card_id"], "photo": r["photo"],
+            "stamp_quad": _quad(r["stamp_quad"]),
+            "updated_at": r["aktualisiert_am"].isoformat() if r["aktualisiert_am"] else None,
+        } for r in rows],
+    }
+
+
 @router.post("/run")
 async def run(full: bool = False):
     scan_quality.start(full)
@@ -97,6 +148,25 @@ async def run(full: bool = False):
 async def check(card_id: int):
     try:
         res = await scan_quality.check_one(card_id)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+    if res is None:
+        raise HTTPException(status_code=404, detail="Scan-Prüfung nicht gefunden")
+    return res
+
+
+@router.post("/{card_id}/try")
+async def try_crop(card_id: int, file: UploadFile = File(...), quad: str = Form(...)):
+    quad_pts = _valid_quad(quad)
+    if quad_pts is None:
+        raise HTTPException(status_code=422, detail="Ungültige Ecken")
+    data = await file.read(MAX_TRY_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+    if len(data) > MAX_TRY_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 15 MB)")
+    try:
+        res = await scan_quality.try_crop(card_id, data, quad_pts)
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
     if res is None:

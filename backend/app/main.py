@@ -374,6 +374,15 @@ def _run_light_migrations():
         # #43: lokaler Bild-Cache-Pfad je Katalogzeile — rein additiv, KEINE
         # Datenumwandlung (NULL für jede Bestandszeile, s. Modell-Kommentar).
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS image_pfad TEXT",
+        # Decks: die Tabellen decks/deck_slots legt create_all an (models/deck.py);
+        # hier die Karte im Deck (höchstens eines) und die Stufe für die
+        # Deck-Regeln („mindestens ein Basis-Pokémon").
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS deck_id INTEGER REFERENCES decks(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_deck_id ON pokemon_cards (deck_id)",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS stage TEXT",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS trainer_type TEXT",
+        # Play!-Stempel im Kartenfoto (Trainingsdaten für einen Stempel-Detektor)
+        "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS stamp_quad TEXT",
     ]
     with engine.begin() as conn:
         for stmt in stmts:

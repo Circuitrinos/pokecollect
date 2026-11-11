@@ -132,6 +132,44 @@ def test_recrop_needs_an_original(client, fake_matcher):
         client.delete(f"{API}/cards/{cid}")
 
 
+def test_try_crop_checks_without_saving(client, fake_matcher, monkeypatch):
+    seen = {}
+
+    async def post(files, form):
+        seen.update(files=files, form=form)
+        return {"templates": 1, "inliers": 88, "art_inliers": 20, "corner_err": 0.01, "geo_ok": True,
+                "suggested_quad": BETTER}
+
+    monkeypatch.setattr(scan_quality, "_post_verify", post)
+    cid = _card(client, "sv03-125")
+    try:
+        _upload(client, cid, _jpeg((30, 60, 90)), QUAD)
+        before = client.get(f"{API}/cards/{cid}").json()
+        r = client.post(f"{API}/scan-quality/{cid}/try", files={"file": ("t.jpg", _jpeg((5, 5, 5)), "image/jpeg")},
+                        data={"quad": json.dumps(BETTER)})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"status": "ok", "inliers": 88, "corner_err": 0.01, "suggested_quad": BETTER}
+        assert seen["form"] == {"card_id": "sv03-125", "quad": json.dumps(BETTER)} and "original" in seen["files"]
+        # nichts gespeichert: Foto, Ecken und Prüfung bleiben
+        after = client.get(f"{API}/cards/{cid}").json()
+        assert after["bild_karte_pfad"] == before["bild_karte_pfad"] and after["bild_quad"] == QUAD
+        assert client.get(f"{API}/cards/{cid}/scan-check").json() is None
+        bad = client.post(f"{API}/scan-quality/{cid}/try", files={"file": ("t.jpg", _jpeg((5, 5, 5)), "image/jpeg")},
+                          data={"quad": "[[0,0],[1,0]]"}, headers={"X-UI-Lang": "EN"})
+        assert bad.status_code == 422 and bad.json()["detail"] == "Invalid corners"
+        assert client.post(f"{API}/scan-quality/999999999/try", files={"file": ("t.jpg", b"x", "image/jpeg")},
+                           data={"quad": json.dumps(BETTER)}).status_code == 404
+
+        async def down(files, form):
+            return None
+        monkeypatch.setattr(scan_quality, "_post_verify", down)
+        assert client.post(f"{API}/scan-quality/{cid}/try", files={"file": ("t.jpg", b"x", "image/jpeg")},
+                           data={"quad": json.dumps(BETTER)}).status_code == 503
+    finally:
+        client.delete(f"{API}/cards/{cid}/image")
+        client.delete(f"{API}/cards/{cid}")
+
+
 def test_scan_quality_is_admin_only(fake_matcher):
     from test_multiuser import _client_for, _drop_user, _make_user
     bob = _make_user("bob-sq")
@@ -139,5 +177,46 @@ def test_scan_quality_is_admin_only(fake_matcher):
         bc = _client_for(bob)
         assert bc.get(f"{API}/scan-quality").status_code == 403
         assert bc.post(f"{API}/scan-quality/run").status_code == 403
+        assert bc.post(f"{API}/scan-quality/1/try", files={"file": ("t.jpg", b"x", "image/jpeg")},
+                       data={"quad": json.dumps(BETTER)}).status_code == 403
     finally:
+        _drop_user(bob)
+
+
+def test_crop_suggest_for_own_cards(client, fake_matcher, monkeypatch):
+    """Grobe Ecken im Eck-Editor: Vorschlag vom Bild-Abgleich, nur für eigene Karten, nichts gespeichert."""
+    from test_multiuser import _client_for, _drop_user, _make_user
+
+    async def post(files, form):
+        return {"templates": 1, "inliers": 77, "art_inliers": 20, "corner_err": 0.012, "geo_ok": True,
+                "suggested_quad": BETTER}
+
+    monkeypatch.setattr(scan_quality, "_post_verify", post)
+    cid = _card(client, "sv03-125")
+    nocat = _card(client, None)
+    bob = _make_user("bob-cs")
+    try:
+        _upload(client, cid, _jpeg((30, 60, 90)), QUAD)
+        f = {"file": ("t.jpg", _jpeg((5, 5, 5)), "image/jpeg")}
+        r = client.post(f"{API}/cards/{cid}/crop-suggest", files=f, data={"quad": json.dumps(QUAD)})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"status": "ok", "inliers": 77, "corner_err": 0.012, "suggested_quad": BETTER}
+        assert client.get(f"{API}/cards/{cid}").json()["bild_quad"] == QUAD
+        assert _client_for(bob).post(f"{API}/cards/{cid}/crop-suggest", files=f,
+                                     data={"quad": json.dumps(QUAD)}).status_code == 404
+        assert client.post(f"{API}/cards/{cid}/crop-suggest", files=f, data={"quad": "[1,2]"}).status_code == 422
+        _upload(client, nocat, _jpeg((30, 60, 90)), QUAD)
+        r = client.post(f"{API}/cards/{nocat}/crop-suggest", files=f, data={"quad": json.dumps(QUAD)},
+                        headers={"X-UI-Lang": "EN"})
+        assert r.status_code == 409 and r.json()["detail"] == "The card isn't linked to a catalog card"
+
+        async def down(files, form):
+            return None
+        monkeypatch.setattr(scan_quality, "_post_verify", down)
+        assert client.post(f"{API}/cards/{cid}/crop-suggest", files=f,
+                           data={"quad": json.dumps(QUAD)}).status_code == 503
+    finally:
+        for c in (cid, nocat):
+            client.delete(f"{API}/cards/{c}/image")
+            client.delete(f"{API}/cards/{c}")
         _drop_user(bob)

@@ -83,6 +83,7 @@ export type Card = {
   bild_karte_url: string | null;       // auto: TCGdex high.webp
   bild_sprache?: string | null;       // Sprache des Katalogbilds (TCGdex), null = nicht umschaltbar
   bild_quad?: number[][] | null;      // Ecken des Zuschnitts im Originalfoto (normiert)
+  stamp_quad?: number[][] | null;     // Play!-Stempel im Kartenfoto (Kartenkoordinaten), von Hand markiert
   // #120: dieselben Bilder als signierter Spiegel-Pfad der eigenen API —
   // NUR diese Felder fließen in die Anzeige (lib/utils.ts cardImageSrc).
   // null bei fehlender URL oder fremdem Host.
@@ -94,6 +95,8 @@ export type Card = {
   bild_original_pfad: string | null;
   bild_scan_pfad?: string | null;     // eigenes Scan-Foto, während das Katalogbild angezeigt wird
   katalog_bild?: boolean | null;      // Katalogbild vorhanden (nur Einzelkarten)
+  deck_id?: number | null;            // Deck, in dem die Karte steckt (höchstens eines)
+  deck_name?: string | null;
   // TCGdex-Anreicherung (v0.7.0)
   tcgdex_card_id: string | null;
   set_id: string | null;
@@ -314,6 +317,15 @@ export const cardApi = {
     return api.post<Card>(`/cards/${id}/recrop`, form);
   },
   scanCheck: (id: number) => api.get<ScanCheck | null>(`/cards/${id}/scan-check`),
+  setStamp: (id: number, quad: number[][] | null) => api.put<Card>(`/cards/${id}/stamp`, { quad }),
+  // Grobe Ecken → Vorschlag vom Bild-Abgleich (nichts wird gespeichert)
+  cropSuggest: (id: number, file: Blob, quad: number[][]) => {
+    const form = new FormData();
+    form.append("file", file, "try.jpg");
+    form.append("quad", JSON.stringify(quad));
+    return api.post<{ status: string; inliers: number; corner_err: number | null; suggested_quad: number[][] | null }>(
+      `/cards/${id}/crop-suggest`, form);
+  },
 
   deleteImage: (id: number) => api.delete<Card>(`/cards/${id}/image`),
   // Katalogbild statt eigenem Foto zeigen; sucht eins, falls noch keins bekannt
@@ -432,6 +444,87 @@ export type AppSettingsUpdate = Partial<{
   standard_min_mark: string;
 }>;
 
+// ── Decks ──────────────────────────────────────────────────────────────────
+export type DeckFormat = "standard" | "expanded" | "unlimited";
+export type DeckSection = "pokemon" | "trainer" | "energy";
+export type DeckMatch = "exact" | "same_name" | "other_print";
+export type DeckIssue = { level: "error" | "warning"; code: string; count: number; name?: string | null; slots: number[] };
+export type DeckLegality = {
+  status: "legal" | "check" | "illegal";
+  format: DeckFormat;
+  min_mark: string;
+  total: number;
+  sections: Record<DeckSection, number>;
+  issues: DeckIssue[];
+  need_data: boolean;
+};
+export type DeckSlot = {
+  id: number;
+  tcgdex_card_id: string | null;
+  name: string;
+  set_code: string | null;
+  number: string | null;
+  count: number;
+  section: DeckSection;
+  match: "set" | "name" | null;
+  image_url: string | null;
+  rarity: string | null;
+  stage: string | null;
+  trainer_type: string | null;
+  status: "ok" | "basic" | "not_legal" | "unknown" | "unmatched";
+  legal_mark: string | null;
+  ace_spec: boolean;
+  cards: { match: DeckMatch; card: Card }[];
+  available: number;
+  available_other: number;
+};
+export type DeckSummary = {
+  id: number;
+  name: string;
+  format: DeckFormat;
+  notizen: string | null;
+  erstellt_am: string | null;
+  aktualisiert_am: string | null;
+  total: number;
+  in_deck: number;
+  status: DeckLegality["status"];
+  cover_url: string | null;
+};
+export type DeckDetail = DeckSummary & { legality: DeckLegality; slots: DeckSlot[]; extra: Card[] };
+export type DeckImportResult = {
+  deck: DeckDetail;
+  lines: number;
+  matched: number;
+  unmatched: number;
+  not_found: string[];
+  unreadable: string[];
+};
+
+export const deckApi = {
+  list: () => api.get<DeckSummary[]>("/decks"),
+  get: (id: number) => api.get<DeckDetail>(`/decks/${id}`),
+  create: (data: { name: string; format?: DeckFormat; notizen?: string | null; text?: string | null; fill?: boolean }) =>
+    api.post<DeckImportResult>("/decks", data),
+  update: (id: number, data: { name?: string; format?: DeckFormat; notizen?: string | null }) =>
+    api.put<DeckDetail>(`/decks/${id}`, data),
+  delete: (id: number) => api.delete(`/decks/${id}`),
+  importList: (id: number, text: string, replace = false) =>
+    api.post<DeckImportResult>(`/decks/${id}/import`, { text, replace }),
+  exportList: (id: number) => api.get<string>(`/decks/${id}/export`, { responseType: "text" }),
+  fill: (id: number) => api.post<{ deck: DeckDetail; added: number }>(`/decks/${id}/fill`),
+  refresh: (id: number) => api.post<DeckDetail>(`/decks/${id}/refresh`),
+  addSlot: (id: number, tcgdexCardId: string, count = 1) =>
+    api.post<DeckDetail>(`/decks/${id}/slots`, { tcgdex_card_id: tcgdexCardId, count }),
+  updateSlot: (id: number, slotId: number, data: { count?: number; section?: DeckSection }) =>
+    api.put<DeckDetail>(`/decks/${id}/slots/${slotId}`, data),
+  removeSlot: (id: number, slotId: number) => api.delete<DeckDetail>(`/decks/${id}/slots/${slotId}`),
+  candidates: (id: number, slotId: number) =>
+    api.get<{ match: DeckMatch; card: Card }[]>(`/decks/${id}/slots/${slotId}/candidates`),
+  addCards: (id: number, cardIds: number[], move = false) =>
+    api.post<DeckDetail>(`/decks/${id}/cards`, { card_ids: cardIds, move }),
+  removeCard: (id: number, cardId: number) => api.delete<DeckDetail>(`/decks/${id}/cards/${cardId}`),
+};
+
 export const collectionApi = {
   list: () => api.get<Collection[]>("/collections"),
   get: (id: number) => api.get<Collection>(`/collections/${id}`),
@@ -521,6 +614,13 @@ export type ScanQualityItem = {
 export type ScanRecheck = { status: string; inliers: number; corner_err: number | null;
   suggested_quad: number[][] | null; photo: string | null };
 
+export type StampItem = {
+  card_id: number; own: boolean; username: string | null; name: string; english_name: string | null;
+  set: string | null; number: string | null; tcgdex_card_id: string | null; photo: string;
+  stamp_quad: number[][] | null; updated_at: string | null;
+};
+export type StampOverview = { counts: { photos: number; marked: number; unmarked: number }; items: StampItem[] };
+
 export type ScanQualityOverview = {
   job: { running: boolean; done: number; total: number; low: number; started_at: string | null;
     finished_at: string | null; error: string | null };
@@ -535,6 +635,14 @@ export const scanQualityApi = {
   run: (full = false) => api.post("/scan-quality/run", null, { params: { full } }),
   dismiss: (cardId: number) => api.post(`/scan-quality/${cardId}/dismiss`),
   check: (cardId: number) => api.post<ScanRecheck>(`/scan-quality/${cardId}/check`),
+  stamps: (marked = false) => api.get<StampOverview>("/scan-quality/stamps", { params: { marked } }),
+  // Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren")
+  tryCrop: (cardId: number, file: Blob, quad: number[][]) => {
+    const form = new FormData();
+    form.append("file", file, "try.jpg");
+    form.append("quad", JSON.stringify(quad));
+    return api.post<Omit<ScanRecheck, "photo">>(`/scan-quality/${cardId}/try`, form);
+  },
 };
 
 // ── Anmeldung / Mehrbenutzer ──────────────────────────────────────────────
@@ -740,8 +848,9 @@ export type ScanCommitItem = {
 };
 
 export type ScanCommitRequest = {
-  target: "pokedex" | "collection" | "wishlist";
+  target: "pokedex" | "collection" | "wishlist" | "deck";
   collection_id?: number | null;
+  deck_id?: number | null;
   // Gewähltes Fach (0-basiert über alle Seiten); Mappenseiten-Scan: Seitenanfang
   start_position?: number | null;
   items: ScanCommitItem[];

@@ -38,7 +38,7 @@ from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
 from app.schemas.card import (
     CardCreate, CardListResponse, CardResponse, CardUpdate,
-    EnumsResponse, StatsResponse,
+    EnumsResponse, StampUpdate, StatsResponse,
     SELTENHEIT_VALUES, KARTENVERSION_VALUES, FOLIERUNG_VALUES, MUSTER_VALUES,
     SPRACHE_VALUES, ZUSTAND_VALUES, PRIORITAET_VALUES,
 )
@@ -640,6 +640,55 @@ async def recrop(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
     if card.tcgdex_card_id:
         background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return _card_response(db, card)
+
+
+MAX_SUGGEST_BYTES = 15 * 1024 * 1024
+
+
+@router.post("/{card_id}/crop-suggest")
+async def crop_suggest(card_id: int, file: UploadFile = File(...), quad: str = Form(...),
+                       db: Session = Depends(get_db)):
+    """
+    „Zuschnitt korrigieren" mit groben Ecken: der Browser schneidet entlang der
+    Ecken aus dem Original, der Bild-Abgleich prüft das (ohne zu speichern) und
+    schlägt eingeschwungene Ecken vor. → status, inliers, corner_err, suggested_quad.
+    """
+    import httpx
+
+    from app.services import scan_quality
+
+    card = _card_or_404(card_id, db)
+    if not card.bild_original_pfad or not (card.bild_karte_pfad or card.bild_scan_pfad):
+        raise HTTPException(status_code=409, detail="Kein Originalfoto zum Neu-Zuschneiden")
+    if not card.tcgdex_card_id:
+        raise HTTPException(status_code=409, detail="Karte ohne Katalog-Zuordnung")
+    q = _parse_quad(quad)
+    if q is None:
+        raise HTTPException(status_code=422, detail="Ungültige Ecken")
+    data = await file.read(MAX_SUGGEST_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+    if len(data) > MAX_SUGGEST_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 15 MB)")
+    try:
+        res = await scan_quality.try_crop(card.id, data, q)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+    if res is None:
+        raise HTTPException(status_code=409, detail="Kein Originalfoto zum Neu-Zuschneiden")
+    return res
+
+
+@router.put("/{card_id}/stamp", response_model=CardResponse)
+def set_stamp(card_id: int, payload: StampUpdate, db: Session = Depends(get_db)):
+    """Play!-Stempel im Kartenfoto markieren (Trainingsdaten für einen Stempel-Detektor)."""
+    card = _card_or_404(card_id, db)
+    if payload.quad is not None and not (card.bild_karte_pfad or card.bild_scan_pfad):
+        raise HTTPException(status_code=409, detail="Kein eigenes Foto zum Markieren")
+    card.stamp_quad = json.dumps(payload.quad) if payload.quad else None
+    db.commit()
+    db.refresh(card)
     return _card_response(db, card)
 
 

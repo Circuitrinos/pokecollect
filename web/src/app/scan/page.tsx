@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import {
-  Collection, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
-  cardApi, collectionApi, scanApi,
+  Collection, DeckSummary, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
+  cardApi, collectionApi, deckApi, scanApi,
   ScanAlternative,
 } from "@/lib/api";
 import { useEnums } from "@/lib/useEnums";
@@ -24,6 +24,7 @@ import { valueLabel } from "@/lib/enumLabels";
 import { IMAGE_LANGS, imageLangOf, withImageLang } from "@/lib/imageLang";
 
 type Step = "setup" | "review";
+type ScanTarget = "pokedex" | "collection" | "wishlist" | "deck";
 
 type EditableCandidate = ScanCandidate & {
   include: boolean;
@@ -93,8 +94,11 @@ export default function ScanPage() {
   const { settings: appSettings } = useSettings();
 
   const [mode, setMode] = useState<ScanMode>("single");
-  const [target, setTarget] = useState<"pokedex" | "collection" | "wishlist">("pokedex");
+  const [target, setTarget] = useState<ScanTarget>("pokedex");
   const [collectionId, setCollectionId] = useState<number | null>(null);
+  // Ziel „Deck": Karten besessen + in dieses Deck (die Deckliste wächst mit)
+  const [decks, setDecks] = useState<DeckSummary[]>([]);
+  const [deckId, setDeckId] = useState<number | null>(null);
   // Seite, von der aus gescannt wurde (/scan?from=…): „Zurück" führt dorthin.
   // Von einer Sammlungsseite (…&collection=<id>) ist diese Sammlung das Ziel.
   const [returnTo, setReturnTo] = useState<string | null>(null);
@@ -145,6 +149,12 @@ export default function ScanPage() {
     setReturnTo(safeReturnPath(params.get("from")));
     const fromId = Number(params.get("collection"));
     const preset = Number.isInteger(fromId) && fromId > 0 ? fromId : null;
+    const fromDeck = Number(params.get("deck"));
+    const presetDeck = Number.isInteger(fromDeck) && fromDeck > 0 ? fromDeck : null;
+    if (presetDeck) {
+      setTarget("deck");
+      setDeckId(presetDeck);
+    }
     if (preset) {
       setTarget("collection");
       setCollectionId(preset);
@@ -152,6 +162,13 @@ export default function ScanPage() {
       if (params.get("slot") !== null && Number.isInteger(presetSlot) && presetSlot >= 0) setSlot(presetSlot);
     }
     scanApi.status().then((r) => setStatus(r.data)).catch(() => {});
+    deckApi.list().then((r) => {
+      setDecks(r.data);
+      if (presetDeck && !r.data.some((d) => d.id === presetDeck)) {
+        setTarget("pokedex");
+        setDeckId(null);
+      }
+    }).catch(() => {});
     collectionApi.list().then((r) => {
       setCollections(r.data);
       if (preset && !r.data.some((c) => c.id === preset)) {  // gelöscht/fremd → normaler Standard
@@ -665,6 +682,7 @@ export default function ScanPage() {
     const res = await scanApi.commit({
       target,
       collection_id: target === "collection" ? collectionId : null,
+      deck_id: target === "deck" ? deckId : null,
       start_position: target === "collection" && slot != null
         ? (mode === "binder" ? Math.floor(slot / ps) * ps : slot) : null,
       items,
@@ -718,6 +736,7 @@ export default function ScanPage() {
   const handleSave = async (next: boolean) => {
     const chosen = candidates.filter((c) => c.include && !c.saved);
     if (!chosen.length) { finishReview(next); return; }
+    if (target === "deck" && !deckId) { toast.error(t.deck_scan_pick); return; }
     setBusy(true);
     try {
       const data = await commitItems(chosen);
@@ -743,6 +762,7 @@ export default function ScanPage() {
   const saveOne = async (idx: number) => {
     const c = candidates[idx];
     if (!c || c.saved || c.saving || c.rematching || c.needs_choice) return;
+    if (target === "deck" && !deckId) { toast.error(t.deck_scan_pick); return; }
     patchCand(c.key, (cc) => ({ ...cc, saving: true }));
     try {
       const data = await commitItems([c]);
@@ -894,14 +914,32 @@ export default function ScanPage() {
               <label className="text-gray-400 text-xs block mb-1">{t.scan_target}</label>
               <select
                 value={target}
-                onChange={(e) => setTarget(e.target.value as "pokedex" | "collection" | "wishlist")}
+                onChange={(e) => setTarget(e.target.value as ScanTarget)}
+                data-testid="scan-target"
                 className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-sm"
               >
                 <option value="pokedex">{t.scan_target_pokedex}</option>
                 <option value="collection">{t.scan_target_collection}</option>
                 <option value="wishlist">{t.scan_target_wishlist}</option>
+                <option value="deck">{t.scan_target_deck}</option>
               </select>
             </div>
+            {target === "deck" && (
+              <div>
+                <label className="text-gray-400 text-xs block mb-1">{t.scan_target_deck}</label>
+                <select
+                  value={deckId ?? ""}
+                  onChange={(e) => setDeckId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-sm"
+                  data-testid="scan-deck"
+                >
+                  <option value="">–</option>
+                  {decks.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {target === "collection" && (
               <div>
                 <label className="text-gray-400 text-xs block mb-1">{t.scan_target_collection}</label>

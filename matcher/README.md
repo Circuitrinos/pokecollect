@@ -115,3 +115,26 @@ For offline work (fine-tuning, detector training, evaluation) the app exports
 all scans: Settings → *Scan dataset (ZIP)*.
 
 Thresholds live at the top of `app/matcher.py` (`MIN_ART`, `LEAD`, …).
+
+### Foil patterns (reverse holo, Poké Ball / Master Ball, …)
+
+The catalog image of a card is the print without its foil. `tools/holo_diff.py`
+aligns each scanned crop from the scan dataset to that reference (ORB
+homography, then ECC for sub-pixel fit), evens out the lighting and subtracts:
+what is left is mostly foil. A reverse holo lights up in the frame around the
+art box, a pattern shows its repeated motif, a holo only the art. Differences on
+printed edges (text, outlines) are damped, so small alignment errors don't
+drown the foil.
+
+    pip install opencv-python-headless numpy      # or run it in the matcher image
+    python tools/holo_diff.py pokecollect-scans-<date>.zip --out holo_diff --pairs
+
+It writes one sheet per photo (aligned photo · reference · difference) into
+`holo_diff/<kind>/<foiling>__<pattern>/` and `holo_diff/index.csv` with the
+labels, the alignment inliers and the mean difference in the art box and the
+frame. `--pairs` also compares photos of the same card with different foiling
+(your reverse holo against your plain copy). `--download` fetches references
+that aren't cached on the server. The frame/art ratio alone already tells
+reverse holo from plain and holo apart; the sheets are training material for a
+real pattern classifier. Label the foiling and pattern on each card (card page
+→ Foiling / Pattern) before exporting.

@@ -11,16 +11,33 @@ import { useI18n } from "@/lib/i18n";
  * - Flip/Rotate als manuelle Ausrichtungs-Korrektur
  * Wird im Scan-Review und auf der Detailseite verwendet.
  */
+export type CornerSuggestion = { quad: number[][]; ok: boolean; label: string };
+
 export default function CornerEditor({
-  imageUrl, initialQuad, onCancel, onApply,
+  imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest,
 }: {
   imageUrl: string;
   initialQuad: number[][];
   onCancel: () => void;
   onApply: (quad: number[][], transform: CropTransform) => void;
+  // Andere Verwendungen (z. B. Play!-Stempel markieren): eigener Titel/Hinweis,
+  // ohne Drehen/Spiegeln, zusätzliche Knöpfe links unten
+  title?: string;
+  hint?: string;
+  orientable?: boolean;
+  extra?: React.ReactNode;
+  // Nach jedem losgelassenen Eckpunkt: eingeschwungene Ecken vorschlagen (Fix crop
+  // mit Bild-Abgleich). null = Karte in diesen Ecken nicht erkannt.
+  suggest?: (quad: number[][], transform: CropTransform) => Promise<CornerSuggestion | null>;
 }) {
   const { t } = useI18n();
-  const [quad, setQuad] = useState<number[][]>(initialQuad);
+  const [quad, setQuadState] = useState<number[][]>(initialQuad);
+  const quadRef = useRef<number[][]>(initialQuad);
+  const setQuad = (q: number[][]) => { quadRef.current = q; setQuadState(q); };
+  const [sugg, setSugg] = useState<{ state: "busy" } | { state: "none" } | ({ state: "done" } & CornerSuggestion) | null>(null);
+  const suggestRef = useRef(suggest);
+  useEffect(() => { suggestRef.current = suggest; }, [suggest]);
+  const seqRef = useRef(0);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [active, setActive] = useState<number | null>(null);
@@ -53,6 +70,25 @@ export default function CornerEditor({
   const resetOrient = () => {
     rotateRef.current = 0; flipHRef.current = false; flipVRef.current = false;
     setRotate(0); setFlipH(false); setFlipV(false);
+  };
+  // Vorschlag holen; ältere Antworten werden verworfen, wenn inzwischen neu gezogen wurde
+  const runSuggest = () => {
+    const fn = suggestRef.current;
+    if (!fn) return;
+    const seq = ++seqRef.current;
+    setSugg({ state: "busy" });
+    fn(quadRef.current, { flipH: flipHRef.current, flipV: flipVRef.current, rotate: rotateRef.current })
+      .then((r) => { if (seq === seqRef.current) setSugg(r ? { state: "done", ...r } : { state: "none" }); })
+      .catch(() => { if (seq === seqRef.current) setSugg({ state: "none" }); });
+  };
+  const runSuggestRef = useRef(runSuggest);
+  runSuggestRef.current = runSuggest;
+  const applySuggestion = () => {
+    if (sugg?.state !== "done") return;
+    setQuad(sugg.quad);
+    resetOrient();          // vorgeschlagene Ecken sind schon richtig herum
+    seqRef.current++;
+    setSugg(null);
   };
 
   // CSS-Transform der Bild-/Overlay-Ebene: Pan/Zoom + Drehen/Spiegeln um die
@@ -113,7 +149,7 @@ export default function CornerEditor({
         const nx = clamp(local.x / w, 0, 1);
         const ny = clamp(local.y / h, 0, 1);
         const i = activeRef.current;
-        setQuad((prev) => prev.map((p, k) => (k === i ? [nx, ny] : p)));
+        setQuad(quadRef.current.map((p, k) => (k === i ? [nx, ny] : p)));
         return;
       }
       // 2) Pan / Pinch
@@ -144,8 +180,10 @@ export default function CornerEditor({
     const up = (e: PointerEvent) => {
       pointersRef.current.delete(e.pointerId);
       if (pointersRef.current.size < 2) pinchRef.current = null;
+      const dragged = activeRef.current != null;
       activeRef.current = null;
       setActive(null);
+      if (dragged) runSuggestRef.current();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -194,8 +232,8 @@ export default function CornerEditor({
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
       <div className="bg-pokemon-card border border-gray-700 rounded-lg p-3 sm:p-4 w-full max-w-lg max-h-[95vh] flex flex-col">
-        <h3 className="text-white text-sm font-medium mb-1">{t.scan_corners_title}</h3>
-        <p className="text-gray-400 text-xs mb-2">{t.scan_corners_hint}</p>
+        <h3 className="text-white text-sm font-medium mb-1">{title ?? t.scan_corners_title}</h3>
+        <p className="text-gray-400 text-xs mb-2">{hint ?? t.scan_corners_hint}</p>
 
         <div
           ref={vpRef}
@@ -238,6 +276,13 @@ export default function CornerEditor({
                 fill="rgba(250,204,21,0.12)" stroke="#facc15" strokeWidth={2}
                 vectorEffect="non-scaling-stroke"
               />
+              {sugg?.state === "done" && (
+                <polygon
+                  points={sugg.quad.map(([x, y]) => `${x},${y}`).join(" ")}
+                  fill="none" stroke={sugg.ok ? "#22c55e" : "#f59e0b"} strokeWidth={2} strokeDasharray="6 4"
+                  vectorEffect="non-scaling-stroke" data-testid="corner-suggestion"
+                />
+              )}
             </svg>
             {quad.map(([x, y], i) => (
               <button type="button"
@@ -277,6 +322,25 @@ export default function CornerEditor({
           )}
         </div>
 
+        {suggest && sugg && (
+          <div className={`mt-2 flex flex-wrap items-center gap-2 rounded px-2 py-1.5 text-xs ${
+            sugg.state === "done" ? (sugg.ok ? "bg-green-950/60 text-green-200" : "bg-amber-950/60 text-amber-200") : "bg-gray-800 text-gray-300"}`}
+            data-testid="corner-suggest" data-state={sugg.state === "done" ? (sugg.ok ? "pass" : "weak") : sugg.state}>
+            <span className="flex-1 min-w-0">
+              {sugg.state === "busy" ? t.corner_suggest_busy
+                : sugg.state === "none" ? t.corner_suggest_none
+                : sugg.ok ? `✓ ${t.corner_suggest_pass(sugg.label)}` : t.corner_suggest_weak(sugg.label)}
+            </span>
+            {sugg.state === "done" && (
+              <button type="button" onClick={applySuggestion} data-testid="corner-suggest-use"
+                className={`rounded px-2 py-1 text-white ${sugg.ok ? "bg-green-700 hover:bg-green-600" : "bg-amber-700 hover:bg-amber-600"}`}>
+                {t.corner_suggest_use}
+              </button>
+            )}
+          </div>
+        )}
+        {suggest && !sugg && <p className="mt-2 text-[11px] text-gray-500">{t.corner_suggest_hint}</p>}
+
         {/* Zoom + Ausrichtung */}
         <div className="flex items-center justify-center gap-1.5 mt-2 flex-wrap text-sm">
           <button type="button" onClick={() => vpCenterZoom(0.8)} disabled={zoom <= 1}
@@ -285,12 +349,16 @@ export default function CornerEditor({
           <button type="button" onClick={() => vpCenterZoom(1.25)} disabled={zoom >= 8}
             className="w-9 h-9 rounded bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40">+</button>
           <span className="w-2" />
-          <button type="button" onClick={doRotate} title={t.scan_corners_rotate}
-            className="px-2 h-9 rounded bg-gray-700 text-white text-xs hover:bg-gray-600">⟳ 90°</button>
-          <button type="button" onClick={doFlipH} title={t.scan_corners_fliph}
-            className={`w-9 h-9 rounded text-white ${flipH ? "bg-pokemon-blue" : "bg-gray-700 hover:bg-gray-600"}`}>⇋</button>
-          <button type="button" onClick={doFlipV} title={t.scan_corners_flipv}
-            className={`w-9 h-9 rounded text-white ${flipV ? "bg-pokemon-blue" : "bg-gray-700 hover:bg-gray-600"}`}>⇅</button>
+          {orientable && (
+            <>
+              <button type="button" onClick={doRotate} title={t.scan_corners_rotate}
+                className="px-2 h-9 rounded bg-gray-700 text-white text-xs hover:bg-gray-600">⟳ 90°</button>
+              <button type="button" onClick={doFlipH} title={t.scan_corners_fliph}
+                className={`w-9 h-9 rounded text-white ${flipH ? "bg-pokemon-blue" : "bg-gray-700 hover:bg-gray-600"}`}>⇋</button>
+              <button type="button" onClick={doFlipV} title={t.scan_corners_flipv}
+                className={`w-9 h-9 rounded text-white ${flipV ? "bg-pokemon-blue" : "bg-gray-700 hover:bg-gray-600"}`}>⇅</button>
+            </>
+          )}
           <button type="button" onClick={centerView} disabled={zoom === 1 && pan.x >= 0}
             className="px-2 h-9 rounded bg-gray-700 text-white text-xs hover:bg-gray-600 disabled:opacity-40">
             {t.scan_corners_reset_view}
@@ -298,7 +366,8 @@ export default function CornerEditor({
         </div>
 
         <div className="flex gap-2 justify-end mt-3 flex-wrap">
-          <button type="button" onClick={() => { setQuad(initialQuad); resetOrient(); centerView(); }}
+          {extra && <div className="mr-auto flex items-center gap-2">{extra}</div>}
+          <button type="button" onClick={() => { setQuad(initialQuad); resetOrient(); centerView(); seqRef.current++; setSugg(null); }}
             className="text-gray-400 hover:text-white text-sm px-3 py-1.5">
             {t.scan_corners_reset}
           </button>

@@ -21,12 +21,14 @@ from app.config import settings
 from app.database import get_db
 from app.models.card import PokemonCard
 from app.models.collection import Collection, collection_cards
+from app.models.deck import Deck
 from app.models.gemini_usage import GeminiUsage
 from app.models.setting import AppSetting
 from app.schemas.scan import (
     ScanCandidate, ScanCommitRequest, ScanCommitResponse, ScanMode,
     ScanRawRead, ScanResponse,
 )
+from app.services import decks as decks_svc
 from app.services import regulation
 from app.services.card_creation import create_owned_card
 from app.services.catalog_lookup import catalog_row_for
@@ -441,6 +443,7 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
       - pokedex     → besessen, Pokédex-Vertreter automatisch (exklusiv)
       - collection  → besessen + Sammlung (mit Binder-Slot)
       - wishlist    → nicht besessen, auf Wunschliste (mit Priorität)
+      - deck        → besessen + ins Deck (deck_id), die Deckliste wächst mit
     Besessene Karten laufen über den Domain-Service (Adoption + Auto-Flag
     + Bild-Fetch, Issue #4).
     """
@@ -453,6 +456,14 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
         collection = db.get(Collection, payload.collection_id)
         if not collection:
             raise HTTPException(status_code=404, detail="Sammlung nicht gefunden")
+
+    deck: Deck | None = None
+    if payload.target == "deck":
+        if not payload.deck_id:
+            raise HTTPException(status_code=400, detail="deck_id fehlt")
+        deck = db.get(Deck, payload.deck_id)
+        if not deck:
+            raise HTTPException(status_code=404, detail="Deck nicht gefunden")
 
     plan: dict[tuple[int, int], int] = {}
     used: set[int] = set()
@@ -519,6 +530,10 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                         position=slot,
                     )
                 )
+
+            # Deck: Karte hinein, die Liste wächst, wo kein Platz frei ist
+            if deck:
+                decks_svc.assign(db, deck, card)
 
             created_ids.append(card.id)
             item_ids.append(card.id)

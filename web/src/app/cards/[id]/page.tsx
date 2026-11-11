@@ -8,6 +8,7 @@ import PriceChart from "@/components/PriceChart";
 import PhotoPanel from "@/components/carddetail/PhotoPanel";
 import EditForm from "@/components/carddetail/EditForm";
 import CollectionsPanel from "@/components/carddetail/CollectionsPanel";
+import DeckPanel from "@/components/carddetail/DeckPanel";
 import ImageLightbox from "@/components/ImageLightbox";
 import { cardImageSrc, cardName } from "@/lib/utils";
 import { cardNeighbors } from "@/lib/cardNav";
@@ -333,6 +334,9 @@ export default function CardDetailPage() {
 
         {/* Sammlungen-Zuordnung */}
         <CollectionsPanel cardId={Number(id)} />
+
+        {/* Deck (höchstens eines) */}
+        <DeckPanel card={card} onChanged={(c) => setCard(c)} />
       </div>
 
       <div className="mt-4 bg-pokemon-card rounded-lg p-4">

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, Text, false, func
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, Text, event, false, func
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -56,6 +56,10 @@ class PokemonCard(Base):
     # Entzerrtes Scan-Foto, das NICHT angezeigt wird (Anzeige = Katalogbild),
     # aber dem Bild-Abgleich als Referenz dient (matcher/app/learn.py)
     bild_scan_pfad = Column(Text, nullable=True)
+    # Play!-Pokémon-Stempel im Kartenfoto: 4×[x,y] in Kartenkoordinaten (0..1
+    # über den Zuschnitt), von Hand markiert — Trainingsdaten für einen
+    # Stempel-Detektor (Scan-Datensatz). Bleibt beim Neu-Zuschneiden gültig.
+    stamp_quad = Column(Text, nullable=True)
     # ── TCGdex-Referenz + Varianten (v0.7.0, additiv) ────────────────────────
     tcgdex_card_id = Column(Text, nullable=True, index=True)   # "swsh3-136"
     set_id = Column(Text, nullable=True)                       # "swsh3"
@@ -76,10 +80,24 @@ class PokemonCard(Base):
     # ANDEREM (oder unbekanntem) Text, wenn es höher als legal_mark ist — für
     # den Hinweis „gleicher Name legal, aber anderer Text". Sonst NULL.
     name_mark = Column(Text, nullable=True)
+    # Deck, in dem diese Karte gerade steckt (höchstens eines; services/decks.py)
+    deck_id = Column(Integer, ForeignKey("decks.id", ondelete="SET NULL"), nullable=True, index=True)
     hinzugefuegt_am = Column(DateTime, default=datetime.utcnow)
     aktualisiert_am = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     preis_historie = relationship("PreisHistorie", back_populates="karte", cascade="all, delete-orphan")
+    deck = relationship("Deck", lazy="selectin")
+
+    @property
+    def deck_name(self):
+        return self.deck.name if self.deck is not None else None
+
+
+@event.listens_for(PokemonCard.besessen, "set")
+def _nicht_besessen_verlaesst_deck(target, value, oldvalue, initiator):
+    """Nur eigene Karten stecken in Decks: wer die Karte nicht mehr besitzt, nimmt sie heraus."""
+    if value is False:
+        target.deck_id = None
 
 
 class PreisHistorie(Base):

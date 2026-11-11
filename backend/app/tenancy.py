@@ -7,8 +7,9 @@ Session-Events setzen das durch:
 - do_orm_execute: hängt an jede ORM-SELECT/UPDATE/DELETE-Anweisung ein
   with_loader_criteria für die Besitz-Tabellen — auch in Joins, Subqueries,
   db.get(), Relationship-Loads (Collection.cards) und query().update().
-  Preisverlauf und Soll-Listen hängen über ihre Karte/Sammlung am Besitzer.
-- before_flush: neue Karten/Sammlungen/Sealed-Produkte bekommen die user_id
+  Preisverlauf, Soll-Listen und Decklisten hängen über ihre Karte/Sammlung/
+  Deck am Besitzer.
+- before_flush: neue Karten/Sammlungen/Sealed-Produkte/Decks bekommen die user_id
   des Benutzers (ohne Benutzer-Kontext: die des Primär-Admins).
 
 NICHT erfasst — und darum an den Aufrufstellen geprüft: Core-Anweisungen auf
@@ -30,14 +31,15 @@ from sqlalchemy.orm import Session, with_loader_criteria
 
 from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, CollectionSoll
+from app.models.deck import Deck, DeckSlot
 from app.models.sealed import SealedProduct
 from app.models.user import User
 
 log = logging.getLogger(__name__)
 
 USER_KEY = "user_id"
-OWNED_MODELS = (PokemonCard, Collection, SealedProduct)
-OWNED_TABLES = ("pokemon_cards", "collections", "sealed_products")
+OWNED_MODELS = (PokemonCard, Collection, SealedProduct, Deck)
+OWNED_TABLES = ("pokemon_cards", "collections", "sealed_products", "decks")
 
 
 def current_user_id(db: Session) -> Optional[int]:
@@ -69,6 +71,12 @@ def _scope_to_user(state):
             lambda cls: cls.collection_id.in_(
                 select(Collection.id).where(Collection.user_id == uid)
             ),
+            include_aliases=True,
+        ),
+        with_loader_criteria(Deck, lambda cls: cls.user_id == uid, include_aliases=True),
+        with_loader_criteria(
+            DeckSlot,
+            lambda cls: cls.deck_id.in_(select(Deck.id).where(Deck.user_id == uid)),
             include_aliases=True,
         ),
     )

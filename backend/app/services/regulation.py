@@ -116,6 +116,8 @@ def apply_to_catalog(row: TcgdexCatalog, tc) -> None:
     if getattr(tc, "category", None):
         row.category = tc.category
     row.effect_key = effect_key(getattr(tc, "effect", None))
+    row.stage = getattr(tc, "stage", None) or None
+    row.trainer_type = getattr(tc, "trainerType", None) or None
     row.effect_checked = True
     row.regulation_checked = True
 

@@ -131,8 +131,9 @@ class ScanCommitItem(BaseModel):
 
 class ScanCommitRequest(BaseModel):
     # Ziel: Pokédex (besessen), Sammlung, oder Wunschliste (nicht besessen)
-    target: Literal["pokedex", "collection", "wishlist"] = "pokedex"
+    target: Literal["pokedex", "collection", "wishlist", "deck"] = "pokedex"
     collection_id: Optional[int] = None
+    deck_id: Optional[int] = None          # Ziel "deck": besessen + in dieses Deck
     # Gewähltes Fach (0-basiert, über alle Seiten gezählt): Karten ohne
     # position füllen freie Fächer ab hier; beim Mappenseiten-Scan der Anfang
     # der Zielseite. Ohne: erstes freies Fach bzw. neue Seite am Ende.

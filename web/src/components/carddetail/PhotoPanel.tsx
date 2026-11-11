@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
 import { API_BASE, Card, ScanCheck, cardApi } from "@/lib/api";
-import CornerEditor from "@/components/CornerEditor";
+import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
+import { settleCrop } from "@/lib/settleCrop";
 import CardFinder from "@/components/carddetail/CardFinder";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { imageUrl, cardImageSrc } from "@/lib/utils";
@@ -12,6 +13,7 @@ import { useMe } from "@/lib/useMe";
 import { scanExportProblems } from "@/lib/scanExport";
 import { IMAGE_LANGS } from "@/lib/imageLang";
 import PictureFinder from "@/components/PictureFinder";
+import StampEditor from "@/components/StampEditor";
 
 // Foto-Spalte der Kartendetailseite (Issue #14): Anzeige, Aufnahme/Upload,
 // Eck-Editor (Zuschnitt/Entzerrung), Bild-URL und Löschen. Herausgeschnitten
@@ -37,6 +39,9 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const isAdmin = !!useMe()?.is_admin;
   const exportProblems = isAdmin ? scanExportProblems(card) : [];
   const [pictureOpen, setPictureOpen] = useState(false);
+  // Play!-Stempel markieren (Prize Pack mit eigenem Foto)
+  const [stampOpen, setStampOpen] = useState(false);
+  const stampPhoto = card.bild_scan_pfad ?? card.bild_karte_pfad;
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -127,6 +132,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       editorBlobRef.current = blob;
       editorOriginalRef.current = null;
       editorRecropRef.current = true;
+      setEditorSuggests(!!card.tcgdex_card_id);
       setEditorInitQuad(checkRef.current?.suggested_quad ?? card.bild_quad ?? [[0.1, 0.08], [0.9, 0.08], [0.9, 0.92], [0.1, 0.92]]);
       setEditorUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -172,6 +178,16 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     }
   };
 
+  // Fix crop: grobe Ecken genügen — der Bild-Abgleich schlägt die genauen vor
+  const [editorSuggests, setEditorSuggests] = useState(false);
+  const suggestCorners = async (quad: number[][], transform: CropTransform): Promise<CornerSuggestion | null> => {
+    const blob = editorBlobRef.current;
+    if (!blob) return null;
+    const best = await settleCrop(blob, quad, async (file, q) => (await cardApi.cropSuggest(card.id, file, q)).data,
+      { transform, includeStart: false });
+    return best && { quad: best.quad, ok: best.ok, label: t.weak_stats(best.inliers, best.err) };
+  };
+
   const closePhotoEditor = () => {
     setEditorUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
@@ -180,6 +196,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     editorBlobRef.current = null;
     editorOriginalRef.current = null;
     editorRecropRef.current = false;
+    setEditorSuggests(false);
   };
 
   const handleApplyPhoto = async (quad: number[][], transform: CropTransform) => {
@@ -424,6 +441,16 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
           ✥ {t.detail_edit_photo}
         </button>
       )}
+      {card.prize_pack && stampPhoto && (
+        <button type="button" onClick={() => setStampOpen(true)} data-testid="stamp-mark"
+          className="w-full mt-1 text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5">
+          🎯 {card.stamp_quad ? `${t.stamp_marked} ✓` : t.stamp_mark}
+        </button>
+      )}
+      {stampOpen && stampPhoto && (
+        <StampEditor cardId={card.id} photo={stampPhoto} version={card.aktualisiert_am} initialQuad={card.stamp_quad}
+          onSaved={onCardUpdated} onClose={() => setStampOpen(false)} />
+      )}
       {!card.bild_karte_pfad && (
         <button type="button"
           onClick={() => { setShowUrlInput((v) => !v); setUrlInput(card.bild_pokedex_url ?? ""); }}
@@ -465,6 +492,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
           initialQuad={editorInitQuad}
           onCancel={closePhotoEditor}
           onApply={(quad, transform) => { if (!uploadingPhoto) void handleApplyPhoto(quad, transform); }}
+          suggest={editorSuggests ? suggestCorners : undefined}
         />
       )}
     </div>

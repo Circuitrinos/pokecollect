@@ -167,6 +167,39 @@ async def check_one(card_id: int) -> Optional[dict]:
             "suggested_quad": res.get("suggested_quad"), "photo": r["photo"]}
 
 
+async def _post_verify(files: dict, form: dict) -> Optional[dict]:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+        resp = await client.post(f"{settings.matcher_url.rstrip('/')}/verify", files=files, data=form)
+    if resp.status_code != 200:
+        log.warning("Scan-Prüfung: Bild-Abgleich antwortete %s", resp.status_code)
+        return None
+    return resp.json()
+
+
+async def try_crop(card_id: int, data: bytes, quad: list) -> Optional[dict]:
+    """
+    Einen Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren" in der
+    Liste): das Bild (im Browser aus dem Original geschnitten) gegen die
+    Katalogbilder, mit Original und Ecken auch gleich der nächste Vorschlag.
+    None: Karte ohne prüfbares Foto; wirft httpx.HTTPError, wenn der Dienst fehlt.
+    """
+    rows = await asyncio.to_thread(_rows, card_id)
+    if not rows:
+        return None
+    r = rows[0]
+    files = {"file": ("try.jpg", data, "image/jpeg")}
+    form = {"card_id": r["tcgdex_card_id"]}
+    orig = safe_media_path(r.get("bild_original_pfad"))
+    if orig is not None and orig.is_file():
+        files["original"] = (orig.name, orig.read_bytes(), mimetypes.guess_type(orig.name)[0] or "image/jpeg")
+        form["quad"] = json.dumps(quad)
+    res = await _post_verify(files, form)
+    if res is None:
+        raise httpx.HTTPError("matcher")
+    return {"status": classify(res), "inliers": int(res.get("inliers") or 0), "corner_err": res.get("corner_err"),
+            "suggested_quad": res.get("suggested_quad")}
+
+
 def start(full: bool = False) -> bool:
     """Auftrag starten; False, wenn schon einer läuft."""
     global _task

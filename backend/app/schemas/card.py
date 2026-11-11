@@ -132,6 +132,23 @@ class CardUpdate(BaseModel):
     )(reject_explicit_null)
 
 
+class StampUpdate(BaseModel):
+    """Play!-Stempel im Kartenfoto: 4 Ecken (Kartenkoordinaten 0..1) oder null = keine Markierung."""
+    quad: Optional[list[list[float]]] = None
+
+    @field_validator("quad")
+    @classmethod
+    def _four_points(cls, v):
+        if v is None:
+            return v
+        if len(v) != 4 or any(len(p) != 2 for p in v) or not all(0.0 <= c <= 1.0 for p in v for c in p):
+            raise ValueError("4 Ecken mit Werten zwischen 0 und 1 erwartet")
+        xs, ys = [p[0] for p in v], [p[1] for p in v]
+        if max(xs) - min(xs) < 0.005 or max(ys) - min(ys) < 0.005:
+            raise ValueError("Markierung zu klein")
+        return [[round(x, 5), round(y, 5)] for x, y in v]
+
+
 class CardResponse(CardBase):
     # Gürtel UND Hosenträger (#55): die Flags sind seit der Light-Migration
     # NOT NULL — ein Alt-Backup-Restore könnte aber NULLs zurückbringen, und
@@ -180,7 +197,10 @@ class CardResponse(CardBase):
     # Ecken des Zuschnitts im Originalfoto (normiert, 4×[x,y]) — für „Zuschnitt korrigieren"
     bild_quad: Optional[list[list[float]]] = None
 
-    @field_validator("bild_quad", mode="before")
+    # Play!-Stempel im Kartenfoto (Kartenkoordinaten), von Hand markiert
+    stamp_quad: Optional[list[list[float]]] = None
+
+    @field_validator("bild_quad", "stamp_quad", mode="before")
     @classmethod
     def _quad_json(cls, v):
         if isinstance(v, str):
@@ -194,6 +214,9 @@ class CardResponse(CardBase):
     bild_scan_pfad: Optional[str] = None
     # Gibt es ein Katalogbild, auf das sich umschalten lässt? (nur Einzelkarten)
     katalog_bild: Optional[bool] = None
+    # Deck, in dem die Karte steckt (höchstens eines)
+    deck_id: Optional[int] = None
+    deck_name: Optional[str] = None
     # TCGdex-Anreicherung
     tcgdex_card_id: Optional[str] = None
     set_id: Optional[str] = None

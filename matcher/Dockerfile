@@ -9,6 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
+COPY tools/ ./tools/
 
 # Same uid as the rest of PokéCollect; /data must be writable by it.
 RUN groupadd --system --gid 3010 pokecollect \

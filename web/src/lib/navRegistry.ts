@@ -14,6 +14,7 @@ import {
   Settings,
   ShieldCheck,
   Users,
+  Layers,
 } from "lucide-react";
 
 // Stabile Schlüssel für localStorage — bewusst getrennt vom Pfad, damit ein
@@ -21,6 +22,7 @@ import {
 export type NavKey =
   | "pokedex"
   | "collections"
+  | "decks"
   | "catalog"
   | "scan"
   | "wishlist"
@@ -35,6 +37,7 @@ export type NavKey =
 export type NavLabelKey =
   | "nav_collection"
   | "nav_collections"
+  | "nav_decks"
   | "nav_catalog"
   | "nav_scan_short"
   | "nav_wishlist"
@@ -61,6 +64,7 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: "collections", href: "/collections", Icon: Library, labelKey: "nav_collections" },
   { key: "pokedex", href: "/pokedex", Icon: LayoutGrid, labelKey: "nav_collection" },
   { key: "catalog", href: "/catalog", Icon: BookOpen, labelKey: "nav_catalog" },
+  { key: "decks", href: "/decks", Icon: Layers, labelKey: "nav_decks" },
   { key: "scan", href: "/scan", Icon: ScanLine, labelKey: "nav_scan_short" },
   { key: "wishlist", href: "/wishlist", Icon: Star, labelKey: "nav_wishlist" },
   { key: "stats", href: "/stats", Icon: BarChart3, labelKey: "nav_statistics" },
@@ -96,6 +100,8 @@ export function scanHref(pathname: string): string {
   const q = new URLSearchParams();
   const m = pathname.match(/^\/collections\/(\d+)(?:\/|$)/);
   if (m) q.set("collection", m[1]);
+  const d = pathname.match(/^\/decks\/(\d+)(?:\/|$)/);
+  if (d) q.set("deck", d[1]);
   if (pathname !== "/" && pathname !== "/collections" && !pathname.startsWith("/scan")) q.set("from", pathname);
   const s = q.toString();
   return s ? `/scan?${s}` : "/scan";

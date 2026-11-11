@@ -362,6 +362,7 @@ def remove_card_images(db: Session, card: PokemonCard) -> PokemonCard:
                 pass  # best-effort — DB ist die Wahrheit, Datei-Leak tolerierbar
         setattr(card, path_field, None)
     card.bild_quad = None
+    card.stamp_quad = None
     db.commit()
     db.refresh(card)
     return card

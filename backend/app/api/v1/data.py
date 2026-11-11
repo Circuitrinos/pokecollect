@@ -344,11 +344,26 @@ was cut from), for all users:
                    check      scan quality check, or null if not run: status (ok | low |
                               no_reference | dismissed), inliers and corner_err against the
                               card's catalog image (corner_err = share of the card diagonal)
+                   foiling    Normal | Holo | Reverse Holo (as the user set it), pattern the
+                              foil pattern (Pokéball, Masterball, Cosmos, Etched, …) or null,
+                              version, rarity, first_edition
+                   stamp_quad where the Play! Pokémon stamp is on the crop (4 corners,
+                              0..1 of the crop), marked by hand; null if not marked
+                   reference  the card's catalog image in references/ (usually the plain
+                              print), or null when it isn't cached on the server;
+                              reference_url where to download it otherwise
   photos.jsonl   one JSON object per whole photo: original, width, height, the cards
                  cut from it (id, card_id, quad) and labeled (true when every card
                  has corners)
   crops/         straightened card photos
   originals/     whole photos, stored once per photo
+  references/    catalog images of the scanned cards (once per card id)
+  crops/<id>.txt Play! stamp box (YOLO "0 cx cy w h") for marked Prize Pack cards;
+                 empty for cards without the stamp (negatives). Prize Pack cards
+                 without a marked stamp have no file.
+  stamp.yaml, stamp_train.txt   Ultralytics dataset for a stamp detector on
+                 straightened crops (yolo detect train data=stamp.yaml), one
+                 class: play_stamp
   originals/<photo>.txt   card outlines for detector training (YOLO OBB / segmentation
                  polygon format: "0 x1 y1 x2 y2 x3 y3 x4 y4", normalised), only
                  for photos where every saved card has corners
@@ -365,6 +380,14 @@ Use: evaluation and fine-tuning of the card matcher (embed_experiment:
 segmentation model (photos.jsonl or the YOLO files), a Prize Pack stamp
 classifier (crop + prize_pack). Filter out check.status == "low" to train
 only on clean crops.
+
+Foil / reverse-holo patterns: the catalog image shows the card without its
+foil, so aligning a crop to its reference and subtracting them leaves mostly
+the foil: a reverse holo lights up around the art box, a Poké Ball or Master
+Ball pattern shows its repeated motif, a holo only the art. Photos of the
+same card with different foiling (pairs by card_id) work the same way.
+matcher/tools/holo_diff.py does the alignment and writes the difference
+images plus a CSV per card to start training a pattern classifier.
 """
 
 
@@ -409,18 +432,26 @@ def scan_dataset():
     from PIL import Image
 
     from app.models.scan_check import ScanCheck
+    from app.models.tcgdex_catalog import TcgdexCatalog
+    from app.services.catalog_images import safe_catalog_filename
+    from app.services.tcgdex import is_allowed_image_url
 
     c = PokemonCard.__table__.c
     s = ScanCheck.__table__.c
+    k = TcgdexCatalog.__table__.c
     with engine.connect() as conn:   # Core: bewusst ohne Benutzer-Filter (Admin-Export)
         rows = conn.execute(
-            PokemonCard.__table__.outerjoin(ScanCheck.__table__, s.card_id == c.id).select()
+            PokemonCard.__table__.outerjoin(ScanCheck.__table__, s.card_id == c.id)
+            .outerjoin(TcgdexCatalog.__table__, k.card_id == c.tcgdex_card_id).select()
             .with_only_columns(c.id, c.tcgdex_card_id, c.kartenname, c.englischer_name, c.set_id,
                                c.set_edition, c.karten_nr, c.sprache, c.prize_pack,
+                               c.folierung, c.muster, c.kartenversion, c.seltenheit, c.erste_edition,
+                               c.stamp_quad,
                                func.coalesce(c.bild_scan_pfad, c.bild_karte_pfad).label("crop"),
                                c.bild_original_pfad, c.bild_quad,
                                s.status.label("check_status"), s.inliers.label("check_inliers"),
-                               s.corner_err.label("check_corner_err"))
+                               s.corner_err.label("check_corner_err"),
+                               k.image_pfad.label("ref_pfad"), k.image_url.label("ref_url"))
             .where(scan_export.exportable())
             .order_by(c.id)
         ).mappings().all()
@@ -430,6 +461,8 @@ def scan_dataset():
         labels: list[str] = []
         seen: dict[str, str] = {}
         photos: dict[str, dict] = {}   # Originalfoto → alle daraus geschnittenen Karten (Detektor)
+        refs: dict[str, str] = {}      # TCGdex-ID → Katalogbild im ZIP (Referenz für die Folien-Differenz)
+        stamp_train: list[str] = []    # Zuschnitte mit Stempel-Label (Play!-Stempel-Detektor)
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             for r in rows:
                 crop, orig = safe_media_path(r["crop"]), safe_media_path(r["bild_original_pfad"])
@@ -451,6 +484,34 @@ def scan_dataset():
                     quad = json.loads(r["bild_quad"]) if r["bild_quad"] else None
                 except ValueError:
                     quad = None
+                # Katalogbild (meist der normale Druck) als Referenz — nur aus dem
+                # lokalen Bild-Cache, der Export lädt nichts aus dem Netz
+                ref = None
+                cid = r["tcgdex_card_id"]
+                if cid in refs:
+                    ref = refs[cid]
+                else:
+                    ref_file = safe_media_path(r["ref_pfad"])
+                    if ref_file is not None and ref_file.is_file():
+                        ref = f"references/{safe_catalog_filename(cid)}{ref_file.suffix.lower()}"
+                        zf.write(ref_file, arcname=ref)
+                    refs[cid] = ref
+                try:
+                    stamp = json.loads(r["stamp_quad"]) if r["stamp_quad"] else None
+                except ValueError:
+                    stamp = None
+                stamp = stamp if r["prize_pack"] and _quad_ok(stamp) else None
+                # Stempel-Detektor: Box je markiertem Stempel, leere Datei = sicher ohne
+                # Stempel (kein Prize Pack); Prize Pack ohne Markierung bleibt draußen
+                if stamp or not r["prize_pack"]:
+                    if stamp:
+                        xs, ys = [min(1.0, max(0.0, p[0])) for p in stamp], [min(1.0, max(0.0, p[1])) for p in stamp]
+                        box = f"0 {(min(xs) + max(xs)) / 2:.6f} {(min(ys) + max(ys)) / 2:.6f} " \
+                              f"{max(xs) - min(xs):.6f} {max(ys) - min(ys):.6f}\n"
+                    else:
+                        box = ""
+                    zf.writestr(crop_name.rsplit(".", 1)[0] + ".txt", box)
+                    stamp_train.append("./" + crop_name)
                 check = None if r["check_status"] is None else {
                     "status": r["check_status"], "inliers": r["check_inliers"],
                     "corner_err": r["check_corner_err"]}
@@ -460,6 +521,10 @@ def scan_dataset():
                     "set": r["set_edition"], "number": r["karten_nr"], "language": r["sprache"],
                     "prize_pack": bool(r["prize_pack"]), "crop": crop_name, "original": seen[digest],
                     "quad": quad, "check": check,
+                    "foiling": r["folierung"], "pattern": r["muster"], "version": r["kartenversion"],
+                    "rarity": r["seltenheit"], "first_edition": bool(r["erste_edition"]),
+                    "reference": ref, "stamp_quad": stamp,
+                    "reference_url": r["ref_url"] if is_allowed_image_url(r["ref_url"]) else None,
                 }, ensure_ascii=False))
                 photos[digest]["cards"].append({"id": r["id"], "card_id": r["tcgdex_card_id"], "quad": quad})
             zf.writestr("labels.jsonl", "\n".join(labels) + ("\n" if labels else ""))
@@ -477,6 +542,8 @@ def scan_dataset():
             zf.writestr("photos.jsonl", "\n".join(lines) + ("\n" if lines else ""))
             zf.writestr("detect_train.txt", "\n".join(train) + ("\n" if train else ""))
             zf.writestr("detect.yaml", "path: .\ntrain: detect_train.txt\nval: detect_train.txt\nnames:\n  0: card\n")
+            zf.writestr("stamp_train.txt", "\n".join(stamp_train) + ("\n" if stamp_train else ""))
+            zf.writestr("stamp.yaml", "path: .\ntrain: stamp_train.txt\nval: stamp_train.txt\nnames:\n  0: play_stamp\n")
             zf.writestr("README.txt", _DATASET_README)
         tmp.close()
     except Exception:

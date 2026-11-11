@@ -72,6 +72,10 @@ class TcgdexCatalog(Base):
     # Text schon einmal geholt (Nachholer für vorher geprüfte Zeilen).
     effect_key = Column(Text, nullable=True)
     effect_checked = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Deck-Regeln: Stufe ("Basic", "Stage1", …) bzw. Trainer-Art ("Item",
+    # "Supporter", "Tool", "Stadium") aus TCGdex — NULL = noch nicht geholt
+    stage = Column(Text, nullable=True)
+    trainer_type = Column(Text, nullable=True)
     # Bild-Rückfall pokemon.com (image_fallback.py): wann zuletzt nachgesehen
     pokemon_com_checked = Column(DateTime, nullable=True)
     # Varianten-$-Preise (#63): Subtypen des Basisprodukts (Holofoil/Reverse
