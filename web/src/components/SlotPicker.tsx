@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE, Collection, CollectionCard, collectionApi } from "@/lib/api";
-import { cardImageSrc } from "@/lib/utils";
+import { cardImageSrc, imgFallback } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { MapPin, X } from "lucide-react";
 
@@ -118,13 +118,13 @@ export default function SlotPicker({ collection, value, onChange, pageMode, refr
                   const card = bySlot.get(slot);
                   const selected = !pageMode && value === slot;
                   if (card) {
-                    const { src } = cardImageSrc(card, API_BASE, true);
+                    const { src, fallbacks } = cardImageSrc(card, API_BASE, true);
                     return (
                       <button type="button" key={slot} disabled={!pageMode} onClick={() => choose(slot)}
                         title={card.kartenname} aria-label={`${t.scan_slot_taken}: ${card.kartenname}`}
                         className="aspect-[63/88] overflow-hidden rounded bg-gray-800 opacity-60 disabled:cursor-not-allowed">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        {src && <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />}
+                        {src && <img src={src} alt="" loading="lazy" onError={imgFallback(fallbacks)} className="h-full w-full object-cover" />}
                       </button>
                     );
                   }

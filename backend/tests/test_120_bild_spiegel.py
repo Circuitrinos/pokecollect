@@ -37,7 +37,10 @@ def _eindeutig(basis: str = "https://assets.tcgdex.net/de/test120") -> str:
 def frischer_zustand(monkeypatch):
     """Fehlschlag-Speicher und Locks gelten je Prozess — jeder Test fängt leer an."""
     monkeypatch.setattr(bild_spiegel, "_fehlschlaege", {})
+    monkeypatch.setattr(bild_spiegel, "_kurz", set())
     monkeypatch.setattr(bild_spiegel, "_locks", {})
+    monkeypatch.setattr(bild_spiegel, "_host_plaetze", {})
+    monkeypatch.setattr(bild_spiegel, "_WIEDERHOLEN_NACH", (0.0, 0.0))
 
 
 @pytest.fixture()
@@ -558,3 +561,70 @@ def test_backup_laesst_die_spiegel_ablage_aus(client, netz, png_bytes):
     namen = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     assert "data.json" in namen
     assert not [n for n in namen if n.startswith(f"images/{bild_spiegel.UNTERORDNER}/")]
+
+
+def test_voruebergehender_fehler_wird_sofort_wiederholt(anon_client, netz, png_bytes):
+    """TCGdex antwortete kurz mit 503 — das Bild blieb danach zehn Minuten kaputt."""
+    url = _eindeutig()
+    antworten = iter([httpx.Response(503), httpx.Response(502)])
+    aufgezeichnet = netz(lambda request: next(antworten, None) or _bild(png_bytes)(request))
+    assert anon_client.get(bild_spiegel.spiegel_pfad(url)).status_code == 200
+    assert aufgezeichnet["anfragen"] == [url, url, url]
+
+
+def test_zeitueberschreitung_wird_wiederholt(netz, png_bytes):
+    url = _eindeutig()
+    versuche = {"n": 0}
+
+    def antwort(request):
+        versuche["n"] += 1
+        if versuche["n"] == 1:
+            raise httpx.ReadTimeout("zu langsam", request=request)
+        return _bild(png_bytes)(request)
+
+    netz(antwort)
+    assert asyncio.run(bild_spiegel.datei_fuer(url)) is not None
+    assert versuche["n"] == 2
+
+
+def test_anhaltende_stoerung_pausiert_nur_kurz(anon_client, netz, monkeypatch, png_bytes):
+    url = _eindeutig()
+    antworten = {"status": 503}
+    aufgezeichnet = netz(lambda request: httpx.Response(antworten["status"])
+                         if antworten["status"] != 200 else _bild(png_bytes)(request))
+    pfad = bild_spiegel.spiegel_pfad(url)
+    assert anon_client.get(pfad).status_code == 404
+    assert aufgezeichnet["anfragen"] == [url] * 3               # drei Versuche, dann aufgeben
+    assert anon_client.get(pfad).status_code == 404
+    assert len(aufgezeichnet["anfragen"]) == 3                  # in der kurzen Pause kein neuer Abruf
+    assert bild_spiegel._FEHLSCHLAG_KURZ_SEKUNDEN <= 60 < bild_spiegel._FEHLSCHLAG_SEKUNDEN
+    antworten["status"] = 200
+    monkeypatch.setattr(bild_spiegel, "_FEHLSCHLAG_KURZ_SEKUNDEN", 0.0)   # 10-Minuten-Frist bleibt
+    assert anon_client.get(pfad).status_code == 200
+
+
+def test_dauerhafter_fehler_wird_nicht_wiederholt(anon_client, netz):
+    url = _eindeutig()
+    aufgezeichnet = netz(lambda request: httpx.Response(404))
+    assert anon_client.get(bild_spiegel.spiegel_pfad(url)).status_code == 404
+    assert aufgezeichnet["anfragen"] == [url]
+
+
+def test_hoechstens_vier_abrufe_je_host_gleichzeitig(netz, png_bytes):
+    """Ein Raster mit vielen neuen Karten löste alle Abrufe an TCGdex auf einmal aus."""
+    laufend = {"jetzt": 0, "max": 0}
+
+    async def antwort(request):
+        laufend["jetzt"] += 1
+        laufend["max"] = max(laufend["max"], laufend["jetzt"])
+        await asyncio.sleep(0.02)
+        laufend["jetzt"] -= 1
+        return _bild(png_bytes)(request)
+
+    netz(lambda request: antwort(request))
+
+    async def viele():
+        return await asyncio.gather(*(bild_spiegel.datei_fuer(_eindeutig()) for _ in range(12)))
+
+    assert all(asyncio.run(viele()))
+    assert laufend["max"] == bild_spiegel._JE_HOST

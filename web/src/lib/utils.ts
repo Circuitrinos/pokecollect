@@ -163,6 +163,7 @@ type CardImageFields = {
   bild_pokedex_spiegel?: string | null;  // #120: bild_pokedex_url über die eigene API
   bild_karte_spiegel?: string | null;    // #120: bild_karte_url über die eigene API
   bild_platzhalter_spiegel?: string | null;  // #120: Pokédex-Artwork, signiert vom Backend
+  bild_scan_pfad?: string | null;        // eigenes Scan-Foto, während das Katalogbild angezeigt wird
   aktualisiert_am?: string | null;   // für Cache-Busting eigener Fotos
 };
 
@@ -187,7 +188,7 @@ export function cardImageSrc(
   apiBase: string,
   placeholderEnabled = true,
   variant: "thumb" | "full" = "thumb",
-): { src: string | null; isPlaceholder: boolean } {
+): { src: string | null; isPlaceholder: boolean; fallbacks: string[] } {
   const ownPath = variant === "full" ? card.bild_karte_pfad : card.bild_thumbnail_pfad;
   const own = imageUrl(ownPath, apiBase, card.aktualisiert_am);
   const pokedex = spiegelUrl(card.bild_pokedex_spiegel, apiBase);
@@ -197,5 +198,22 @@ export function cardImageSrc(
     ?? karte
     ?? (placeholderEnabled ? spiegelUrl(card.bild_platzhalter_spiegel, apiBase) : null);
   const isPlaceholder = !own && !pokedex && !karte && !!src;
-  return { src, isPlaceholder };
+  // Lädt src nicht (z.B. Bildquelle kurz nicht erreichbar): erst das Katalogbild,
+  // dann das eigene Scan-Foto, dann das Pokédex-Artwork statt eines kaputten Bildes.
+  const scan = imageUrl(card.bild_scan_pfad, apiBase, card.aktualisiert_am);
+  const placeholder = spiegelUrl(card.bild_platzhalter_spiegel, apiBase);
+  const fallbacks = [karte, scan, placeholder].filter((u, i, all): u is string => !!u && u !== src && all.indexOf(u) === i);
+  return { src, isPlaceholder, fallbacks };
+}
+
+/** onError für ein schlichtes <img>: nacheinander auf die Ersatzbilder wechseln. */
+export function imgFallback(fallbacks: string[]) {
+  return (e: { currentTarget: HTMLImageElement }) => {
+    const img = e.currentTarget;
+    const i = Number(img.dataset.fallback ?? 0);
+    if (i < fallbacks.length) {
+      img.dataset.fallback = String(i + 1);
+      img.src = fallbacks[i];
+    }
+  };
 }

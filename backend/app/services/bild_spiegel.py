@@ -29,7 +29,9 @@ Abrufe auslösen).
 
 Weitere Bremsen (Panel #120): je Quelle höchstens ein Abruf zur Zeit
 (gleichzeitige Anfragen warten auf denselben), ein Fehlschlag wird
-_FEHLSCHLAG_SEKUNDEN lang nicht wiederholt, und der Dateiname der Ablage ist
+_FEHLSCHLAG_SEKUNDEN lang nicht wiederholt (eine vorübergehende Störung wie
+HTTP 503 nur _FEHLSCHLAG_KURZ_SEKUNDEN, nach zwei schnellen Wiederholungen;
+je Host höchstens _JE_HOST Abrufe gleichzeitig), und der Dateiname der Ablage ist
 eine HMAC der Quelle — wer eine Quelle kennt, kann unter /images/spiegel/
 nicht nachsehen, ob sie je angezeigt wurde.
 
@@ -56,6 +58,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+import httpx
 
 from app.config import settings
 from app.services import fremdbild_abruf, tcgdex
@@ -84,9 +88,21 @@ _KODIERT = re.compile(r"[A-Za-z0-9_-]{1,700}")
 _FEHLSCHLAG_SEKUNDEN = 600.0
 _FEHLSCHLAG_MAX_EINTRAEGE = 1000
 
+# Vorübergehende Störung der Quelle (überlastet, Wartung, Zeitüberschreitung):
+# kurz nacheinander erneut versuchen und danach nur kurz pausieren — sonst
+# blieb ein Bild nach einem einzelnen 503 von TCGdex zehn Minuten kaputt.
+_VORUEBERGEHEND = {429, 502, 503, 504}
+_WIEDERHOLEN_NACH = (0.5, 1.5)          # Wartezeiten vor dem 2. und 3. Versuch
+_FEHLSCHLAG_KURZ_SEKUNDEN = 30.0
+# Höchstens so viele Abrufe gleichzeitig je Host — ein Raster mit 180 neuen
+# Karten löste sonst 180 gleichzeitige Anfragen an TCGdex aus.
+_JE_HOST = 4
+
 # je Quelle ein Lock (ein Abruf zur Zeit) und die Zeit des letzten Fehlschlags
 _locks: dict[str, asyncio.Lock] = {}
-_fehlschlaege: dict[str, float] = {}
+_fehlschlaege: dict[str, float] = {}     # Quelle → Zeitpunkt des Fehlschlags
+_kurz: set[str] = set()                  # … davon vorübergehende (kurze Pause)
+_host_plaetze: dict[str, asyncio.Semaphore] = {}
 
 
 def ist_spiegelbar(url: Optional[str]) -> bool:
@@ -189,16 +205,43 @@ def _kuerzlich_gescheitert(url: str) -> bool:
     zeit = _fehlschlaege.get(url)
     if zeit is None:
         return False
-    if time.monotonic() - zeit < _FEHLSCHLAG_SEKUNDEN:
+    frist = _FEHLSCHLAG_KURZ_SEKUNDEN if url in _kurz else _FEHLSCHLAG_SEKUNDEN
+    if time.monotonic() - zeit < frist:
         return True
     del _fehlschlaege[url]
+    _kurz.discard(url)
     return False
 
 
-def _fehlschlag_merken(url: str) -> None:
+def _fehlschlag_merken(url: str, voruebergehend: bool = False) -> None:
     if len(_fehlschlaege) >= _FEHLSCHLAG_MAX_EINTRAEGE:
         _fehlschlaege.clear()
+        _kurz.clear()
     _fehlschlaege[url] = time.monotonic()
+    if voruebergehend:
+        _kurz.add(url)
+    else:
+        _kurz.discard(url)
+
+
+def _ist_voruebergehend(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.TransportError):        # Zeitüberschreitung, Verbindung abgebrochen
+        return True
+    return isinstance(exc, fremdbild_abruf.AbrufFehler) and exc.status in _VORUEBERGEHEND
+
+
+async def _holen_mit_wiederholung(url: str) -> bytes:
+    plaetze = _host_plaetze.setdefault(urlsplit(url).hostname or "", asyncio.Semaphore(_JE_HOST))
+    for warten in (*_WIEDERHOLEN_NACH, None):
+        try:
+            async with plaetze:
+                return await fremdbild_abruf.bild_holen(url, erlaubt=ist_spiegelbar)
+        except Exception as exc:  # noqa: BLE001 — nur vorübergehende Fehler werden wiederholt
+            if warten is None or not _ist_voruebergehend(exc):
+                raise
+            log.info("Bild-Spiegel: %s vorübergehend nicht abrufbar (%s), neuer Versuch", url, exc)
+            await asyncio.sleep(warten)
+    raise AssertionError("unerreichbar")
 
 
 async def datei_fuer(url: str) -> Optional[Path]:
@@ -225,7 +268,7 @@ async def datei_fuer(url: str) -> Optional[Path]:
 async def _holen_und_ablegen(url: str) -> Optional[Path]:
     tmp: Optional[Path] = None
     try:
-        daten = await fremdbild_abruf.bild_holen(url, erlaubt=ist_spiegelbar)
+        daten = await _holen_mit_wiederholung(url)
         endung = fremdbild_abruf.bild_endung(daten)
         ziel = _ablage(url, endung)
         ziel.parent.mkdir(parents=True, exist_ok=True)
@@ -236,7 +279,7 @@ async def _holen_und_ablegen(url: str) -> Optional[Path]:
         return ziel
     except Exception as exc:  # noqa: BLE001 — eine fremde Quelle darf die Antwort nie sprengen
         log.warning("Bild-Spiegel: %s nicht abrufbar: %s", url, exc)
-        _fehlschlag_merken(url)
+        _fehlschlag_merken(url, voruebergehend=_ist_voruebergehend(exc))
         if tmp is not None:
             try:
                 tmp.unlink(missing_ok=True)

@@ -55,7 +55,7 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
       {cards.map((card) => {
-        const { src: imgSrc, isPlaceholder } = cardImageSrc(card, apiBase, placeholderEnabled);
+        const { src: imgSrc, isPlaceholder, fallbacks } = cardImageSrc(card, apiBase, placeholderEnabled);
         const borderColor = card.seltenheit ? (RARITY_BORDER[card.seltenheit] ?? "border-gray-600") : "border-gray-600";
 
         // Sprachabhängiger Name
@@ -109,6 +109,7 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
                   <>
                     <Image
                       src={imgSrc}
+                      fallbacks={fallbacks}
                       alt={card.kartenname}
                       fill
                       className={isPlaceholder ? "object-contain p-2 opacity-70" : "object-cover"}

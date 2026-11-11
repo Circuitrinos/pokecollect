@@ -1,6 +1,7 @@
 "use client";
 
 import Image, { type ImageProps } from "next/image";
+import { useState } from "react";
 
 import { API_BASE } from "@/lib/api";
 
@@ -32,7 +33,24 @@ export function istApiBild(src: ImageProps["src"]): boolean {
   );
 }
 
-/** next/image mit der Ausnahme für API-Bilder — überall statt next/image verwenden. */
-export default function AppImage({ alt, unoptimized, ...rest }: ImageProps) {
-  return <Image alt={alt} unoptimized={unoptimized || istApiBild(rest.src)} {...rest} />;
+/** next/image mit der Ausnahme für API-Bilder — überall statt next/image verwenden.
+ *  fallbacks: Ersatzbilder, nacheinander versucht, wenn src nicht lädt (statt kaputtem Bild). */
+export default function AppImage({ alt, unoptimized, fallbacks, onError, src, ...rest }: ImageProps & { fallbacks?: string[] }) {
+  const base = typeof src === "string" ? src : null;
+  const [failed, setFailed] = useState<{ base: string | null; step: number }>({ base: null, step: 0 });
+  const step = failed.base === base ? failed.step : 0;   // neues src → von vorn
+  const chain = base ? [base, ...(fallbacks ?? [])] : [];
+  const shown = base ? chain[Math.min(step, chain.length - 1)] : src;
+  return (
+    <Image
+      alt={alt}
+      src={shown}
+      unoptimized={unoptimized || istApiBild(shown)}
+      onError={(e) => {
+        if (base && step + 1 < chain.length) setFailed({ base, step: step + 1 });
+        onError?.(e);
+      }}
+      {...rest}
+    />
+  );
 }

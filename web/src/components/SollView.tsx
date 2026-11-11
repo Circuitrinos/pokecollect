@@ -12,7 +12,7 @@ import RarityBadge from "@/components/RarityBadge";
 import ViewToggle, { ViewMode } from "@/components/ViewToggle";
 import { useEnums } from "@/lib/useEnums";
 import { useI18n } from "@/lib/i18n";
-import { cardImageSrc } from "@/lib/utils";
+import { cardImageSrc, imgFallback } from "@/lib/utils";
 
 type Props = {
   collection: Collection;
@@ -188,10 +188,10 @@ export default function SollView({ collection, onMetaChange }: Props) {
     const image = (
       <div className="aspect-[63/88] relative bg-gray-800">
         {slot.erfuellt && slot.karte ? (() => {
-          const { src, isPlaceholder } = cardImageSrc(slot.karte, API_BASE);
+          const { src, isPlaceholder, fallbacks } = cardImageSrc(slot.karte, API_BASE);
           return src ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={src} alt={name} loading="lazy"
+            <img src={src} alt={name} loading="lazy" onError={imgFallback(fallbacks)}
               className={`w-full h-full ${isPlaceholder ? "object-contain p-2 opacity-70" : "object-cover"}`} />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-600 text-[11px] text-center p-2">{name}</div>

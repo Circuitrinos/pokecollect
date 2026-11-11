@@ -369,7 +369,7 @@ export default function CollectionDetailPage() {
           ) : (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2 max-h-[28rem] overflow-y-auto pr-1">
               {results.map((c) => {
-                const { src, isPlaceholder } = cardImageSrc(c, API_BASE);
+                const { src, isPlaceholder, fallbacks } = cardImageSrc(c, API_BASE);
                 const name = lang === "EN" && c.englischer_name ? c.englischer_name : c.kartenname;
                 return (
                   <button type="button"
@@ -382,7 +382,7 @@ export default function CollectionDetailPage() {
                   >
                     <div className="aspect-[63/88] relative bg-gray-800">
                       {src && (
-                        <Image src={src} alt={name} fill className={isPlaceholder ? "object-contain p-1 opacity-70" : "object-cover"} sizes="120px" />
+                        <Image src={src} fallbacks={fallbacks} alt={name} fill className={isPlaceholder ? "object-contain p-1 opacity-70" : "object-cover"} sizes="120px" />
                       )}
                       <div className="absolute inset-0 bg-green-600/0 group-hover:bg-green-600/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
                         <span className="bg-green-700 text-white text-xs px-2 py-1 rounded">+ {t.collection_add}</span>

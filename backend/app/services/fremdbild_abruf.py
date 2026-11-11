@@ -34,7 +34,12 @@ FORMAT_ENDUNGEN = {"WEBP": ".webp", "JPEG": ".jpg", "PNG": ".png"}
 
 
 class AbrufFehler(Exception):
-    """Ein fremdes Bild ließ sich nicht abrufen oder ist kein erlaubtes Bild."""
+    """Ein fremdes Bild ließ sich nicht abrufen oder ist kein erlaubtes Bild.
+    status: HTTP-Status der Quelle, wenn sie mit etwas anderem als 200 antwortete."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 async def bild_holen(url: str, *, erlaubt: Callable[[str], bool]) -> bytes:
@@ -55,7 +60,7 @@ async def bild_holen(url: str, *, erlaubt: Callable[[str], bool]) -> bytes:
         async with client.stream("GET", url) as resp:
             if resp.status_code != 200:
                 # 3xx eingeschlossen: Weiterleitungen werden nicht verfolgt.
-                raise AbrufFehler(f"HTTP {resp.status_code} statt 200")
+                raise AbrufFehler(f"HTTP {resp.status_code} statt 200", status=resp.status_code)
             content_type = resp.headers.get("content-type", "")
             if not content_type.lower().startswith("image/"):
                 raise AbrufFehler(f"unerwarteter Content-Type: {content_type!r}")

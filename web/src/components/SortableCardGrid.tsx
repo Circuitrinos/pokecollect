@@ -57,7 +57,7 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, 
       ) : <p className="text-gray-500 text-xs mb-2">{t.collection_reorder_hint}</p>)}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
         {order.map((card) => {
-          const { src, isPlaceholder } = cardImageSrc(card, apiBase);
+          const { src, isPlaceholder, fallbacks } = cardImageSrc(card, apiBase);
           const name = lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname;
           const isSel = selectMode && selection!.ids.has(card.id);
           return (
@@ -95,6 +95,7 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, 
                   {src ? (
                     <Image
                       src={src}
+                      fallbacks={fallbacks}
                       alt={name}
                       fill
                       draggable={false}

@@ -375,7 +375,7 @@ export default function BinderView({
               );
             }
 
-            const { src, isPlaceholder } = cardImageSrc(card, apiBase, placeholderEnabled);
+            const { src, isPlaceholder, fallbacks } = cardImageSrc(card, apiBase, placeholderEnabled);
             const name = lang === "EN" && card.englischer_name ? card.englischer_name : card.kartenname;
             const code = setCodeFromEdition(card.set_edition) ?? "";
             const dimmed = highlightIds ? !highlightIds.has(card.id) : false;
@@ -424,6 +424,7 @@ export default function BinderView({
                   {src ? (
                     <Image
                       src={src}
+                      fallbacks={fallbacks}
                       alt={name}
                       fill
                       draggable={false}
