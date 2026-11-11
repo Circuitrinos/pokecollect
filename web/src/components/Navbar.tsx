@@ -15,23 +15,19 @@ export default function Navbar() {
   const { t, lang, setLang } = useI18n();
   const pathname = usePathname() ?? "/";
   const isAdmin = useMe()?.is_admin ?? false;
-  // Passt die Link-Reihe nicht ganz: rechts ausblenden, damit erkennbar ist, dass sie scrollt
+  // Passen nicht alle Links in die Kopfzeile: ☰ statt Links. Die Links bleiben
+  // dann unsichtbar im Layout, damit weiter gemessen werden kann, wann sie
+  // wieder passen (sonst würde die Kopfzeile hin- und herspringen).
   const linksRef = useRef<HTMLDivElement>(null);
-  const [cramped, setCramped] = useState(false);   // nicht alle Links passen → ☰ zeigen
-  const [overflow, setOverflow] = useState(false);  // … und rechts ist noch mehr
+  const [cramped, setCramped] = useState(false);
   useEffect(() => {
     const el = linksRef.current;
     if (!el) return;
-    const measure = () => {
-      const tooWide = el.scrollWidth > el.clientWidth + 1;
-      setCramped(tooWide);
-      setOverflow(tooWide && el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-    };
+    const measure = () => setCramped(el.scrollWidth > el.clientWidth + 1);
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    el.addEventListener("scroll", measure, { passive: true });
-    return () => { ro.disconnect(); el.removeEventListener("scroll", measure); };
+    return () => ro.disconnect();
   }, [isAdmin, pathname]);
 
   // Vor dem Login kein App-Chrome (Issue #1)
@@ -51,10 +47,9 @@ export default function Navbar() {
       <span className="text-gray-600 text-xs hidden sm:inline">v{APP_VERSION}</span>
 
       {/* Desktop-Links: alle Seiten aus der Registry (wie ☰-Menü und Bottom-Nav);
-          bei schmalem Fenster scrollt die Reihe seitlich. Mobil: Bottom-Nav. */}
-      <div ref={linksRef} data-testid="top-links"
-        className={`hidden md:flex items-center gap-5 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-          overflow ? "[mask-image:linear-gradient(to_right,black_calc(100%-40px),transparent)]" : ""}`}>
+          passen sie nicht alle, übernimmt ☰. Mobil: ☰ und Bottom-Nav. */}
+      <div ref={linksRef} data-testid="top-links" aria-hidden={cramped || undefined}
+        className={`hidden md:flex items-center gap-5 min-w-0 overflow-hidden ${cramped ? "invisible" : ""}`}>
         {visibleNavTargets(isAdmin).filter((target) => !OWN_BUTTON.has(target.key)).map((target) => {
           const active = isNavActive(pathname, target);
           return (
