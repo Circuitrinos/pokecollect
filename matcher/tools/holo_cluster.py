@@ -8,7 +8,9 @@ foil remains. Each difference is described by where the foil is (art box,
 frame, a coarse grid), what its texture looks like (spectrum: fine sparkle vs.
 repeated motifs like Poké Balls or type symbols, and the direction of lines)
 and how strong it is. Similar cards end up in the same bucket (k-means; the
-number of buckets is picked automatically unless you give --k).
+number of buckets is picked automatically unless you give --k). Only cards that
+also exist as a plain print are compared by default — an ex or full art is foil
+all over and its catalog image is that foil print (--all compares them anyway).
 
 Run it in the matcher container, which has everything it needs:
 
@@ -48,6 +50,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from holo_diff import ART, H, W, Dataset, align, decode, difference, fetch, match_light, regions  # noqa: E402
 
 THUMB = (126, 176)
+# Prints that are foil all over (ex, full arts, …): the catalog image shows the
+# foil print itself, so there is nothing plain to subtract. Left out unless --all.
+FULL_FOIL_RARITIES = {
+    "double rare", "ultra rare", "illustration rare", "special illustration rare", "hyper rare",
+    "secret rare", "shiny rare", "shiny ultra rare", "ace spec rare", "rare holo v", "holo rare v",
+    "holo rare vmax", "holo rare vstar", "rare holo vmax", "rare holo vstar", "radiant rare",
+    "amazing rare", "rare ultra", "rare secret", "rare rainbow", "mega hyper rare", "black white rare",
+}
+
+
+def reverse_candidate(lab: dict) -> bool:
+    """Cards that exist as a plain print and as a reverse holo: commons, uncommons,
+    rares (not the holo print of a rare), trainers — the catalog image is the plain one."""
+    rarity = (lab.get("rarity") or "").strip().lower()
+    name = (lab.get("name") or "").strip().lower()
+    if rarity in FULL_FOIL_RARITIES or name.endswith((" ex", " gx", " v", " vmax", " vstar")):
+        return False
+    return (lab.get("foiling") or "Normal") in ("Normal", "Reverse Holo")
 GRID = (6, 4)            # rows × columns of the coarse "where is the foil" layout
 RADIAL_BINS = 16
 ORIENT_BINS = 12
@@ -209,6 +229,8 @@ def main() -> int:
     ap.add_argument("--download", action="store_true", help="fetch catalog images that aren't in the dataset")
     ap.add_argument("--recluster", action="store_true", help="only re-sort cached features")
     ap.add_argument("--limit", type=int, default=0, help="only the first N cards (quick test)")
+    ap.add_argument("--all", action="store_true",
+                    help="also full-foil prints (ex, full arts, holo rares) — by default only cards with a plain print")
     args = ap.parse_args()
     out, cache = args.out, args.out / "cache"
     cache.mkdir(parents=True, exist_ok=True)
@@ -236,6 +258,10 @@ def main() -> int:
             ap.error("give a dataset ZIP/folder or --server")
         ds = Dataset(src)
         labels = [lab for lab in ds.labels() if (lab.get("check") or {}).get("status") != "low"]
+        if not args.all:
+            n_all = len(labels)
+            labels = [lab for lab in labels if reverse_candidate(lab)]
+            print(f"{len(labels)} of {n_all} cards can be plain or reverse holo (--all for the rest)", flush=True)
         if args.limit:
             labels = labels[:args.limit]
         refs: dict[str, np.ndarray | None] = {}
@@ -276,7 +302,7 @@ def main() -> int:
         meta_file.write_text("\n".join(json.dumps(known[i], ensure_ascii=False) for i in ids if i in known) + "\n",
                              encoding="utf-8")
 
-    ids = [i for i in sorted(feats) if i in known]
+    ids = [i for i in sorted(feats) if i in known and (args.all or reverse_candidate(known[i]))]
     if len(ids) < 3:
         print("Not enough cards to sort (need at least 3 with a catalog image).")
         return 1

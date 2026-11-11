@@ -152,6 +152,9 @@ silhouette unless `--k` is given). It can fetch the dataset from the app itself:
     docker exec -it <matcher> python /app/tools/holo_cluster.py \
         --server http://api:8000 --user <admin> --out /tmp/holo_clusters --download
 
+By default it only compares cards that also exist as a plain print (commons,
+uncommons, rares, trainers): ex, full-art and other all-foil prints have no plain
+catalog image to subtract (`--all` includes them anyway).
 It writes a contact sheet per bucket (`cluster_NN.jpg`, photo + difference,
 most typical cards first), `clusters.csv` and `summary.txt` with the labels
 each bucket contains. Differences are cached; `--recluster --k N` re-sorts
