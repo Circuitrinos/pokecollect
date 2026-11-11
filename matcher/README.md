@@ -138,3 +138,17 @@ that aren't cached on the server. The frame/art ratio alone already tells
 reverse holo from plain and holo apart; the sheets are training material for a
 real pattern classifier. Label the foiling and pattern on each card (card page
 → Foiling / Pattern) before exporting.
+
+`tools/holo_cluster.py` does the same for every scanned card and sorts the
+differences into buckets of similar foil (where the foil is, its texture
+spectrum and line directions; k-means, the number of buckets picked by
+silhouette unless `--k` is given). It can fetch the dataset from the app itself:
+
+    docker exec -it <matcher> python /app/tools/holo_cluster.py \
+        --server http://api:8000 --user <admin> --out /tmp/holo_clusters --download
+
+It writes a contact sheet per bucket (`cluster_NN.jpg`, photo + difference,
+most typical cards first), `clusters.csv` and `summary.txt` with the labels
+each bucket contains. Differences are cached; `--recluster --k N` re-sorts
+without aligning everything again. Use the buckets to name the pattern types
+you own and set Foiling / Pattern on those cards.
