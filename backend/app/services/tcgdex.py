@@ -31,7 +31,8 @@ API_BASE = "https://api.tcgdex.net/v2"
 # eingeschleust wird. Immer https.
 # tcgplayer-cdn: JP-Bild-Fallback für neue Sets, die TCGdex fehlen (Epic #41).
 # assets.pokemon.com: offizielle Kartendatenbank als Bild-Rückfall (pokemon_com.py)
-ALLOWED_IMAGE_HOSTS = {"assets.tcgdex.net", "tcgplayer-cdn.tcgplayer.com", "assets.pokemon.com"}
+# images.pokemontcg.io: Bildvorschläge des Werkzeugs „Bild finden" (services/picture_finder.py)
+ALLOWED_IMAGE_HOSTS = {"assets.tcgdex.net", "tcgplayer-cdn.tcgplayer.com", "assets.pokemon.com", "images.pokemontcg.io"}
 
 # Serien, die NICHT übernommen werden. 'tcgp' = „Pokémon TCG Pocket": ein reines
 # Handy-Spiel, dessen Karten nicht physisch existieren. PokéCollect verfolgt echte

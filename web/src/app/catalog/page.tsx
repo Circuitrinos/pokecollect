@@ -75,6 +75,7 @@ export default function CatalogPage() {
   const [illustrator, setIllustrator] = useState("");
   const [generation, setGeneration] = useState("");
   const [region, setRegion] = useState("");
+  const [noImage, setNoImage] = useState(false);   // nur Karten ohne Bild (für „Bild finden")
   const [sort, setSort] = useState<"set" | "name" | "dex">("set");
   const [reverse, setReverse] = useState(false);
   const [then, setThen] = useState<SortStep[]>([]);   // Untersortierungen (zuvor gewählte Sortierungen)
@@ -113,15 +114,16 @@ export default function CatalogPage() {
       if (illustrator) params.illustrator = illustrator;
       if (generation) params.generation = Number(generation);
       if (region) params.region = region;
+      if (noImage) params.no_image = true;
       const r = await catalogApi.list(params);
       setData(r.data);
     } finally {
       setLoading(false);
     }
-  }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam, page, lang]);
+  }, [q, setCode, illustrator, generation, region, noImage, sort, reverse, thenParam, page, lang]);
 
   useEffect(() => { const h = setTimeout(load, 300); return () => clearTimeout(h); }, [load]);
-  useEffect(() => { setPage(1); }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam]);
+  useEffect(() => { setPage(1); }, [q, setCode, illustrator, generation, region, noImage, sort, reverse, thenParam]);
 
   const addWishlist = async (c: CatalogItem) => {
     try {
@@ -241,6 +243,10 @@ export default function CatalogPage() {
           <option value="west">{t.catalog_region_west}</option>
           <option value="ja">{t.catalog_region_ja}</option>
         </select>
+        <label className="flex items-center gap-1 text-sm text-gray-300">
+          <input type="checkbox" checked={noImage} onChange={(e) => setNoImage(e.target.checked)} data-testid="catalog-no-image" />
+          {t.catalog_no_image_filter}
+        </label>
         <select value={sort} onChange={(e) => changeSort(e.target.value as "set" | "name" | "dex")} aria-label={t.sort_label}
           className="bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white text-sm">
           <option value="set">{t.catalog_sort_set}</option>
@@ -252,9 +258,9 @@ export default function CatalogPage() {
           label={(k) => ({ set: t.catalog_sort_set, name: t.catalog_sort_name, dex: t.catalog_sort_dex } as Record<string, string>)[k] ?? k} />
       </div>
 
-      {(q || setCode || illustrator || generation || region || sort !== "set" || reverse || then.length > 0) && (
+      {(q || setCode || illustrator || generation || region || noImage || sort !== "set" || reverse || then.length > 0) && (
         <button type="button"
-          onClick={() => { setQ(""); setSetCode(""); setIllustrator(""); setGeneration(""); setRegion(""); setSort("set"); setReverse(false); setThen([]); }}
+          onClick={() => { setQ(""); setSetCode(""); setIllustrator(""); setGeneration(""); setRegion(""); setNoImage(false); setSort("set"); setReverse(false); setThen([]); }}
           className="text-gray-400 hover:text-white text-xs underline"
         >
           {t.filter_reset}
@@ -370,7 +376,7 @@ export default function CatalogPage() {
         <CatalogCardModal
           card={selected}
           collections={collections}
-          onClose={() => setSelected(null)}
+          onClose={() => { setSelected(null); void load(); }}
           onAdded={() => {
             setSelected(null);
             catalogApi.meta().then((r) => setMeta(r.data)).catch(() => {});

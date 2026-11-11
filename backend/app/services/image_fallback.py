@@ -78,11 +78,15 @@ async def find_catalog_image(db: Session, card: PokemonCard) -> Optional[str]:
     from app.services import tcgdex
     from app.services.card_image_service import apply_card_to_model, fetch_tcgdex_card, resolve_set_id
 
-    if is_allowed_image_url(card.bild_karte_url):
+    from app.services.picture_finder import katalog_id, katalog_url
+
+    if is_allowed_image_url(card.bild_karte_url) or katalog_id(card.bild_karte_url):
         return card.bild_karte_url
     row = catalog_row_for(db, card.tcgdex_card_id) if card.tcgdex_card_id else None
     if row is not None and is_allowed_image_url(row.image_url) and row.image_source != "tcgplayer":
         return row.image_url
+    if row is not None and row.image_pfad and row.image_source == "manual":
+        return katalog_url(row.card_id)      # lokal gespeichertes Katalogbild („Bild finden")
     set_id = card.set_id or resolve_set_id(db, card.set_edition) or (row.set_id if row is not None else None)
     tc = await fetch_tcgdex_card(set_id, card.karten_nr, card.sprache) if set_id else None
     if tc is not None:

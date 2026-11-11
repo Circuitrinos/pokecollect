@@ -5,7 +5,8 @@ Read-only; per Stern auf die Wunschliste / in Sammlungen übernehmbar.
 
 import math
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,8 @@ from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
-from app.services import catalog as catalog_svc, catalog_images, pokemon_com, regulation, sorting, tcgdex
+from app.services import catalog as catalog_svc, catalog_images, picture_finder, pokemon_com, regulation, sorting, tcgdex
+from app.services import bild_spiegel
 from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
 from app.services.settings import get_setting
@@ -45,6 +47,7 @@ def list_catalog(
     reverse: bool = False,   # Reihenfolge umkehren; fehlende Werte bleiben am Ende
     then: str = Query("", max_length=60, pattern=sorting.then_pattern(("set", "name", "dex"))),   # Untersortierungen
     lang: str = Query("DE", pattern="^(DE|EN)$"),   # UI-Sprache: Sortieren nach Name auf Englisch = englischer Name
+    no_image: bool = False,   # nur Karten ohne Bild („Bild finden")
     # #117: ohne Obergrenze sprengte (page-1)*limit den OFFSET (bigint) → 500
     page: int = Query(1, ge=1, le=PG_INTEGER_MAX),
     limit: int = Query(60, ge=1, le=500),
@@ -83,6 +86,8 @@ def list_catalog(
         query = query.where(TcgdexCatalog.set_id == set_id)
     if region:
         query = query.where(TcgdexCatalog.region == region)
+    if no_image:
+        query = query.where(TcgdexCatalog.image_url.is_(None), TcgdexCatalog.image_pfad.is_(None))
     if illustrator:
         query = query.where(TcgdexCatalog.illustrator.ilike(f"%{illustrator}%"))
     if generation and generation in GEN_RANGES:
@@ -280,6 +285,66 @@ async def catalog_card_detail(
         background_tasks.add_task(catalog_images.cache_one_on_demand, card_id)
 
     return detail
+
+
+# ── Bild finden (Admin): Vorschläge aus offenen Quellen, eingefügte Bilder ──
+
+class PictureRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=500)
+
+
+def _catalog_row(db: Session, card_id: str) -> TcgdexCatalog:
+    row = db.get(TcgdexCatalog, card_id) or db.scalars(
+        select(TcgdexCatalog).where(func.upper(TcgdexCatalog.card_id) == card_id.upper())).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
+    return row
+
+
+def _picture_result(db: Session, row: TcgdexCatalog, request: Request, updated: int) -> dict:
+    return {"image_url": catalog_images.resolve_catalog_image_url(row.image_pfad, row.image_url, str(request.base_url)),
+            "image_source": row.image_source, "cards_updated": updated}
+
+
+@router.get("/{card_id}/pictures", dependencies=[Depends(require_admin)])
+async def picture_candidates(card_id: str, request: Request, db: Session = Depends(get_db)):
+    """Bildvorschläge für eine Katalogkarte und der Suchbegriff für die Websuche."""
+    row = _catalog_row(db, card_id)
+    cands = await picture_finder.candidates(row)
+    set_en = english_set_names(db, [row.set_id]).get(row.set_id)
+    query = " ".join(x for x in (row.name_en or row.name, set_en or row.set_name, row.local_id, "pokemon card") if x)
+    return {
+        "card_id": row.card_id,
+        "current": catalog_images.resolve_catalog_image_url(row.image_pfad, row.image_url, str(request.base_url)),
+        "query": query,
+        "candidates": [{**c, "spiegel": bild_spiegel.spiegel_pfad(c["url"])} for c in cands],
+    }
+
+
+@router.post("/{card_id}/picture", dependencies=[Depends(require_admin)])
+async def use_picture(card_id: str, req: PictureRequest, request: Request, db: Session = Depends(get_db)):
+    """Einen Vorschlag (erlaubter Bild-Host) als Katalogbild übernehmen; eigene Karten ohne Bild bekommen es auch."""
+    row = _catalog_row(db, card_id)
+    if not tcgdex.is_allowed_image_url(req.url):
+        raise HTTPException(status_code=422, detail="Bildadresse nicht erlaubt")
+    if await bild_spiegel.datei_fuer(req.url) is None:
+        raise HTTPException(status_code=404, detail="Bild nicht verfügbar")
+    updated = picture_finder.use_url(db, row, req.url)
+    return _picture_result(db, row, request, updated)
+
+
+@router.post("/{card_id}/picture/upload", dependencies=[Depends(require_admin)])
+async def upload_picture(card_id: str, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Eingefügtes oder hochgeladenes Bild (z. B. aus der Bildersuche kopiert) als Katalogbild speichern."""
+    row = _catalog_row(db, card_id)
+    data = await file.read(picture_finder.MAX_BYTES + 1)
+    if len(data) > picture_finder.MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 15 MB)")
+    try:
+        updated = picture_finder.store_upload(db, row, data)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bilddatei konnte nicht verarbeitet werden")
+    return _picture_result(db, row, request, updated)
 
 
 @router.post("/{card_id}/wishlist")

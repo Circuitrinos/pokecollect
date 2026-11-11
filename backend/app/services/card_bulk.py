@@ -39,11 +39,15 @@ def _rel(p: Path) -> str:
 def use_catalog_image(db: Session, card: PokemonCard) -> bool:
     if not card.bild_karte_pfad:
         return False                                   # zeigt schon das Katalogbild
+    from app.services.picture_finder import katalog_id, katalog_url
+
     url = card.bild_karte_url
     if not url and card.tcgdex_card_id:
         row = catalog_row_for(db, card.tcgdex_card_id)
-        url = row.image_url if row is not None else None
-    if not url or not is_allowed_image_url(url):
+        if row is not None:
+            # lokal gespeichertes Katalogbild („Bild finden") gilt auch
+            url = row.image_url or (katalog_url(row.card_id) if row.image_pfad and row.image_source == "manual" else None)
+    if not url or not (is_allowed_image_url(url) or katalog_id(url)):
         return False                                   # kein Katalogbild → Foto bleibt
     src = safe_media_path(card.bild_karte_pfad)
     if src is not None and src.is_file():

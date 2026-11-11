@@ -11,6 +11,7 @@ import { useI18n } from "@/lib/i18n";
 import { useMe } from "@/lib/useMe";
 import { scanExportProblems } from "@/lib/scanExport";
 import { IMAGE_LANGS } from "@/lib/imageLang";
+import PictureFinder from "@/components/PictureFinder";
 
 // Foto-Spalte der Kartendetailseite (Issue #14): Anzeige, Aufnahme/Upload,
 // Eck-Editor (Zuschnitt/Entzerrung), Bild-URL und Löschen. Herausgeschnitten
@@ -33,7 +34,9 @@ type Props = {
 export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageClick, onSwipeCard, autoFixCrop }: Props) {
   const { t } = useI18n();
   // Nur Admins: Hinweis, wenn das Foto nicht in den Scan-Trainingsdatensatz kommt
-  const exportProblems = useMe()?.is_admin ? scanExportProblems(card) : [];
+  const isAdmin = !!useMe()?.is_admin;
+  const exportProblems = isAdmin ? scanExportProblems(card) : [];
+  const [pictureOpen, setPictureOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -87,7 +90,9 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const isAutoCard = !card.bild_karte_pfad && !card.bild_pokedex_spiegel && !!card.bild_karte_spiegel;
   // Woher das automatische Bild kommt (TCGdex, offizielle Datenbank, TCGplayer)
   const autoSource = card.bild_karte_url?.includes("assets.pokemon.com") ? "pokemon.com"
-    : card.bild_karte_url?.includes("tcgplayer") ? "TCGplayer" : "TCGdex";
+    : card.bild_karte_url?.includes("tcgplayer") ? "TCGplayer"
+    : card.bild_karte_url?.includes("pokemontcg.io") ? "pokemontcg.io"
+    : card.bild_karte_url?.startsWith("katalog:") ? (t.detail_provenance_image("katalog") ?? "PokéCollect") : "TCGdex";
   // Tap/Klick aufs Bild öffnet die Lightbox — außer direkt nach einem Wisch.
   const handleImageClick = () => {
     if (swipeSuppressClick.current) { swipeSuppressClick.current = false; return; }
@@ -361,6 +366,17 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       </button>
       {finderOpen && (
         <CardFinder card={card} onClose={() => setFinderOpen(false)} onLinked={(c) => onCardSaved(c)} />
+      )}
+      {isAdmin && card.tcgdex_card_id && (
+        <button type="button" onClick={() => setPictureOpen(true)} data-testid="card-find-picture"
+          className="w-full mt-1 text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5">
+          🖼 {t.pic_find}
+        </button>
+      )}
+      {pictureOpen && card.tcgdex_card_id && (
+        <PictureFinder cardId={card.tcgdex_card_id} name={card.englischer_name || card.kartenname}
+          onClose={() => setPictureOpen(false)}
+          onApplied={() => { setPictureOpen(false); cardApi.get(card.id).then((r) => onCardUpdated(r.data)).catch(() => {}); }} />
       )}
       {exportProblems.length > 0 && (
         <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200" data-testid="scan-export-warning">

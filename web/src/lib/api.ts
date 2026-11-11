@@ -840,8 +840,21 @@ export type CatalogDetail = CatalogItem & {
   price_usd_masterball?: number | null;
 };
 
+export type PictureCandidate = { url: string; spiegel: string | null; source: string; label: string };
+export type PictureCandidates = { card_id: string; current: string | null; query: string; candidates: PictureCandidate[] };
+export type PictureResult = { image_url: string | null; image_source: string | null; cards_updated: number };
+
 export const catalogApi = {
   list: (params: Record<string, unknown> = {}) => api.get<CatalogListResponse>("/catalog", { params }),
+  // Bild finden (Admin): Vorschläge, Bildadresse übernehmen, eingefügtes Bild hochladen
+  pictures: (cardId: string) => api.get<PictureCandidates>(`/catalog/${encodeURIComponent(cardId)}/pictures`),
+  usePicture: (cardId: string, url: string) =>
+    api.post<PictureResult>(`/catalog/${encodeURIComponent(cardId)}/picture`, { url }),
+  uploadPicture: (cardId: string, file: Blob) => {
+    const form = new FormData();
+    form.append("file", file, "picture");
+    return api.post<PictureResult>(`/catalog/${encodeURIComponent(cardId)}/picture/upload`, form);
+  },
   detail: (cardId: string, opts?: { signal?: AbortSignal }) =>
     api.get<CatalogDetail>(`/catalog/${encodeURIComponent(cardId)}/detail`, opts),
   meta: () => api.get<{ total: number; enriched: number; cached_images: number }>("/catalog/meta"),

@@ -70,6 +70,8 @@ EN: dict[str, str] = {
     "Kein Originalfoto zum Neu-Zuschneiden": "There is no original photo to crop again",
     "Scan-Prüfung nicht gefunden": "Scan check not found",
     "Bild-Abgleich nicht erreichbar": "The image matcher can't be reached",
+    "Bildadresse nicht erlaubt": "This image address isn't allowed",
+    "Bild zu groß (max. 15 MB)": "Image too large (max. 15 MB)",
     # Bilder
     "Bild nicht verfügbar": "Image not available",
     "Bild zu groß (max. 12 MB)": "Image too large (max. 12 MB)",

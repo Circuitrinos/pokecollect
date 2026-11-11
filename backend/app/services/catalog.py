@@ -786,7 +786,8 @@ async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Option
         "set_id": row.set_id,
         "dex_id": row.dex_id,
         "illustrator": row.illustrator,
-        "bild_karte_url": row.image_url if tcgdex.is_allowed_image_url(row.image_url) else None,
+        "bild_karte_url": row.image_url if tcgdex.is_allowed_image_url(row.image_url)
+        else (f"katalog:{row.card_id}" if row.image_pfad and row.image_source == "manual" else None),
     }
 
 

@@ -43,6 +43,7 @@ _HOST_QUELLE = {
     "assets.tcgdex.net": "tcgdex",
     "tcgplayer-cdn.tcgplayer.com": "tcgplayer",
     "assets.pokemon.com": "pokemon",
+    "images.pokemontcg.io": "pokemontcg",
 }
 
 
@@ -74,6 +75,8 @@ def bild_quelle(card: PokemonCard) -> Optional[str]:
         return "foto"
     if ist_spiegelbar(card.bild_pokedex_url):
         return "url"
+    if (card.bild_karte_url or "").startswith("katalog:") and ist_spiegelbar(card.bild_karte_url):
+        return "katalog"           # lokal gespeichertes Katalogbild („Bild finden")
     if not (is_allowed_image_url(card.bild_karte_url) and ist_spiegelbar(card.bild_karte_url)):
         return None
     return _HOST_QUELLE.get(urlparse(card.bild_karte_url).hostname)

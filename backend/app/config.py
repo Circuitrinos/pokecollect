@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Env CATALOG_IMAGE_LANG. Default "de" = bisheriges Verhalten.
     catalog_image_lang: str = "de"
 
+    # Optionaler Schlüssel für pokemontcg.io (Bildvorschläge „Bild finden");
+    # ohne Schlüssel gilt das kleinere kostenlose Tageslimit. Env POKEMONTCG_API_KEY.
+    pokemontcg_api_key: str = ""
+
     # Währung der Instanz ("EUR" | "USD"), Env CURRENCY. Bestimmt, in welcher
     # Währung wert_eur/kaufpreis_eur/Preisverlauf GESPEICHERT werden (die
     # Spaltennamen bleiben aus Kompatibilität „_eur"). USD: TCGplayer-$ zuerst,

@@ -111,6 +111,10 @@ def ist_spiegelbar(url: Optional[str]) -> bool:
     sicheren Alphabet und ohne Punkt-Segmente."""
     if not url or not url.isascii():
         return False
+    # Lokal gespeichertes Katalogbild („Bild finden"): katalog:<Karten-ID>
+    if url.startswith("katalog:"):
+        from app.services.picture_finder import katalog_id
+        return katalog_id(url) is not None
     # urlsplit entfernt Tab und Zeilenumbruch still (Python-Schutz gegen
     # bpo-43882) — geprüft würde dann eine andere URL als die abgerufene.
     if any(ord(z) <= 0x20 or ord(z) == 0x7F for z in url):
@@ -249,6 +253,10 @@ async def datei_fuer(url: str) -> Optional[Path]:
     geprüft und atomar abgelegt. None bei jedem Fehlschlag (geloggt); wirft
     nie. Der Aufrufer hat `url` vorher geprüft (url_aus_pfad); bild_holen
     prüft sie mit ist_spiegelbar noch einmal."""
+    if url.startswith("katalog:"):
+        from app.services import picture_finder
+        cid = picture_finder.katalog_id(url)
+        return await asyncio.to_thread(picture_finder.manual_file, cid) if cid else None
     vorhanden = _vorhanden(url)
     if vorhanden is not None:
         return vorhanden

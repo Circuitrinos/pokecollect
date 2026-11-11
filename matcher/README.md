@@ -92,7 +92,10 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   catalog images only (learned photos are left out, they would match themselves) and returns
   `inliers`, `art_inliers`, `corner_err` (share of the card diagonal), `geo_ok`, the card's
   `outline` inside the photo and — with the original — `suggested_quad`: better corners in
-  the original. Used by the app's admin tool "Weak scans".
+  the original. A crop that cuts off part of the card gives a rough first outline, so the
+  matcher crops again along its suggestion and looks again, up to 3 times, until the corners
+  settle (`refine_passes` says how many crops it checked). Used by the app's admin tool
+  "Weak scans".
 
 ### Learning from scans
 

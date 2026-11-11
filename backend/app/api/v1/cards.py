@@ -15,6 +15,7 @@ from app.config import settings
 from app.database import get_db
 from app.domain.pokedex import GEN_RANGES
 from app.services.card_creation import _trigger_image_fetch, create_owned_card
+from app.services import picture_finder
 from app.services.card_images import (
     ImageValidationError,
     backfill_images_task,
@@ -233,8 +234,9 @@ def _card_response(db: Session, card: PokemonCard) -> CardResponse:
     resp = CardResponse.model_validate(card)
     row = catalog_row_for(db, card.tcgdex_card_id)
     resp.katalog_bild = bool(
-        (card.bild_karte_url and is_allowed_image_url(card.bild_karte_url))
-        or (row is not None and is_allowed_image_url(row.image_url)))
+        (card.bild_karte_url and (is_allowed_image_url(card.bild_karte_url)
+                                  or picture_finder.katalog_id(card.bild_karte_url)))
+        or (row is not None and (is_allowed_image_url(row.image_url) or row.image_pfad)))
     if row is not None:
         # NUR den $-Preis der tatsächlichen Variante zeigen (v1.8.2) — sonst
         # stünde bei einer Pokéball-Karte der Basispreis, aus dem sich ihr

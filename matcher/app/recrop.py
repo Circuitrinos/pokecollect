@@ -14,6 +14,12 @@ import numpy as np
 
 _SMALL = (48, 67)        # comparison size (portrait card)
 MIN_SIMILARITY = 0.5     # below this no corner order reproduces the crop (other photo, edited elsewhere)
+# Refining: a crop that cuts off part of the card only shows part of it, so the
+# outline found in it is rough. Cropping again along the suggestion shows more
+# of the card and gives a better outline — repeat until the corners settle.
+REFINE_PASSES = 4        # crops checked in total (the saved one + up to 3 recrops)
+REFINE_SETTLED = 0.003   # corners moved less than this (fraction of the photo) → done
+REFINE_KEEP = 0.6        # a recrop must keep this share of the first pass's inliers
 
 
 def _norm_small(img: np.ndarray) -> np.ndarray:
@@ -58,3 +64,48 @@ def suggest_quad(original: np.ndarray, crop: np.ndarray, quad_norm: list, outlin
     mapped = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), m).reshape(4, 2) / [ow, oh]
     mapped = np.clip(mapped, 0.0, 1.0)
     return {"suggested_quad": mapped.round(4).tolist(), "crop_similarity": sim}
+
+
+def warp_upright(original: np.ndarray, quad_norm, height: int) -> np.ndarray:
+    """Cut the card along corners (fractions, card's TL first) as an upright crop."""
+    oh, ow = original.shape[:2]
+    h = max(200, int(height))
+    w = round(h * 63 / 88)
+    src = np.float32(np.float32(quad_norm) * [ow, oh])
+    dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    return cv2.warpPerspective(original, cv2.getPerspectiveTransform(src, dst), (w, h))
+
+
+def outline_to_original(original: np.ndarray, quad_norm, crop_wh: tuple[int, int], outline_norm) -> np.ndarray:
+    """Outline in an upright crop made by warp_upright → corners in the original (fractions)."""
+    oh, ow = original.shape[:2]
+    w, h = crop_wh
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    m = cv2.getPerspectiveTransform(src, np.float32(np.float32(quad_norm) * [ow, oh]))
+    pts = np.float32(np.float32(outline_norm) * [w, h])
+    mapped = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), m).reshape(4, 2) / [ow, oh]
+    return np.clip(mapped, 0.0, 1.0)
+
+
+def refine(original: np.ndarray, crop: np.ndarray, first: dict, suggestion: list, verify) -> dict:
+    """
+    Recrop along the suggestion and look again, until the corners settle.
+    verify(crop) → verify_card result (inliers, outline). → {"suggested_quad",
+    "refine_passes"}; keeps the last suggestion whose crop still matched well.
+    """
+    best = np.float32(suggestion)
+    passes = 1
+    need = max(4, int(first.get("inliers") or 0) * REFINE_KEEP)
+    height = max(crop.shape[:2])
+    while passes < REFINE_PASSES:
+        again = warp_upright(original, best, height)
+        res = verify(again)
+        if not res.get("outline") or not res.get("geo_ok") or (res.get("inliers") or 0) < need:
+            break
+        nxt = outline_to_original(original, best, (again.shape[1], again.shape[0]), res["outline"])
+        passes += 1
+        moved = float(np.abs(nxt - best).max())
+        best = nxt
+        if moved < REFINE_SETTLED:
+            break
+    return {"suggested_quad": best.round(4).tolist(), "refine_passes": passes}

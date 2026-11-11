@@ -431,8 +431,9 @@ def _verify_request(data: bytes, card_id: str, orig: bytes, quad: str) -> dict:
     crop = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if crop is None:
         raise HTTPException(400, "unreadable image")
+    snap = store.snapshot()
     with _match_lock:
-        res = matcher.verify_card(crop, store.snapshot(), card_id)
+        res = matcher.verify_card(crop, snap, card_id)
     res["suggested_quad"] = None
     if res.get("outline") and orig and quad:
         try:
@@ -440,6 +441,11 @@ def _verify_request(data: bytes, card_id: str, orig: bytes, quad: str) -> dict:
             original = cv2.imdecode(np.frombuffer(orig, np.uint8), cv2.IMREAD_COLOR)
             if original is not None and isinstance(q, list) and len(q) == 4:
                 res.update(recrop.suggest_quad(original, crop, q, res["outline"]))
+                if res.get("suggested_quad"):
+                    def again(img):
+                        with _match_lock:
+                            return matcher.verify_card(img, snap, card_id)
+                    res.update(recrop.refine(original, crop, res, res["suggested_quad"], again))
         except (ValueError, cv2.error) as exc:
             log.info("verify %s: no corner suggestion (%s)", card_id, exc)
     return res

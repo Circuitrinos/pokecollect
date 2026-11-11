@@ -10,6 +10,8 @@ import { useSettings } from "@/lib/useSettings";
 import { SelectField } from "@/components/CardFormFields";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
 import { defaultCardLang, formatEuroAmount } from "@/lib/utils";
+import { useMe } from "@/lib/useMe";
+import PictureFinder from "@/components/PictureFinder";
 
 type Props = {
   card: CatalogItem;
@@ -62,6 +64,11 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
 
   const name = lang === "EN" && card.name_en ? card.name_en : (card.name ?? card.name_en ?? card.card_id);
   const done = onAdded ?? onClose;
+  // Bild finden (Admin): neues Bild gleich zeigen
+  const isAdmin = !!useMe()?.is_admin;
+  const [finderOpen, setFinderOpen] = useState(false);
+  const [newImage, setNewImage] = useState<string | null>(null);
+  const shownImage = newImage ?? card.image_url;
   const opts = () => ({ sprache, zustand, folierung, erste_edition: ersteEdition });
 
   // Live-Detail ist reicher (dex/rarity/illustrator/kategorie/varianten); card ist der Sofort-Fallback.
@@ -122,10 +129,19 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
 
         <div className="flex gap-4">
           <div className="w-40 shrink-0">
-            {card.image_url || card.image_fallback ? (
-              <CatalogCardImage url={card.image_url} fallback={card.image_fallback} alt={name} className="w-full rounded" lazy={false} />
+            {shownImage || card.image_fallback ? (
+              // fester Kartenrahmen: lädt kein Bild, bleibt die Fläche trotzdem kartenhoch
+              <div className="aspect-[63/88] overflow-hidden rounded bg-gray-800">
+                <CatalogCardImage key={shownImage ?? ""} url={shownImage} fallback={card.image_fallback} alt={name} className="h-full w-full rounded object-contain" lazy={false} />
+              </div>
             ) : (
               <div className="aspect-[63/88] bg-gray-800 rounded flex items-center justify-center text-gray-600 text-xs text-center p-2">{name}</div>
+            )}
+            {isAdmin && (
+              <button type="button" onClick={() => setFinderOpen(true)} data-testid="find-picture"
+                className={`mt-1 w-full rounded px-2 py-1 text-xs ${shownImage ? "bg-gray-800 text-gray-300 hover:text-white" : "bg-pokemon-blue text-white"}`}>
+                🖼 {t.pic_find}
+              </button>
             )}
           </div>
           <dl className="flex-1 text-sm space-y-1 min-w-0">
@@ -183,6 +199,10 @@ export default function CatalogCardModal({ card, collections, onClose, onAdded }
           </div>
         </div>
       </div>
+      {finderOpen && (
+        <PictureFinder cardId={card.card_id} name={name} onClose={() => setFinderOpen(false)}
+          onApplied={(url) => { setNewImage(url); setFinderOpen(false); }} />
+      )}
     </div>
   );
 }
