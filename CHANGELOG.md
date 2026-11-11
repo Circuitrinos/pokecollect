@@ -1,5 +1,57 @@
 # Changelog
 
+## [v1.12.0] – 2026-11-11 (Mehrere Benutzer, Freunde und ein neuer Scanner) — backup
+
+**Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect neue
+Spalten und Tabellen an (Regulation Marks, Sortierung, Freunde, geteilte
+Sammlungen) und trägt danach im Hintergrund die Regulation Marks deiner Karten
+nach. Vorhandene Daten werden dabei nicht umgeschrieben.
+
+### Neu
+- **Mehrere Benutzer** mit eigenen Karten, Sammlungen, Wunschliste und
+  Einstellungen; Anmeldung auch per SSO (z. B. Authentik). Admins verwalten
+  Benutzer und Server-Einstellungen im neuen **Admin-Bereich**.
+- **Freunde:** per genauem Benutzernamen hinzufügen und einzelne Sammlungen zum
+  Ansehen teilen. Freunde sehen Zustand, Sprache und Wert, nicht deine
+  Kaufpreise oder Notizen. Mit dir geteilte Sammlungen stehen unter Sammlungen.
+- **Scanner mit Bilderkennung:** erkennt Karten am Bild, mit Kandidatenauswahl,
+  Kartenumriss, mehreren Exemplaren, Play!-Stempel (Prize Pack) und Scannen
+  direkt in eine freie Binder-Tasche. Bestätigte Scans verbessern die
+  Erkennung; Admins können sie als Datensatz exportieren und sehen, welche
+  Fotos dort fehlen.
+- **Turnier-Legalität:** Regulation Mark je Karte, Standard-Filter und die
+  Reprint-Regel (gleicher Name und gleicher Kartentext).
+- **Richtige Karte finden:** Auswahl aus dem Katalog, oder das Kartenbild von
+  pokemon.com übernehmen — Link einfügen oder auf Android „Teilen“.
+- **Sortieren:** auch nach Regulation Mark; jede Sortierung lässt sich
+  umkehren, und die vorige Sortierung wird zur Untersortierung.
+- **Englisch und US-Dollar:** Oberfläche, Set- und Kartennamen auf Englisch,
+  TCGplayer-Preise zuerst.
+- **Pokédex auffüllen** mit Platzhaltern für alle Spezies.
+
+### Geändert
+- **Startseite sind die Sammlungen**; der Pokédex liegt unter /pokedex. Die
+  Kopfzeile zeigt alle Seiten, das ☰-Menü erscheint nur noch bei schmalem
+  Fenster. Die untere Leiste zeigt alle Seiten und merkt sich ausgeblendete im
+  Konto.
+- **Einstellungen** enthalten nur noch Persönliches; alles für den ganzen
+  Server steht im Admin-Bereich.
+- **Kartenbilder:** je Karte zwischen Katalogbild und eigenem Foto umschaltbar;
+  fehlt ein Bild bei TCGdex, springt pokemon.com ein.
+- **Nach einem Update** lädt die App die neue Fassung von selbst — beim
+  Zurückkehren zur App oder beim nächsten Seitenwechsel.
+
+### Behoben
+- Der Größenregler im Binder ließ sich nur verkleinern.
+- Kurze Ausfälle einer Bildquelle hinterließen kaputte Bilder; jetzt wird
+  wiederholt und ein Ersatzbild gezeigt.
+- Die Set-Auswahl blieb bei manchen Sets leer.
+
+### Hinweise
+- **Admin per SSO:** Admin wird, wer in `OIDC_ADMIN_USERS` steht, zur Gruppe
+  `OIDC_ADMIN_GROUP` gehört oder von einem Admin im Admin-Bereich dazu gemacht
+  wird.
+
 ## [v1.11.0] – 2026-10-31 (Fremde Bilder über den eigenen Server) — gefahrlos
 
 **Keine Migration, keine Änderung an deinen Daten.** Kartenbilder von den

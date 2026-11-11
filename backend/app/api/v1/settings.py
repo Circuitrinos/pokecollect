@@ -77,6 +77,7 @@ def _to_response(raw: dict[str, str], is_admin: bool = True) -> SettingsResponse
         cards_per_page=_int_or(raw["cards_per_page"], 48),
         default_sort=raw["default_sort"] or "pokedex_nr",
         default_sort_reverse=raw["default_sort_reverse"] == "true",
+        bottom_nav_hidden=[k for k in (raw["bottom_nav_hidden"] or "").split(",") if k],
         price_update_enabled=raw["price_update_enabled"] == "true",
         price_update_hour=_int_or(raw["price_update_hour"], 3),
         price_source=raw["price_source"] or "30d_avg",
@@ -105,7 +106,12 @@ def update_settings(data: SettingsUpdate, user: AuthUser = Depends(require_auth)
     if instance_keys and not user.is_admin:
         raise HTTPException(status_code=403, detail="Nur Admins dürfen Instanz-Einstellungen ändern")
     for key, value in updates.items():
-        text_value = str(value).lower() if isinstance(value, bool) else str(value)
+        if isinstance(value, bool):
+            text_value = str(value).lower()
+        elif isinstance(value, list):
+            text_value = ",".join(dict.fromkeys(value))   # ohne Doppelte, Reihenfolge bleibt
+        else:
+            text_value = str(value)
         if key in USER_KEYS:
             _set_user(db, user.id, key, text_value)
         else:

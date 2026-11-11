@@ -56,3 +56,26 @@ def test_standard_sortierung_umgekehrt_merken(client):
         assert client.get("/api/v1/settings").json()["default_sort_reverse"] is True
     finally:
         client.put("/api/v1/settings", json={"default_sort_reverse": False})
+
+
+def test_untere_leiste_je_konto_gespeichert(client):
+    """Ausgeblendete Seiten der unteren Leiste überleben ein neues Anmelden (Server statt nur Browser)."""
+    from tests.test_multiuser import _client_for, _drop_user, _make_user
+    assert client.get("/api/v1/settings").json()["bottom_nav_hidden"] == []
+    try:
+        r = client.put("/api/v1/settings", json={"bottom_nav_hidden": ["sealed", "stats", "sealed"]})
+        assert r.status_code == 200 and r.json()["bottom_nav_hidden"] == ["sealed", "stats"]
+        assert client.get("/api/v1/settings").json()["bottom_nav_hidden"] == ["sealed", "stats"]
+        assert client.put("/api/v1/settings", json={"bottom_nav_hidden": ["Bad Key!"]}).status_code == 422
+        # je Konto: andere Benutzer sehen ihre eigene Auswahl
+        uid = _make_user("nav-pref")
+        try:
+            other = _client_for(uid)
+            assert other.get("/api/v1/settings").json()["bottom_nav_hidden"] == []
+            assert other.put("/api/v1/settings", json={"bottom_nav_hidden": ["friends"]}).status_code == 200
+            assert client.get("/api/v1/settings").json()["bottom_nav_hidden"] == ["sealed", "stats"]
+        finally:
+            _drop_user(uid)
+        assert client.put("/api/v1/settings", json={"bottom_nav_hidden": []}).json()["bottom_nav_hidden"] == []
+    finally:
+        client.put("/api/v1/settings", json={"bottom_nav_hidden": []})

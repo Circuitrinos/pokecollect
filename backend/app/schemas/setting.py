@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas._validators import reject_control_chars, reject_explicit_null, require_utf8
@@ -9,6 +9,7 @@ DEFAULTS: dict[str, str] = {
     "cards_per_page": "48",
     "default_sort": "pokedex_nr",
     "default_sort_reverse": "false",
+    "bottom_nav_hidden": "",          # ausgeblendete Seiten der unteren Leiste, kommagetrennt
     "price_update_enabled": "true",
     "price_update_hour": "3",
     "price_source": "30d_avg",
@@ -48,6 +49,7 @@ USER_KEYS: tuple[str, ...] = (
     "cards_per_page",
     "default_sort",
     "default_sort_reverse",
+    "bottom_nav_hidden",
     "default_language",
     "default_condition",
 )
@@ -68,6 +70,7 @@ class SettingsResponse(BaseModel):
     cards_per_page: int
     default_sort: str
     default_sort_reverse: bool = False
+    bottom_nav_hidden: list[str] = []
     price_update_enabled: bool
     price_update_hour: int
     price_source: str
@@ -106,6 +109,8 @@ class SettingsUpdate(BaseModel):
     cards_per_page: Optional[int] = Field(default=None, ge=1, le=500)
     default_sort: Optional[str] = None
     default_sort_reverse: Optional[bool] = None
+    # Ausgeblendete Seiten der unteren Leiste (Schlüssel wie "sealed", "stats")
+    bottom_nav_hidden: Optional[list[Annotated[str, Field(pattern=r"^[a-z_]{1,30}$")]]] = Field(default=None, max_length=30)
     price_update_enabled: Optional[bool] = None
     price_update_hour: Optional[int] = Field(default=None, ge=0, le=23)
     price_source: Optional[str] = None

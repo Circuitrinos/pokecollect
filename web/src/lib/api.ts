@@ -356,6 +356,7 @@ export type AppSettings = {
   cards_per_page: number;
   default_sort: string;
   default_sort_reverse: boolean;
+  bottom_nav_hidden: string[];   // ausgeblendete Seiten der unteren Leiste (je Konto)
   price_update_enabled: boolean;
   price_update_hour: number;
   price_source: string;
@@ -392,6 +393,7 @@ export type AppSettingsUpdate = Partial<{
   cards_per_page: number;
   default_sort: string;
   default_sort_reverse: boolean;
+  bottom_nav_hidden: string[];
   price_update_enabled: boolean;
   price_update_hour: number;
   price_source: string;
