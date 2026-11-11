@@ -5,6 +5,14 @@ import { useI18n } from "@/lib/i18n";
 
 const BUILD = process.env.NEXT_PUBLIC_BUILD_STAMP ?? "";
 const CHECK_EVERY_MS = 5 * 60 * 1000;
+// Für welche Server-Version schon neu geladen wurde: kommt danach trotzdem noch
+// alter Code (z. B. aus einem Proxy-Cache), nicht endlos neu laden/hinweisen.
+const RELOADED_FOR = "pc_update_reloaded_for";
+
+function reloadFor(serverBuild: string) {
+  try { sessionStorage.setItem(RELOADED_FOR, serverBuild); } catch { /* egal */ }
+  window.location.reload();
+}
 // Hier nie von selbst neu laden — man ist womöglich mitten in einem Scan oder einer neuen Karte.
 const BUSY = /^\/(scan|cards\/new)(\/|$)/;
 
@@ -19,7 +27,7 @@ const BUSY = /^\/(scan|cards\/new)(\/|$)/;
 export default function PWARegister() {
   const { t } = useI18n();
   const pathname = usePathname() ?? "/";
-  const [updateReady, setUpdateReady] = useState(false);
+  const [updateReady, setUpdateReady] = useState<string | null>(null);   // neue Server-Version
   const firstPath = useRef(pathname);
 
   useEffect(() => {
@@ -48,8 +56,14 @@ export default function PWARegister() {
           await Promise.all(keys.filter((k) => k.startsWith("pokecollect-") && k !== `pokecollect-${BUILD}`).map((k) => caches.delete(k)));
           return;
         }
-        if (resumed && !BUSY.test(window.location.pathname)) window.location.reload();
-        else setUpdateReady(true);
+        let reloaded: string | null = null;
+        try { reloaded = sessionStorage.getItem(RELOADED_FOR); } catch { /* egal */ }
+        if (reloaded === build) {
+          console.warn(`PokéCollect: server is on build ${build}, this page still runs ${BUILD} after reloading — something caches old app files.`);
+          return;
+        }
+        if (resumed && !BUSY.test(window.location.pathname)) reloadFor(build);
+        else setUpdateReady(build);
       } catch { /* offline: später erneut */ }
     };
     const onVisible = () => { if (document.visibilityState === "visible") void check(true); };
@@ -69,7 +83,7 @@ export default function PWARegister() {
 
   // Update bereit: der nächste Seitenwechsel lädt die neue Fassung
   useEffect(() => {
-    if (updateReady && pathname !== firstPath.current && !BUSY.test(pathname)) window.location.reload();
+    if (updateReady && pathname !== firstPath.current && !BUSY.test(pathname)) reloadFor(updateReady);
     firstPath.current = pathname;
   }, [pathname, updateReady]);
 
@@ -78,7 +92,7 @@ export default function PWARegister() {
     <div role="status" data-testid="update-banner"
       className="fixed left-1/2 -translate-x-1/2 bottom-20 md:bottom-4 z-50 flex items-center gap-3 rounded-lg bg-pokemon-card border border-pokemon-yellow/50 px-4 py-2 text-sm text-white shadow-lg">
       <span>{t.update_available}</span>
-      <button type="button" onClick={() => window.location.reload()}
+      <button type="button" onClick={() => reloadFor(updateReady)}
         className="bg-pokemon-yellow text-black font-medium rounded px-3 py-1 hover:opacity-90">
         {t.update_reload}
       </button>

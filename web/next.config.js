@@ -21,7 +21,12 @@ const apiOrigin = new URL(process.env.NEXT_PUBLIC_API_URL || "http://localhost:3
 // Seiten erkennen daran ein Update und laden die neue Fassung (siehe
 // src/app/sw.js/route.ts, src/components/PWARegister.tsx). BUILD_STAMP von
 // außen gewinnt, sonst der Zeitpunkt des Builds.
-const buildStamp = process.env.BUILD_STAMP || String(Date.now());
+// Next liest diese Datei während EINES Builds mehrmals (Haupt- und Worker-
+// Prozesse). Ein eigenes Date.now() je Prozess ergab verschiedene Kennungen
+// für Server und Browser-Code — jede Seite galt dann dauerhaft als veraltet.
+// Darum einmal festlegen und über die Umgebung an die Worker weitergeben.
+if (!process.env.BUILD_STAMP) process.env.BUILD_STAMP = String(Date.now());
+const buildStamp = process.env.BUILD_STAMP;
 
 const nextConfig = {
   output: "standalone",
