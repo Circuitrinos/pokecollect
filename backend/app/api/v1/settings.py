@@ -76,6 +76,7 @@ def _to_response(raw: dict[str, str], is_admin: bool = True) -> SettingsResponse
         placeholder_images_enabled=raw["placeholder_images_enabled"] == "true",
         cards_per_page=_int_or(raw["cards_per_page"], 48),
         default_sort=raw["default_sort"] or "pokedex_nr",
+        default_sort_reverse=raw["default_sort_reverse"] == "true",
         price_update_enabled=raw["price_update_enabled"] == "true",
         price_update_hour=_int_or(raw["price_update_hour"], 3),
         price_source=raw["price_source"] or "30d_avg",

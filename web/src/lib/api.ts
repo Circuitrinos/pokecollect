@@ -204,6 +204,8 @@ export type Collection = {
   binder_slots: number | null;
   view_mode?: "grid" | "binder";   // Ansicht, serverseitig je Sammlung gemerkt
   grid_sort?: "manual" | "name" | "pokedex" | "set" | "value" | "regulation" | "newest";   // Sortierung im Raster
+  grid_sort_reverse?: boolean;   // Sortierung umgekehrt
+  grid_sort_then?: string;       // Untersortierungen, z.B. "name,-set"
   erstellt_am: string | null;
   karten_anzahl: number;
   // Set-Sammlung / Sammelziel (Issue #16)
@@ -332,6 +334,7 @@ export type AppSettings = {
   placeholder_images_enabled: boolean;
   cards_per_page: number;
   default_sort: string;
+  default_sort_reverse: boolean;
   price_update_enabled: boolean;
   price_update_hour: number;
   price_source: string;
@@ -367,6 +370,7 @@ export type AppSettingsUpdate = Partial<{
   placeholder_images_enabled: boolean;
   cards_per_page: number;
   default_sort: string;
+  default_sort_reverse: boolean;
   price_update_enabled: boolean;
   price_update_hour: number;
   price_source: string;
@@ -402,7 +406,7 @@ export const collectionApi = {
     ziel_sprache?: string | null;
     ziel_master_set?: boolean;
   }) => api.post<Collection>("/collections", data),
-  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number; view_mode?: "grid" | "binder"; grid_sort?: "manual" | "name" | "pokedex" | "set" | "value" | "regulation" | "newest" }) =>
+  update: (id: number, data: { name?: string; beschreibung?: string | null; binder_layout?: string; binder_slots?: number; view_mode?: "grid" | "binder"; grid_sort?: "manual" | "name" | "pokedex" | "set" | "value" | "regulation" | "newest"; grid_sort_reverse?: boolean; grid_sort_then?: string }) =>
     api.put<Collection>(`/collections/${id}`, data),
   delete: (id: number) => api.delete(`/collections/${id}`),
   cards: (id: number) => api.get<CollectionCard[]>(`/collections/${id}/cards`),

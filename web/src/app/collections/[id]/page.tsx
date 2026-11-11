@@ -13,6 +13,10 @@ import SollView from "@/components/SollView";
 import ViewToggle, { ViewMode } from "@/components/ViewToggle";
 import { useSelection } from "@/lib/useSelection";
 import { GRID_SORTS, GridSort, sortCards } from "@/lib/cardSort";
+import { sortDir } from "@/lib/sortDirection";
+import SortDirectionButton from "@/components/SortDirectionButton";
+import { sortThenText } from "@/components/SortThenLine";
+import { SortStep, decodeThen, encodeThen, nextThen } from "@/lib/sortChain";
 import BulkBar, { SelectToggle } from "@/components/BulkBar";
 import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
@@ -41,9 +45,24 @@ export default function CollectionDetailPage() {
   const [binderVisible, setBinderVisible] = useState<number[]>([]);   // Karten der sichtbaren Binder-Seite(n)
   // Sortierung im Raster (serverseitig je Sammlung); „manual" = Binder-Reihenfolge, umsortierbar
   const [gridSort, setGridSort] = useState<GridSort>("manual");
+  const [gridReverse, setGridReverse] = useState(false);
+  // Untersortierungen: zuvor gewählte Sortierungen (Binder-Reihenfolge beginnt neu)
+  const [gridThen, setGridThen] = useState<SortStep[]>([]);
   const changeGridSort = (s: GridSort) => {
+    if (s === gridSort) return;
+    const then = nextThen({ key: gridSort, reverse: gridReverse }, gridThen, s, "manual");
     setGridSort(s);
-    collectionApi.update(id, { grid_sort: s }).catch(() => {});
+    setGridReverse(false);
+    setGridThen(then);
+    collectionApi.update(id, { grid_sort: s, grid_sort_reverse: false, grid_sort_then: encodeThen(then) }).catch(() => {});
+  };
+  const clearGridThen = () => {
+    setGridThen([]);
+    collectionApi.update(id, { grid_sort_then: "" }).catch(() => {});
+  };
+  const changeGridReverse = (r: boolean) => {
+    setGridReverse(r);
+    collectionApi.update(id, { grid_sort_reverse: r }).catch(() => {});
   };
   const changeView = (v: ViewMode) => {
     setView(v);
@@ -93,6 +112,8 @@ export default function CollectionDetailPage() {
         viewFromServer.current = true;
         setView(r.data.view_mode === "binder" ? "binder" : "grid");
         setGridSort(GRID_SORTS.includes(r.data.grid_sort as GridSort) ? (r.data.grid_sort as GridSort) : "manual");
+        setGridReverse(Boolean(r.data.grid_sort_reverse));
+        setGridThen(decodeThen(r.data.grid_sort_then, GRID_SORTS));
       }
     }).catch(() => setCollection(null));
   }, [id]);
@@ -149,7 +170,9 @@ export default function CollectionDetailPage() {
     handleRemove(cardId);
   };
 
-  const sortedCards = sortCards(cards, gridSort, lang);
+  const sortedCards = sortCards(cards, gridSort, lang, gridReverse, gridThen);
+  // Umordnen von Hand nur in der Binder-Reihenfolge (nicht umgekehrt)
+  const isSorted = gridSort !== "manual" || gridReverse;
   // Sortierte Reihenfolge als Binder-Reihenfolge übernehmen (lückenlos ab Tasche 1)
   const applySortToBinder = async () => {
     if (!confirm(t.sort_apply_confirm)) return;
@@ -292,6 +315,7 @@ export default function CollectionDetailPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <ViewToggle value={view} onChange={changeView} />
             {view === "grid" && !isGoal && cards.length > 1 && (
+              <span className="flex items-center gap-1.5">
               <label className="flex items-center gap-1.5 text-sm text-gray-300">
                 <span className="hidden sm:inline">{t.sort_label}</span>
                 <select value={gridSort} onChange={(e) => changeGridSort(e.target.value as GridSort)} aria-label={t.sort_label}
@@ -299,6 +323,8 @@ export default function CollectionDetailPage() {
                   {GRID_SORTS.map((s) => <option key={s} value={s}>{t.sort_option(s)}</option>)}
                 </select>
               </label>
+              <SortDirectionButton sort={gridSort} reverse={gridReverse} onChange={changeGridReverse} />
+              </span>
             )}
             {cards.length > 0 && <SelectToggle selection={selection} />}
             <button type="button"
@@ -425,9 +451,16 @@ export default function CollectionDetailPage() {
         <div className="flex items-center justify-center h-48 text-gray-500 text-center px-4">{t.collection_empty}</div>
       ) : (
         <>
-        {gridSort !== "manual" && (
+        {isSorted && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-            <span>{t.sort_hint(t.sort_option(gridSort))}</span>
+            <span>{t.sort_hint(`${t.sort_option(gridSort)} (${t.sort_dir(sortDir(gridSort, gridReverse))})`
+              + (gridThen.length ? `, ${t.sort_then(sortThenText(gridThen, t.sort_option, t.sort_dir))}` : ""))}</span>
+            {gridThen.length > 0 && (
+              <button type="button" onClick={clearGridThen} data-testid="sort-then-clear"
+                className="rounded border border-gray-700 bg-pokemon-card px-2 py-1 text-gray-200 hover:text-white">
+                {t.sort_then_clear}
+              </button>
+            )}
             <button type="button" onClick={() => void applySortToBinder()}
               className="rounded border border-gray-700 bg-pokemon-card px-2 py-1 text-gray-200 hover:text-white">
               {t.sort_apply}
@@ -440,7 +473,7 @@ export default function CollectionDetailPage() {
           onReorder={handleReorder}
           onRemove={handleRemoveConfirm}
           selection={selection}
-          reorderable={gridSort === "manual"}
+          reorderable={!isSorted}
         />
         </>
       )}

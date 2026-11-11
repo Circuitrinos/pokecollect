@@ -9,6 +9,7 @@ import { openWhatsNew } from "@/lib/whatsnew";
 import { useI18n } from "@/lib/i18n";
 import { MARK_LETTERS } from "@/lib/regulation";
 import BottomNavSettings from "@/components/BottomNavSettings";
+import SortDirectionButton from "@/components/SortDirectionButton";
 
 const SECTION = "bg-pokemon-card rounded-lg p-5 space-y-4";
 const LABEL = "block text-gray-400 text-xs mb-1";
@@ -379,9 +380,10 @@ export default function SettingsPage() {
             <option value="regulation">{t.filter_sort_regulation}</option>
             <option value="hinzugefuegt_am">{t.filter_sort_added}</option>
           </select>
+          <SortDirectionButton sort={s.default_sort} reverse={s.default_sort_reverse} onChange={(r) => set("default_sort_reverse", r)} className="ml-2" />
         </Field>
         <div className="pt-1">
-          <button type="button" onClick={() => save({ cards_per_page: s.cards_per_page, default_sort: s.default_sort })} disabled={saving} className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-50">
+          <button type="button" onClick={() => save({ cards_per_page: s.cards_per_page, default_sort: s.default_sort, default_sort_reverse: s.default_sort_reverse })} disabled={saving} className="bg-blue-700 text-white text-sm px-4 py-1.5 rounded hover:bg-blue-600 disabled:opacity-50">
             {t.form_save}
           </button>
         </div>

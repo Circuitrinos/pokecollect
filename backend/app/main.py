@@ -165,6 +165,8 @@ def _run_light_migrations():
         # Ansicht je Sammlung serverseitig merken (statt pro Browser)
         "ALTER TABLE collections ADD COLUMN IF NOT EXISTS view_mode TEXT",
         "ALTER TABLE collections ADD COLUMN IF NOT EXISTS grid_sort TEXT",
+        "ALTER TABLE collections ADD COLUMN IF NOT EXISTS grid_sort_reverse BOOLEAN",
+        "ALTER TABLE collections ADD COLUMN IF NOT EXISTS grid_sort_then TEXT",
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS im_pokedex BOOLEAN NOT NULL DEFAULT FALSE",
         "CREATE INDEX IF NOT EXISTS ix_pokemon_cards_im_pokedex ON pokemon_cards (im_pokedex)",
         # ── TCGdex-Integration (v0.7.0) ──────────────────────────────────────

@@ -17,12 +17,20 @@ from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
-from app.services import catalog as catalog_svc, catalog_images, pokemon_com, regulation, tcgdex
+from app.services import catalog as catalog_svc, catalog_images, pokemon_com, regulation, sorting, tcgdex
 from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
 from app.services.settings import get_setting
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
+
+# Sortierschlüssel des Katalogs: (Spalte, absteigend?) in Grundrichtung
+_CATALOG_SORT_KEYS = {
+    "set": [(TcgdexCatalog.set_id, False), (TcgdexCatalog.local_id_num, False), (TcgdexCatalog.local_id, False)],
+    "name": [(TcgdexCatalog.name, False)],
+    "dex": [(TcgdexCatalog.dex_id, False)],
+}
+_CATALOG_SORT_THEN = {"dex": ["set"]}
 
 @router.get("", response_model=CatalogListResponse)
 def list_catalog(
@@ -34,6 +42,8 @@ def list_catalog(
     generation: int | None = None,
     region: str | None = None,   # "west" | "ja" | … (None = alle)
     sort: str = Query("set", pattern="^(set|name|dex)$"),
+    reverse: bool = False,   # Reihenfolge umkehren; fehlende Werte bleiben am Ende
+    then: str = Query("", max_length=60, pattern=sorting.then_pattern(("set", "name", "dex"))),   # Untersortierungen
     # #117: ohne Obergrenze sprengte (page-1)*limit den OFFSET (bigint) → 500
     page: int = Query(1, ge=1, le=PG_INTEGER_MAX),
     limit: int = Query(60, ge=1, le=500),
@@ -78,16 +88,8 @@ def list_catalog(
         lo, hi = GEN_RANGES[generation]
         query = query.where(TcgdexCatalog.dex_id.between(lo, hi))
 
-    if sort == "name":
-        query = query.order_by(TcgdexCatalog.name.nulls_last())
-    elif sort == "dex":
-        query = query.order_by(TcgdexCatalog.dex_id.nulls_last(), TcgdexCatalog.set_id)
-    else:  # set + Kartennummer
-        query = query.order_by(
-            TcgdexCatalog.set_id,
-            TcgdexCatalog.local_id_num.nulls_last(),
-            TcgdexCatalog.local_id,
-        )
+    query = query.order_by(*sorting.order_clauses(_CATALOG_SORT_KEYS, sort, reverse, then, _CATALOG_SORT_THEN,
+                                                  last=TcgdexCatalog.card_id))
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.scalars(query.offset((page - 1) * limit).limit(limit)).all()

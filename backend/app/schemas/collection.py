@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas._grenzen import PgNichtNegativ
 from app.schemas._validators import reject_control_chars, reject_explicit_null
@@ -38,6 +38,10 @@ class CollectionUpdate(BaseModel):
     binder_slots: Optional[PgNichtNegativ] = None
     view_mode: Optional[Literal["grid", "binder"]] = None   # Ansicht (für alle Geräte gemerkt)
     grid_sort: Optional[Literal["manual", "name", "pokedex", "set", "value", "regulation", "newest"]] = None
+    grid_sort_reverse: Optional[bool] = None                 # Sortierung umgekehrt
+    # Untersortierungen (zuvor gewählte Sortierungen), z.B. "name,-set"
+    grid_sort_then: Optional[str] = Field(default=None, max_length=60,
+                                          pattern=r"^(-?(name|pokedex|set|value|regulation|newest)(,-?(name|pokedex|set|value|regulation|newest)){0,2})?$")
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
     # name liegt auf einer NOT-NULL-Spalte (#55)
@@ -56,6 +60,8 @@ class CollectionResponse(CollectionBase):
     binder_slots: Optional[int] = None
     view_mode: str = "grid"
     grid_sort: str = "manual"
+    grid_sort_reverse: bool = False
+    grid_sort_then: str = ""
     erstellt_am: Optional[datetime] = None
     karten_anzahl: int = 0
     # Set-Sammlung (Issue #16)

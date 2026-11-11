@@ -16,6 +16,9 @@ import { useI18n } from "@/lib/i18n";
 import { useIsDesktop } from "@/lib/useIsDesktop";
 import { useSetOptions } from "@/lib/useSetOptions";
 import { useSets } from "@/lib/useSets";
+import SortDirectionButton from "@/components/SortDirectionButton";
+import SortThenLine from "@/components/SortThenLine";
+import { SortStep, encodeThen, nextThen } from "@/lib/sortChain";
 
 const GENERATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -65,6 +68,15 @@ export default function CatalogPage() {
   const [generation, setGeneration] = useState("");
   const [region, setRegion] = useState("");
   const [sort, setSort] = useState<"set" | "name" | "dex">("set");
+  const [reverse, setReverse] = useState(false);
+  const [then, setThen] = useState<SortStep[]>([]);   // Untersortierungen (zuvor gewählte Sortierungen)
+  const thenParam = encodeThen(then);
+  const changeSort = (next: "set" | "name" | "dex") => {
+    if (next === sort) return;
+    setThen(nextThen({ key: sort, reverse }, then, next));
+    setSort(next);
+    setReverse(false);
+  };
   const [page, setPage] = useState(1);
   const [filterOpen, setFilterOpen] = useState(false);
 
@@ -86,7 +98,8 @@ export default function CatalogPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, unknown> = { sort, page, limit: 60 };
+      const params: Record<string, unknown> = { sort, reverse, page, limit: 60 };
+      if (thenParam) params.then = thenParam;
       if (q.trim()) params.q = q.trim();
       if (setCode) params.set_code = setCode;
       if (illustrator) params.illustrator = illustrator;
@@ -97,10 +110,10 @@ export default function CatalogPage() {
     } finally {
       setLoading(false);
     }
-  }, [q, setCode, illustrator, generation, region, sort, page]);
+  }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam, page]);
 
   useEffect(() => { const h = setTimeout(load, 300); return () => clearTimeout(h); }, [load]);
-  useEffect(() => { setPage(1); }, [q, setCode, illustrator, generation, region, sort]);
+  useEffect(() => { setPage(1); }, [q, setCode, illustrator, generation, region, sort, reverse, thenParam]);
 
   const addWishlist = async (c: CatalogItem) => {
     try {
@@ -220,17 +233,20 @@ export default function CatalogPage() {
           <option value="west">{t.catalog_region_west}</option>
           <option value="ja">{t.catalog_region_ja}</option>
         </select>
-        <select value={sort} onChange={(e) => setSort(e.target.value as "set" | "name" | "dex")}
+        <select value={sort} onChange={(e) => changeSort(e.target.value as "set" | "name" | "dex")} aria-label={t.sort_label}
           className="bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white text-sm">
           <option value="set">{t.catalog_sort_set}</option>
           <option value="name">{t.catalog_sort_name}</option>
           <option value="dex">{t.catalog_sort_dex}</option>
         </select>
+        <SortDirectionButton sort={sort} reverse={reverse} onChange={setReverse} />
+        <SortThenLine steps={then} onClear={() => setThen([])}
+          label={(k) => ({ set: t.catalog_sort_set, name: t.catalog_sort_name, dex: t.catalog_sort_dex } as Record<string, string>)[k] ?? k} />
       </div>
 
-      {(q || setCode || illustrator || generation || region || sort !== "set") && (
+      {(q || setCode || illustrator || generation || region || sort !== "set" || reverse || then.length > 0) && (
         <button type="button"
-          onClick={() => { setQ(""); setSetCode(""); setIllustrator(""); setGeneration(""); setRegion(""); setSort("set"); }}
+          onClick={() => { setQ(""); setSetCode(""); setIllustrator(""); setGeneration(""); setRegion(""); setSort("set"); setReverse(false); setThen([]); }}
           className="text-gray-400 hover:text-white text-xs underline"
         >
           {t.filter_reset}

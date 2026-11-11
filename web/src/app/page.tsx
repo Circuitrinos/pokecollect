@@ -84,7 +84,7 @@ export default function HomePage() {
   // Standard-Sortierung aus den (geteilten) Einstellungen vorbelegen
   useEffect(() => {
     if (!appSettings) return;
-    setFilters((f) => ({ ...f, sort: f.sort ?? appSettings.default_sort }));
+    setFilters((f) => ({ ...f, sort: f.sort ?? appSettings.default_sort, reverse: f.reverse ?? appSettings.default_sort_reverse }));
   }, [appSettings]);
 
   useEffect(() => {

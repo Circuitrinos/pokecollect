@@ -8,6 +8,7 @@ DEFAULTS: dict[str, str] = {
     "placeholder_images_enabled": "true",
     "cards_per_page": "48",
     "default_sort": "pokedex_nr",
+    "default_sort_reverse": "false",
     "price_update_enabled": "true",
     "price_update_hour": "3",
     "price_source": "30d_avg",
@@ -46,6 +47,7 @@ USER_KEYS: tuple[str, ...] = (
     "placeholder_images_enabled",
     "cards_per_page",
     "default_sort",
+    "default_sort_reverse",
     "default_language",
     "default_condition",
 )
@@ -65,6 +67,7 @@ class SettingsResponse(BaseModel):
     placeholder_images_enabled: bool
     cards_per_page: int
     default_sort: str
+    default_sort_reverse: bool = False
     price_update_enabled: bool
     price_update_hour: int
     price_source: str
@@ -102,6 +105,7 @@ class SettingsUpdate(BaseModel):
     # gespeichertes 999999 hätte jede Kartenliste mit 422 beantwortet.
     cards_per_page: Optional[int] = Field(default=None, ge=1, le=500)
     default_sort: Optional[str] = None
+    default_sort_reverse: Optional[bool] = None
     price_update_enabled: Optional[bool] = None
     price_update_hour: Optional[int] = Field(default=None, ge=0, le=23)
     price_source: Optional[str] = None

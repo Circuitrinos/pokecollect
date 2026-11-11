@@ -46,3 +46,13 @@ def test_nicht_gesetzte_secrets_sind_leer_maskiert(client):
     for key in ("cardmarket_app_token", "cardmarket_app_secret"):
         assert body[f"{key}_set"] is False
         assert body[f"{key}_masked"] == ""
+
+
+def test_standard_sortierung_umgekehrt_merken(client):
+    assert client.get("/api/v1/settings").json()["default_sort_reverse"] is False
+    try:
+        r = client.put("/api/v1/settings", json={"default_sort_reverse": True})
+        assert r.status_code == 200 and r.json()["default_sort_reverse"] is True
+        assert client.get("/api/v1/settings").json()["default_sort_reverse"] is True
+    finally:
+        client.put("/api/v1/settings", json={"default_sort_reverse": False})

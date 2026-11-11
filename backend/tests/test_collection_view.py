@@ -27,6 +27,13 @@ def test_sortierung_wird_gemerkt(client):
             assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort": s}).status_code == 200
             assert client.get(f"{API}/collections/{col['id']}").json()["grid_sort"] == s
         assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort": "random"}).status_code == 422
+        assert col["grid_sort_reverse"] is False
+        assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort_reverse": True}).status_code == 200
+        assert client.get(f"{API}/collections/{col['id']}").json()["grid_sort_reverse"] is True
+        assert col["grid_sort_then"] == ""
+        assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort_then": "name,-set"}).status_code == 200
+        assert client.get(f"{API}/collections/{col['id']}").json()["grid_sort_then"] == "name,-set"
+        assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort_then": "manual"}).status_code == 422
         client.put(f"{API}/collections/{col['id']}", json={"grid_sort": "value"})
         assert client.get(f"{API}/collections/{col['id']}").json()["view_mode"] == "grid"   # unabhängig von der Ansicht
     finally:

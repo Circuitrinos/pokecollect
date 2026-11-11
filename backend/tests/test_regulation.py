@@ -149,6 +149,22 @@ def test_karten_legalitaet(client, catalog):
     assert r.status_code == 200, r.text
     marks = [c["regulation_mark"] for c in r.json()["items"] if c["id"] in mine]
     assert marks == ["J", "H", "E", "D", "D", "D", None, None, None]
+    # umgekehrt: ältestes Zeichen zuerst, ohne Zeichen bleibt hinten
+    r = client.get(f"{API}/cards", params={"limit": 5000, "sort": "regulation", "reverse": True})
+    marks = [c["regulation_mark"] for c in r.json()["items"] if c["id"] in mine]
+    assert marks == ["D", "D", "D", "E", "H", "J", None, None, None]
+
+    # Untersortierung: gleiches Zeichen → zuvor gewählte Sortierung (hier: hinzugefügt, neueste zuerst)
+    def order(**params):
+        r = client.get(f"{API}/cards", params={"limit": 5000, "sort": "regulation", **params})
+        assert r.status_code == 200, r.text
+        return [c["id"] for c in r.json()["items"] if c["id"] in mine]
+    d_cards = [pika_d["id"], ball_d["id"], hurt_d["id"]]   # in Anlege-Reihenfolge
+    assert [i for i in order(then="hinzugefuegt_am") if i in d_cards] == d_cards
+    assert [i for i in order(then="-hinzugefuegt_am") if i in d_cards] == d_cards[::-1]
+    assert order(then="-hinzugefuegt_am")[:2] == [manual["id"], pika_h["id"]]   # Hauptsortierung bleibt
+    assert client.get(f"{API}/cards", params={"then": "kaputt"}).status_code == 422
+    assert client.get(f"{API}/cards", params={"then": "set,wert,pokedex_nr"}).status_code == 422   # höchstens 2
 
     # Rotation: niedrigstes Zeichen I → H fällt raus, der Reprint-Trainer bleibt
     r = client.put(f"{API}/settings", json={"standard_min_mark": "I"})
@@ -261,6 +277,18 @@ def test_katalog_liste_zeigt_zeichen(client, catalog):
     assert marks.get(P + "ball-i") == "I"
 
 
+def test_katalog_sortierung_umkehren(client, catalog):
+    def ids(**params):
+        r = client.get(f"{API}/catalog", params={"q": "Test", "sort": "name", "limit": 50, **params})
+        assert r.status_code == 200, r.text
+        return [i["card_id"] for i in r.json()["items"] if i["card_id"].startswith(P)]
+    forward = ids()
+    assert len(forward) >= 4 and forward[:2] == [P + "ball-d", P + "ball-i"]
+    assert ids(reverse=True) == forward[::-1]
+    assert ids(then="-dex,set") == forward   # Untersortierung ändert nur Gleichstände
+    assert client.get(f"{API}/catalog", params={"then": "wert"}).status_code == 422
+
+
 def test_scan_uebernimmt_zeichen(client, catalog):
     r = client.post(f"{API}/scan/commit", json={"items": [{"kartenname": "Testball", "sprache": "EN",
                                                           "tcgdex_card_id": P + "ball-d", "copies": 2}]})
@@ -272,3 +300,12 @@ def test_scan_uebernimmt_zeichen(client, catalog):
         assert {(c.regulation_mark, c.legal_mark) for c in cards} == {("D", "I")}
     finally:
         db.close()
+
+
+def test_sortier_helfer():
+    from app.services import sorting
+    assert sorting.parse_then("name,-set,wert") == [("name", False), ("set", True)]
+    assert sorting.parse_then("") == []
+    import re
+    pat = re.compile(sorting.then_pattern(("a", "b")))
+    assert pat.match("a,-b") and pat.match("") and not pat.match("a,b,a") and not pat.match("c")

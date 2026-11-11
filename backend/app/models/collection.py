@@ -28,6 +28,8 @@ class Collection(Base):
     binder_slots = Column(Integer, nullable=True)  # persistierte Binder-Größe (Slot-Kapazität inkl. leerer Seiten)
     view_mode = Column(Text, nullable=True)        # Anzeige der Sammlung: "grid" | "binder" (NULL = grid)
     grid_sort = Column(Text, nullable=True)        # Sortierung im Raster (NULL/"manual" = Binder-Reihenfolge)
+    grid_sort_reverse = Column(Boolean, nullable=True)   # Sortierung umgekehrt (NULL = nein)
+    grid_sort_then = Column(Text, nullable=True)         # Untersortierungen, z.B. "name,-set"
     erstellt_am = Column(DateTime, default=datetime.utcnow)
     # ── Set-Sammlung / Sammelziel (Issue #16, additiv) ───────────────────────
     # typ = "frei" (klassischer Binder) | "set_ziel" (Set-Sammlung mit Soll-Liste)

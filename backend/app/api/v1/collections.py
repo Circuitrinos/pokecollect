@@ -42,6 +42,8 @@ def _to_response(db: Session, coll: Collection, count: int) -> CollectionRespons
         binder_slots=coll.binder_slots,
         view_mode=coll.view_mode or "grid",
         grid_sort=coll.grid_sort or "manual",
+        grid_sort_reverse=bool(coll.grid_sort_reverse),
+        grid_sort_then=coll.grid_sort_then or "",
         erstellt_am=coll.erstellt_am,
         karten_anzahl=count,
         typ=typ,

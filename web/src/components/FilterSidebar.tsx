@@ -4,6 +4,9 @@ import { Enums, PokemonSet, catalogApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { rarityOptionLabel } from "@/components/RarityBadge";
 import SearchableSelect, { SelectOption } from "@/components/SearchableSelect";
+import SortDirectionButton from "@/components/SortDirectionButton";
+import SortThenLine from "@/components/SortThenLine";
+import { decodeThen, encodeThen, nextThen } from "@/lib/sortChain";
 import { useIsDesktop } from "@/lib/useIsDesktop";
 import { useSetOptions } from "@/lib/useSetOptions";
 
@@ -18,6 +21,8 @@ export type Filters = {
   illustrator?: string;
   search?: string;
   sort?: string;
+  reverse?: boolean;   // Sortierung umkehren
+  then?: string;       // Untersortierungen, z.B. "set,-wert" (zuvor gewählte Sortierungen)
   bild_status?: string;
   standard?: "legal" | "not_legal" | "unknown";
   regulation_mark?: string;
@@ -35,6 +40,7 @@ type Props = {
 };
 
 const GENERATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+const CARD_SORTS = ["pokedex_nr", "set", "wert", "regulation", "hinzugefuegt_am"] as const;
 // Regulation Marks gibt es seit Schwert & Schild (D); neueste zuerst
 const REG_FILTER_MARKS = ["L", "K", "J", "I", "H", "G", "F", "E", "D"];
 
@@ -55,6 +61,16 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
   }, []);
   const update = (key: keyof Filters, value: unknown) =>
     onChange({ ...filters, [key]: value === "" ? undefined : value });
+  // Neue Sortierung: die bisherige wird Untersortierung (in ihrer Richtung)
+  const currentSort = filters.sort ?? "pokedex_nr";
+  const thenSteps = decodeThen(filters.then, CARD_SORTS);
+  const changeSort = (next: string) => {
+    if (next === currentSort) return;
+    const then = nextThen({ key: currentSort, reverse: Boolean(filters.reverse) }, thenSteps, next);
+    onChange({ ...filters, sort: next, reverse: false, then: encodeThen(then) || undefined });
+  };
+  const sortLabel = (k: string) => ({ pokedex_nr: t.filter_sort_pokedex, set: t.filter_sort_set, wert: t.filter_sort_value,
+    regulation: t.filter_sort_regulation, hinzugefuegt_am: t.filter_sort_added } as Record<string, string>)[k] ?? k;
 
   const activeCount = (["besessen", "erste_edition", "prize_pack", "generation", "set", "seltenheit", "sprache", "illustrator", "search", "bild_status", "standard", "regulation_mark"] as const)
     .filter((k) => filters[k] !== undefined && filters[k] !== "").length;
@@ -233,12 +249,14 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
         </select>
       </div>
 
-      <div>
+      <div className="col-span-2">
         <label className="block text-gray-400 mb-1">{t.filter_sort}</label>
+        <div className="flex gap-2">
         <select
-          value={filters.sort ?? "pokedex_nr"}
-          onChange={(e) => update("sort", e.target.value)}
-          className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
+          value={currentSort}
+          onChange={(e) => changeSort(e.target.value)}
+          aria-label={t.filter_sort}
+          className="min-w-0 flex-1 bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
         >
           <option value="pokedex_nr">{t.filter_sort_pokedex}</option>
           <option value="set">{t.filter_sort_set}</option>
@@ -246,6 +264,10 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
           <option value="regulation">{t.filter_sort_regulation}</option>
           <option value="hinzugefuegt_am">{t.filter_sort_added}</option>
         </select>
+        <SortDirectionButton sort={currentSort} reverse={Boolean(filters.reverse)}
+          onChange={(r) => onChange({ ...filters, reverse: r })} />
+        </div>
+        <SortThenLine steps={thenSteps} label={sortLabel} onClear={() => onChange({ ...filters, then: undefined })} className="mt-1" />
       </div>
 
       <button type="button"
