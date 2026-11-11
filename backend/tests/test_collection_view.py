@@ -23,7 +23,7 @@ def test_sortierung_wird_gemerkt(client):
     col = client.post(f"{API}/collections", json={"name": "Sortier-Test"}).json()
     try:
         assert col["grid_sort"] == "manual"
-        for s in ("name", "pokedex", "set", "value", "newest", "manual"):
+        for s in ("name", "pokedex", "set", "value", "regulation", "newest", "manual"):
             assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort": s}).status_code == 200
             assert client.get(f"{API}/collections/{col['id']}").json()["grid_sort"] == s
         assert client.put(f"{API}/collections/{col['id']}", json={"grid_sort": "random"}).status_code == 422

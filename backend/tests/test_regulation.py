@@ -144,6 +144,12 @@ def test_karten_legalitaet(client, catalog):
     assert ids(regulation_mark="-") & mine == {oldie["id"], fire["id"]}
     assert client.get(f"{API}/cards", params={"standard": "egal"}).status_code == 422
 
+    # Sortierung: neuestes Zeichen zuerst, ohne Zeichen am Ende
+    r = client.get(f"{API}/cards", params={"limit": 5000, "sort": "regulation"})
+    assert r.status_code == 200, r.text
+    marks = [c["regulation_mark"] for c in r.json()["items"] if c["id"] in mine]
+    assert marks == ["J", "H", "E", "D", "D", "D", None, None, None]
+
     # Rotation: niedrigstes Zeichen I → H fällt raus, der Reprint-Trainer bleibt
     r = client.put(f"{API}/settings", json={"standard_min_mark": "I"})
     assert r.status_code == 200 and r.json()["standard_min_mark"] == "I"

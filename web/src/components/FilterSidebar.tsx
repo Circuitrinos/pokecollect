@@ -243,6 +243,7 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
           <option value="pokedex_nr">{t.filter_sort_pokedex}</option>
           <option value="set">{t.filter_sort_set}</option>
           <option value="wert">{t.filter_sort_value}</option>
+          <option value="regulation">{t.filter_sort_regulation}</option>
           <option value="hinzugefuegt_am">{t.filter_sort_added}</option>
         </select>
       </div>

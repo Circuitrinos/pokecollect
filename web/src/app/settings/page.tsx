@@ -376,6 +376,7 @@ export default function SettingsPage() {
           <select value={s.default_sort} onChange={(e) => set("default_sort", e.target.value)} className={INPUT} style={{ width: "auto" }}>
             <option value="pokedex_nr">{t.filter_sort_pokedex}</option>
             <option value="wert">{t.filter_sort_value}</option>
+            <option value="regulation">{t.filter_sort_regulation}</option>
             <option value="hinzugefuegt_am">{t.filter_sort_added}</option>
           </select>
         </Field>
