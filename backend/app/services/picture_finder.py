@@ -204,17 +204,41 @@ def manual_file(card_id: str) -> Optional[Path]:
 OUTLINE_MAX_BYTES = 12 * 1024 * 1024    # matcher MAX_BYTES
 
 
-async def outline(data: bytes, quad: Optional[list]) -> Optional[list]:
+def same_name_refs(db: Session, row: TcgdexCatalog, limit: int = 24) -> list[str]:
+    """Andere Drucke gleichen Namens mit Bild — Referenzen fürs Zuschneiden (Promos
+    und Reprints teilen meist das Artwork). Gleiches Set zuerst, dann westlich."""
+    from sqlalchemy import case, select
+
+    names = [n.lower() for n in (row.name_en, row.name) if n]
+    if not names:
+        return []
+    q = (select(TcgdexCatalog.card_id)
+         .where(TcgdexCatalog.card_id != row.card_id)
+         .where(or_(func.lower(TcgdexCatalog.name_en).in_(names), func.lower(TcgdexCatalog.name).in_(names)))
+         .where(or_(TcgdexCatalog.image_url.isnot(None), TcgdexCatalog.image_pfad.isnot(None)))
+         .order_by(case((TcgdexCatalog.set_id == row.set_id, 0), else_=1),
+                   case((TcgdexCatalog.region == "west", 0), else_=1), TcgdexCatalog.card_id.desc())
+         .limit(limit))
+    return list(db.scalars(q).all())
+
+
+async def outline(data: bytes, quad: Optional[list], refs: Optional[list[str]] = None) -> dict:
     """Grobe Ecken eines Bilds (Zuschneiden im Bild-Finder) an die echten
-    Kartenkanten anlegen — matcher /outline. → Ecken (0..1) oder None;
+    Kartenkanten anlegen — matcher /outline: über das Artwork gleichnamiger
+    Drucke (refs), sonst über die Kanten. → {"quad": Ecken (0..1) oder None,
+    "method": "reference" | "edges", "reference": Katalog-ID};
     wirft httpx.HTTPError, wenn der Dienst nicht antwortet."""
     import json
 
     form = {"quad": json.dumps(quad)} if quad else {}
+    if refs:
+        form["refs"] = ",".join(refs)
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         r = await client.post(f"{settings.matcher_url.rstrip('/')}/outline",
                               files={"file": ("picture.jpg", data, "image/jpeg")}, data=form)
     if r.status_code != 200:
         raise httpx.HTTPError(f"matcher {r.status_code}")
-    q = r.json().get("quad")
-    return q if isinstance(q, list) and len(q) == 4 else None
+    body = r.json()
+    q = body.get("quad")
+    return {"quad": q if isinstance(q, list) and len(q) == 4 else None,
+            "method": body.get("method") or "edges", "reference": body.get("reference")}

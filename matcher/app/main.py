@@ -383,19 +383,23 @@ def _detect_request(data: bytes) -> dict:
 
 
 @app.post("/outline")
-async def outline(file: UploadFile = File(...), quad: str = Form("")) -> dict:
+async def outline(file: UploadFile = File(...), quad: str = Form(""), refs: str = Form("")) -> dict:
     """
-    Snap rough corners to the card's real edges (the app's crop editor for
-    pictures without a catalog reference, e.g. one pasted from an image
-    search): the card-shaped outline the detector finds that best overlaps the
-    rough corners. → {"quad": [[x, y]…] (fractions, card's TL first) or null, "iou"}.
+    Snap rough corners to the card's real edges (the app's crop editor for a
+    picture pasted from an image search). With refs (catalog ids of other prints
+    of the same name) the card is found by its artwork and settled like "Fix
+    crop"; otherwise, or when no print shares the artwork, the card-shaped
+    outline the detector finds that best overlaps the rough corners.
+    → {"quad": [[x, y]…] (fractions, card's TL first) or null, "method": "reference" | "edges",
+       "reference", "inliers", "iou"}.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
-    return await run_in_threadpool(_outline_request, data, quad)
+    ref_ids = [r.strip() for r in refs.split(",") if r.strip()][:24]
+    return await run_in_threadpool(_outline_request, data, quad, ref_ids)
 
 
 OUTLINE_MIN_IOU = 0.45
@@ -414,7 +418,35 @@ def _plain_margin(img: np.ndarray, quad: np.ndarray) -> bool:
     return (light > 225 or light < 30) and float(sat[mask > 0].mean()) < 40
 
 
-def _outline_request(data: bytes, quad: str) -> dict:
+def _outline_by_reference(img: np.ndarray, rough: np.ndarray, ref_ids: list[str]) -> dict | None:
+    """Card found by its artwork in a same-name print, then settled with /verify's refine."""
+    h, w = img.shape[:2]
+    roi = None
+    x, y, bw, bh = cv2.boundingRect(rough.astype(np.int32))
+    if bw * bh < 0.9 * w * h:      # real hint: only look around it (screenshots show several cards)
+        mx, my = int(0.25 * bw), int(0.25 * bh)
+        roi = (max(0, x - mx), max(0, y - my), min(w, x + bw + mx), min(h, y + bh + my))
+    snap = store.snapshot()
+    with _match_lock:
+        loc = matcher.locate_card(img, snap, ref_ids, roi)
+    if loc is None or not detect.plausible_quad(loc["quad"], img.shape):
+        return None
+    q = np.clip(loc["quad"] / [w, h], 0.0, 1.0)
+    cid = loc["card_id"]
+
+    def again(crop):
+        with _match_lock:
+            return matcher.verify_card(crop, snap, cid)
+    crop = recrop.warp_upright(img, q, 880)
+    first = again(crop)
+    if first.get("outline") and first.get("geo_ok"):
+        start = recrop.outline_to_original(img, q, (crop.shape[1], crop.shape[0]), first["outline"])
+        q = np.float32(recrop.refine(img, crop, first, start.tolist(), again)["suggested_quad"])
+    return {"quad": np.round(q, 4).tolist(), "method": "reference", "reference": cid,
+            "inliers": int(loc["inliers"]), "iou": None}
+
+
+def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -> dict:
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(400, "unreadable image")
@@ -430,6 +462,10 @@ def _outline_request(data: bytes, quad: str) -> dict:
         rough = None
     if rough is None:
         rough = detect.whole_image_as_card(img)
+    if ref_ids and state["status"] == "ready":
+        found = _outline_by_reference(img, rough, ref_ids)
+        if found is not None:
+            return found
     cands = [d.quad for d in detect.detect_cards(img, max_cards=24, nested=True)]
     # also look closely around the rough corners (a small card in a big screenshot)
     x, y, bw, bh = cv2.boundingRect(rough.astype(np.int32))
@@ -455,10 +491,11 @@ def _outline_request(data: bytes, quad: str) -> dict:
     if best is None and card_image and area(rough) > 0.9 * w * h:
         best = detect.whole_image_as_card(img)      # the picture is the card itself
     if best is None:
-        return {"quad": None, "iou": 0.0, "candidates": len(cands)}
+        return {"quad": None, "method": "edges", "iou": 0.0, "candidates": len(cands)}
     best = detect.portrait_order(best)
     out = (np.clip(best / [w, h], 0.0, 1.0)).round(4).tolist()
-    return {"quad": out, "iou": round(float(detect._iou(rough, best)), 3), "candidates": len(cands)}
+    return {"quad": out, "method": "edges", "iou": round(float(detect._iou(rough, best)), 3),
+            "candidates": len(cands)}
 
 
 @app.post("/match")

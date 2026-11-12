@@ -967,7 +967,8 @@ export const catalogApi = {
     const form = new FormData();
     form.append("file", file, "picture.jpg");
     if (quad) form.append("quad", JSON.stringify(quad));
-    return api.post<{ quad: number[][] | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
+    return api.post<{ quad: number[][] | null; method: "reference" | "edges"; reference: string | null;
+      reference_label: string | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
   },
   uploadPicture: (cardId: string, file: Blob) => {
     const form = new FormData();

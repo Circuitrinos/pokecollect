@@ -214,6 +214,63 @@ def verify_card(card_bgr: np.ndarray, snap: Snapshot, card_id: str) -> dict:
     return out
 
 
+LOCATE_FEATURES = 3000      # ORB features on a whole picture (screenshot, store image)
+
+
+def locate_card(img_bgr: np.ndarray, snap: Snapshot, card_ids: list[str],
+                roi: tuple[int, int, int, int] | None = None, max_templates: int = 24) -> dict | None:
+    """
+    Find a card in an arbitrary picture (not straightened) by its artwork: ORB on
+    the whole picture (or the roi x0,y0,x1,y1) against the catalog templates of
+    card_ids, homography from the best one, and that template's full card corners
+    mapped into the picture. For pictures of a card that has no catalog image
+    yet, card_ids are other prints of the same name — promos and reprints
+    usually share the artwork. → {"quad" (px, card's TL first), "inliers", "card_id"}.
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    mask = None
+    if roi is not None:
+        mask = np.zeros(gray.shape, np.uint8)
+        x0, y0, x1, y1 = roi
+        mask[y0:y1, x0:x1] = 255
+    kps, des = features.orb_detector(LOCATE_FEATURES).detectAndCompute(gray, mask)
+    if des is None or len(kps) < MIN_GOOD:
+        return None
+    f = features.Features(np.float32([k.pt for k in kps]), np.ascontiguousarray(des, np.uint8), 0,
+                          np.zeros(256, np.float32))
+    learned = snap.learned if len(snap.learned) == len(snap.card_id) else np.zeros(len(snap.card_id), bool)
+    rows = [(cid, t) for cid in card_ids for t in snap.by_card.get(cid, []) if not learned[t]][:max_templates]
+    best = None
+    for cid, t in rows:
+        good = _ratio_matches(f, snap, t)
+        if len(good) < MIN_GOOD:
+            continue
+        seg = snap.segments[int(snap.seg_of[t])]
+        j = int(snap.idx_in_seg[t])
+        _, kp = seg.template(j)
+        src = f.kp_xy[[q for q, _ in good]].reshape(-1, 1, 2)
+        dst = kp[[r for _, r in good]].reshape(-1, 1, 2)
+        H, m = cv2.findHomography(src, dst, cv2.RANSAC, RANSAC_PX, maxIters=RANSAC_ITERS)
+        if H is None or m is None:
+            continue
+        inl = int(m.sum())
+        if best is None or inl > best[0]:
+            meta = seg.meta[j]
+            twh = (int(meta.get("w") or DEFAULT_TEMPLATE_WH[0]), int(meta.get("h") or DEFAULT_TEMPLATE_WH[1]))
+            best = (inl, cid, H, twh)
+    if best is None or best[0] < MIN_GOOD:
+        return None
+    inl, cid, H, (tw, th) = best
+    try:
+        Hinv = np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        return None
+    tx0, ty0 = (tw - int(tw * features.CROP_FRAC)) // 2, (th - int(th * features.CROP_FRAC)) // 2
+    corners = np.float32([[-tx0, -ty0], [tw - tx0, -ty0], [tw - tx0, th - ty0], [-tx0, th - ty0]])
+    quad = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), Hinv).reshape(4, 2)
+    return {"quad": quad, "inliers": inl, "card_id": cid}
+
+
 def card_outline_in_query(c: Candidate, query_wh: tuple[int, int]) -> np.ndarray | None:
     """
     Where the matched template's full card lies in the straightened query image,

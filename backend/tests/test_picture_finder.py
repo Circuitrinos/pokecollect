@@ -121,30 +121,50 @@ def test_pictures_admin_only(row):
 
 
 def test_picture_outline_forwards_to_the_matcher(client, row, monkeypatch):
-    """Bild-Finder → Zuschneiden: grobe Ecken gehen an matcher /outline, nur Admins."""
+    """Bild-Finder → Zuschneiden: grobe Ecken und gleichnamige Drucke als Referenz an matcher /outline, nur Admins."""
     import httpx
     from app.services import picture_finder
 
+    db = SessionLocal()
+    db.add_all([
+        TcgdexCatalog(card_id="testpic-blw-1", region="west", set_id="testpic-blw", set_code="BLW", local_id="1",
+                      name="Serpifeu", name_en="Snivy", image_url="https://assets.tcgdex.net/en/bw/bw1/1/high.webp"),
+        TcgdexCatalog(card_id="testpic-noimg-2", region="west", set_id="testpic-x", name_en="Snivy"),
+        TcgdexCatalog(card_id="testpic-other-3", region="west", set_id="testpic-x", name_en="Oshawott",
+                      image_url="https://assets.tcgdex.net/en/bw/bw1/3/high.webp"),
+    ])
+    db.commit()
+    db.close()
     seen = {}
 
-    async def outline(data, quad):
-        seen.update(data=data, quad=quad)
-        return [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+    async def outline(data, quad, refs=None):
+        seen.update(data=data, quad=quad, refs=refs)
+        return {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "reference",
+                "reference": "testpic-blw-1"}
 
     monkeypatch.setattr(picture_finder, "outline", outline)
-    rough = [[0, 0], [1, 0], [1, 1], [0, 1]]
-    r = client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
-                    data={"quad": json.dumps(rough)})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]}
-    assert seen == {"data": b"img", "quad": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]}
-    assert client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
-                       data={"quad": "[[5,5],[1,0],[1,1],[0,1]]"}).status_code == 422
-    assert client.post(f"{API}/catalog/nope-1/picture/outline",
-                       files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 404
+    try:
+        rough = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        r = client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
+                        data={"quad": json.dumps(rough)})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "reference",
+                            "reference": "testpic-blw-1", "reference_label": "BLW 1"}
+        # nur gleichnamige Drucke mit Bild
+        assert seen == {"data": b"img", "quad": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                        "refs": ["testpic-blw-1"]}
+        assert client.post(f"{API}/catalog/{CID}/picture/outline", files={"file": ("p.jpg", b"img", "image/jpeg")},
+                           data={"quad": "[[5,5],[1,0],[1,1],[0,1]]"}).status_code == 422
+        assert client.post(f"{API}/catalog/nope-1/picture/outline",
+                           files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 404
 
-    async def down(data, quad):
-        raise httpx.HTTPError("down")
-    monkeypatch.setattr(picture_finder, "outline", down)
-    assert client.post(f"{API}/catalog/{CID}/picture/outline",
-                       files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 503
+        async def down(data, quad, refs=None):
+            raise httpx.HTTPError("down")
+        monkeypatch.setattr(picture_finder, "outline", down)
+        assert client.post(f"{API}/catalog/{CID}/picture/outline",
+                           files={"file": ("p.jpg", b"img", "image/jpeg")}).status_code == 503
+    finally:
+        db = SessionLocal()
+        db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id.in_(["testpic-blw-1", "testpic-noimg-2", "testpic-other-3"])))
+        db.commit()
+        db.close()

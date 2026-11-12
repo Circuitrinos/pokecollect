@@ -808,7 +808,8 @@ const DE = {
   pic_crop: "Zuschneiden",
   pic_crop_title: "Bild zuschneiden",
   pic_crop_hint: "Nur die Karte behalten: die Ecken grob um die Karte ziehen — der Bild-Abgleich legt sie an die Kanten. „Abbrechen“ behält das ganze Bild.",
-  pic_crop_found: "Kartenkanten gefunden",
+  pic_crop_found: "nur über die Kanten gefunden — Ecken prüfen",
+  pic_crop_matched: (ref: string) => `am Artwork von ${ref} ausgerichtet`,
   // Decks
   nav_decks: "Decks",
   scan_target_deck: "Deck",
@@ -1802,7 +1803,8 @@ const EN: typeof DE = {
   pic_crop: "Crop",
   pic_crop_title: "Crop the picture",
   pic_crop_hint: "Keep just the card: drag the corners roughly around it — the image matcher snaps them to the edges. \"Cancel\" keeps the whole picture.",
-  pic_crop_found: "card edges found",
+  pic_crop_found: "found by its edges only — check the corners",
+  pic_crop_matched: (ref: string) => `aligned to the artwork of ${ref}`,
   // Decks
   nav_decks: "Decks",
   scan_target_deck: "Deck",

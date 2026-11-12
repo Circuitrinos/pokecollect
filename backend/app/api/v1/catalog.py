@@ -350,12 +350,13 @@ async def upload_picture(card_id: str, request: Request, file: UploadFile = File
 @router.post("/{card_id}/picture/outline", dependencies=[Depends(require_admin)])
 async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str = Form(""),
                           db: Session = Depends(get_db)):
-    """Bild zuschneiden (Bild-Finder): grobe Ecken an die Kartenkanten anlegen. → {"quad": … | null}."""
+    """Bild zuschneiden (Bild-Finder): grobe Ecken an die Kartenkanten anlegen — über das
+    Artwork gleichnamiger Drucke, sonst über die Kanten. → {"quad", "method", "reference"}."""
     import json
 
     import httpx
 
-    _catalog_row(db, card_id)
+    row = _catalog_row(db, card_id)
     data = await file.read(picture_finder.OUTLINE_MAX_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Leere Datei")
@@ -368,10 +369,18 @@ async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str 
         q = None
     if q is not None and (len(q) != 4 or not all(-0.5 <= v <= 1.5 for p in q for v in p)):
         raise HTTPException(status_code=422, detail="Ungültige Ecken")
+    refs = picture_finder.same_name_refs(db, row)
+    db.commit()     # Lesetransaktion nicht über den Abgleich offen halten
     try:
-        return {"quad": await picture_finder.outline(data, q)}
+        res = await picture_finder.outline(data, q, refs)
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+    from app.services.catalog_lookup import catalog_row_for
+
+    ref = catalog_row_for(db, res["reference"]) if res.get("reference") else None
+    res["reference_label"] = (" ".join(x for x in (ref.set_code or ref.set_id, ref.local_id) if x)
+                              if ref is not None else None)
+    return res
 
 
 @router.post("/{card_id}/wishlist")

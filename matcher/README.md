@@ -88,10 +88,14 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
   Each match is also logged with that breakdown.
 - `POST /outline` (multipart): `file` (any picture), optionally `quad` (rough corners,
-  fractions). Snaps the rough corners to the card-shaped outline the detector finds there
-  (or, without corners, the most card-like outline; a picture that is just the card comes
-  back whole). Returns `quad` (card's TL first) or null. Used by the app's picture finder to
-  crop pictures pasted from an image search.
+  fractions) and `refs` (comma-separated catalog ids, e.g. other prints of the same name).
+  With refs the card is found by its artwork (ORB on the whole picture or around the rough
+  corners against those templates) and then settled like `/verify`; otherwise, or when no
+  reference shares the artwork, the rough corners snap to the card-shaped outline the
+  detector finds there (without corners: the most card-like outline; a picture that is just
+  the card comes back whole). Returns `quad` (card's TL first) or null, `method`
+  (`reference` | `edges`) and `reference`. Used by the app's picture finder to crop
+  pictures pasted from an image search.
 - `POST /verify` (multipart): `file` (a saved, straightened scan photo), `card_id`, optionally
   `original` + `quad` (the corners it was cut along). Compares the photo with that card's
   catalog images only (learned photos are left out, they would match themselves) and returns
