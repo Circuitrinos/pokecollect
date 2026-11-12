@@ -1331,14 +1331,14 @@ export default function ScanPage() {
                       <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} />
                       {t.scan_prize_pack}
                     </label>
-                    {/* 1st Edition: nur wo der Katalog sie kennt (oder die Karte offen ist) */}
-                    {(c.firstEdition || c.match?.variants_firstedition !== false) && (
-                      <label className="flex items-center gap-1 text-gray-300" title={t.scan_first_edition_hint}>
-                        <input type="checkbox" checked={c.firstEdition} onChange={() => toggleFirstEdition(idx)}
-                          data-testid="scan-first-edition" />
-                        {t.first_edition_label}
-                      </label>
-                    )}
+                    {/* 1st Edition: immer anhakbar — der Katalog kennt die Varianten nicht
+                        zuverlässig; kennt er keine, nur blasser mit Hinweis */}
+                    <label className={`flex items-center gap-1 ${c.match?.variants_firstedition === false && !c.firstEdition ? "text-gray-500" : "text-gray-300"}`}
+                      title={c.match?.variants_firstedition === false ? t.scan_first_edition_unlisted : t.scan_first_edition_hint}>
+                      <input type="checkbox" checked={c.firstEdition} onChange={() => toggleFirstEdition(idx)}
+                        data-testid="scan-first-edition" />
+                      {t.first_edition_label}
+                    </label>
                     {target !== "wishlist" && (
                       <div className="flex items-center gap-1 text-gray-300" title={t.scan_copies_hint}>
                         <span>{t.scan_copies}</span>

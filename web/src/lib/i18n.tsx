@@ -492,6 +492,7 @@ const DE = {
   settings_reg_loading: "Lädt … (Stand aktualisiert sich)",
   scan_prize_pack: "Prize Pack",
   scan_first_edition_hint: "Die Karte trägt den 1st-Edition-Stempel (links unter dem Bild, frühe Sets)",
+  scan_first_edition_unlisted: "Der Katalog kennt keine 1st-Edition-Fassung dieser Karte — trägt deine den Stempel, trotzdem anhaken",
   prize_pack_hint: "Karte aus einem Play! Pokémon Prize Pack: gleiche Nummer wie im Set, aber mit Play!-Pokémon-Logo im Bild",
 
   // CardForm (new + edit)
@@ -1546,6 +1547,7 @@ const EN: typeof DE = {
   settings_reg_loading: "Loading … (count updates as it goes)",
   scan_prize_pack: "Prize Pack",
   scan_first_edition_hint: "The card has the 1st Edition stamp (left below the artwork, early sets)",
+  scan_first_edition_unlisted: "The catalog lists no 1st Edition print of this card — tick it anyway if yours has the stamp",
   prize_pack_hint: "Card from a Play! Pokémon Prize Pack: same number as in the set, but with the Play! Pokémon logo on the artwork",
 
   form_new_card: "New Card",
