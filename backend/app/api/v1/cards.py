@@ -1,4 +1,5 @@
 import json
+import logging
 from urllib.parse import urlparse
 import math
 from typing import Literal, Optional, Union
@@ -45,6 +46,7 @@ from app.schemas.card import (
 )
 from app.schemas.collection import CollectionResponse
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/cards", tags=["cards"])
 
 # Sortierschlüssel der Kartenliste: (Spalte, absteigend?) in Grundrichtung
@@ -62,6 +64,28 @@ _CARD_SORT_THEN = {"regulation": ["set"]}   # gleiches Zeichen → Set & Nummer
 def _card_or_404(card_id: int, db: Session) -> PokemonCard:
     card = db.get(PokemonCard, card_id)
     if not card:
+        raise HTTPException(status_code=404, detail="Karte nicht gefunden")
+    return card
+
+
+def _photo_card_or_404(card_id: int, db: Session, user: AuthUser) -> PokemonCard:
+    """
+    Wie _card_or_404 — als Admin aber auch die Karte eines anderen Kontos:
+    Zuschnitt korrigieren und Play!-Stempel markieren gehen über alle Konten
+    (Admin-Werkzeuge „Schwache Scans" / „Play!-Stempel", Trainingsdaten).
+    Nur diese Foto-Werkzeuge; sonst bleibt jede Karte bei ihrem Besitzer.
+    Der Rest der Anfrage läuft dann im Kontext des Besitzers (Neuladen der
+    Karte, Antwort), damit die Mandanten-Trennung ihn nicht wegfiltert.
+    """
+    card = db.get(PokemonCard, card_id)
+    if card is None and user.is_admin:
+        card = db.execute(select(PokemonCard).where(PokemonCard.id == card_id)
+                          .execution_options(all_users=True)).scalar_one_or_none()
+        if card is not None and card.user_id is not None:
+            from app.tenancy import USER_KEY
+            db.info[USER_KEY] = card.user_id
+            log.info("Admin %s: Foto-Werkzeug an Karte %s von Benutzer %s", user.username, card_id, card.user_id)
+    if card is None:
         raise HTTPException(status_code=404, detail="Karte nicht gefunden")
     return card
 
@@ -643,13 +667,15 @@ async def recrop(
     file: UploadFile = File(...),
     quad: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    user: AuthUser = Depends(require_auth),
 ):
     """
     Zuschnitt korrigieren: neues Kartenfoto aus dem gespeicherten Original mit
     neuen Ecken (Kartenseite, Werkzeug „Schwache Scans"). Ersetzt das gerade
     gespeicherte Foto — angezeigt oder nur zum Lernen — und die Ecken.
+    Admins auch an Karten anderer Konten.
     """
-    card = _card_or_404(card_id, db)
+    card = _photo_card_or_404(card_id, db, user)
     if not card.bild_original_pfad or not (card.bild_karte_pfad or card.bild_scan_pfad):
         raise HTTPException(status_code=409, detail="Kein Originalfoto zum Neu-Zuschneiden")
     try:
@@ -666,7 +692,7 @@ MAX_SUGGEST_BYTES = 15 * 1024 * 1024
 
 @router.post("/{card_id}/crop-suggest")
 async def crop_suggest(card_id: int, file: UploadFile = File(...), quad: str = Form(...),
-                       db: Session = Depends(get_db)):
+                       db: Session = Depends(get_db), user: AuthUser = Depends(require_auth)):
     """
     „Zuschnitt korrigieren" mit groben Ecken: der Browser schneidet entlang der
     Ecken aus dem Original, der Bild-Abgleich prüft das (ohne zu speichern) und
@@ -676,7 +702,7 @@ async def crop_suggest(card_id: int, file: UploadFile = File(...), quad: str = F
 
     from app.services import scan_quality
 
-    card = _card_or_404(card_id, db)
+    card = _photo_card_or_404(card_id, db, user)
     if not card.bild_original_pfad or not (card.bild_karte_pfad or card.bild_scan_pfad):
         raise HTTPException(status_code=409, detail="Kein Originalfoto zum Neu-Zuschneiden")
     if not card.tcgdex_card_id:
@@ -699,9 +725,10 @@ async def crop_suggest(card_id: int, file: UploadFile = File(...), quad: str = F
 
 
 @router.put("/{card_id}/stamp", response_model=CardResponse)
-def set_stamp(card_id: int, payload: StampUpdate, db: Session = Depends(get_db)):
-    """Play!-Stempel im Kartenfoto markieren (Trainingsdaten für einen Stempel-Detektor)."""
-    card = _card_or_404(card_id, db)
+def set_stamp(card_id: int, payload: StampUpdate, db: Session = Depends(get_db),
+              user: AuthUser = Depends(require_auth)):
+    """Play!-Stempel im Kartenfoto markieren (Trainingsdaten für einen Stempel-Detektor; Admins auch fremde)."""
+    card = _photo_card_or_404(card_id, db, user)
     if payload.quad is not None and not (card.bild_karte_pfad or card.bild_scan_pfad):
         raise HTTPException(status_code=409, detail="Kein eigenes Foto zum Markieren")
     card.stamp_quad = json.dumps(payload.quad) if payload.quad else None
@@ -711,14 +738,15 @@ def set_stamp(card_id: int, payload: StampUpdate, db: Session = Depends(get_db))
 
 
 @router.post("/{card_id}/stamp-suggest")
-async def stamp_suggest(card_id: int, payload: StampUpdate, db: Session = Depends(get_db)):
+async def stamp_suggest(card_id: int, payload: StampUpdate, db: Session = Depends(get_db),
+                        user: AuthUser = Depends(require_auth)):
     """Play!-Stempel im eigenen Foto vorschlagen (gelernte Vorlage; um `quad` herum, wenn gegeben).
     → {"quad" oder null, "score", "ok", "template"}."""
     import httpx
 
     from app.services import stamp_finder
 
-    card = _card_or_404(card_id, db)
+    card = _photo_card_or_404(card_id, db, user)
     photo = safe_media_path(card.bild_scan_pfad or card.bild_karte_pfad)
     if photo is None or not photo.is_file():
         raise HTTPException(status_code=409, detail="Kein eigenes Foto zum Markieren")

@@ -77,14 +77,12 @@ export default function StampMarks() {
               </div>
               <div className="mt-1 truncate text-white">{nameOf(it)}</div>
               <div className="truncate text-gray-500">{[it.set, it.number].filter(Boolean).join(" · ")}</div>
-              {it.own ? (
-                <button type="button" onClick={() => setEditing(it)} data-testid="stamp-item-mark"
-                  className="mt-1 w-full rounded bg-pokemon-blue px-2 py-1 text-white hover:opacity-90">
-                  🎯 {it.stamp_quad ? t.stamp_marked : t.stamp_mark}
-                </button>
-              ) : (
-                <div className="mt-1 text-gray-500">{it.username ? t.weak_other_user(it.username) : ""}</div>
-              )}
+              {!it.own && it.username && <div className="mt-1 truncate text-gray-500">{t.weak_other_user(it.username)}</div>}
+              {/* Admin-Werkzeug: auch Karten anderer Konten markieren (Trainingsdaten) */}
+              <button type="button" onClick={() => setEditing(it)} data-testid="stamp-item-mark"
+                className="mt-1 w-full rounded bg-pokemon-blue px-2 py-1 text-white hover:opacity-90">
+                🎯 {it.stamp_quad ? t.stamp_marked : t.stamp_mark}
+              </button>
               {it.own && (
                 <Link href={`/cards/${it.card_id}`} className="mt-1 block text-center text-gray-400 hover:text-white">{t.weak_open_card} →</Link>
               )}

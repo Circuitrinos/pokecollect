@@ -151,7 +151,7 @@ export default function WeakScans() {
   };
 
   const runFixAll = async () => {
-    const todo = (data?.items ?? []).filter((i) => i.own && i.has_original && i.suggested_quad && !fixed[i.card_id]);
+    const todo = (data?.items ?? []).filter((i) => i.has_original && i.suggested_quad && !fixed[i.card_id]);
     if (!todo.length) return;
     stopRef.current = false;
     setFixAll({ done: 0, total: todo.length });
@@ -186,7 +186,7 @@ export default function WeakScans() {
   };
 
   const c = data?.counts;
-  const canFixAll = (data?.items ?? []).some((i) => i.own && i.has_original && i.suggested_quad && !fixed[i.card_id]);
+  const canFixAll = (data?.items ?? []).some((i) => i.has_original && i.suggested_quad && !fixed[i.card_id]);
   const passing = Object.values(trials).filter((tr) => tr.state === "pass").length;
   const checked = c ? c.ok + c.low + c.no_reference + c.error + c.dismissed : 0;
   const nameOf = (it: ScanQualityItem) => (lang === "EN" && it.english_name) || it.name;
@@ -295,7 +295,7 @@ export default function WeakScans() {
                         className="rounded bg-gray-700 px-2 py-0.5 text-gray-200 hover:text-white">✕ {t.weak_trial_discard}</button>
                     </>
                   )}
-                  {it.own && it.has_original && (
+                  {it.has_original && (
                     <button type="button" onClick={() => void openEditor(it)} disabled={busyId === it.card_id}
                       data-testid="weak-fix"
                       className="rounded bg-pokemon-blue px-2 py-0.5 text-white hover:opacity-90 disabled:opacity-50">
@@ -319,7 +319,7 @@ export default function WeakScans() {
       </ul>
 
       {zoom && <CompareView item={zoom} name={nameOf(zoom)} onClose={() => setZoom(null)}
-        onFix={zoom.own && zoom.has_original ? () => { const it = zoom; setZoom(null); void openEditor(it); } : undefined} />}
+        onFix={zoom.has_original ? () => { const it = zoom; setZoom(null); void openEditor(it); } : undefined} />}
 
       {editing && (
         <CornerEditor

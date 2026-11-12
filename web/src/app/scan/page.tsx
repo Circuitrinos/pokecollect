@@ -32,6 +32,8 @@ type EditableCandidate = ScanCandidate & {
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — vom Nutzer angehakt
+  firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
+  condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
   copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
   editedQuad?: number[][] | null;  // manuell korrigierte Ecken (normiert 0..1, TL,TR,BR,BL)
   editedOrient?: CropTransform;    // manuelle Flip/Rotate-Korrektur
@@ -361,6 +363,8 @@ export default function ScanPage() {
         cropUrl: null,
         imPokedex: setPokedexRep,
         prizePack: false,
+        firstEdition: false,
+        condition: "",
         copies: 1,
         key: nextKey(),
         imageLang: null,
@@ -430,6 +434,10 @@ export default function ScanPage() {
       prev.map((c, i) => (i === idx ? { ...c, suggested: { ...c.suggested, [key]: value } } : c))
     );
   };
+  const toggleFirstEdition = (idx: number) =>
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, firstEdition: !c.firstEdition } : c)));
+  const setCondition = (idx: number, v: string) =>
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, condition: v } : c)));
   const toggleInclude = (idx: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, include: !c.include } : c)));
 
@@ -575,6 +583,7 @@ export default function ScanPage() {
         raw: { name: null, set_code: null, number: null, language: null, position, confidence: null, bbox: null, quad },
         match: null, suggested: { sprache: defaultLang }, foil_options: [], alternatives: [], needs_choice: false,
         include: false, usePhoto: true, cropUrl: URL.createObjectURL(f), imPokedex: setPokedexRep, prizePack: false,
+        firstEdition: false, condition: "",
         copies: 1, editedQuad: quad, editedOrient: transform, rematching: true, imageLang: null, added: true,
       };
       setCandidates((prev) => [...prev, cand]);
@@ -666,6 +675,8 @@ export default function ScanPage() {
         folierung: (s.folierung as string) ?? null,
         muster: (s.muster as string) || null,
         prize_pack: c.prizePack,
+        erste_edition: c.firstEdition,
+        zustand: target === "wishlist" ? null : (c.condition || null),
         sprache: (s.sprache as string) ?? defaultLang,
         tcgdex_card_id: c.match?.tcgdex_card_id ?? null,
         set_id: c.match?.set_id ?? null,
@@ -1048,6 +1059,14 @@ export default function ScanPage() {
                       <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} />
                       {t.scan_prize_pack}
                     </label>
+                    {/* 1st Edition: nur wo der Katalog sie kennt (oder die Karte offen ist) */}
+                    {(c.firstEdition || c.match?.variants_firstedition !== false) && (
+                      <label className="flex items-center gap-1 text-gray-300" title={t.scan_first_edition_hint}>
+                        <input type="checkbox" checked={c.firstEdition} onChange={() => toggleFirstEdition(idx)}
+                          data-testid="scan-first-edition" />
+                        {t.first_edition_label}
+                      </label>
+                    )}
                     {target !== "wishlist" && (
                       <div className="flex items-center gap-1 text-gray-300" title={t.scan_copies_hint}>
                         <span>{t.scan_copies}</span>
@@ -1249,6 +1268,15 @@ export default function ScanPage() {
                           language={String(s.sprache ?? "DE")}
                         />
                       </div>
+                      {/* Zustand (nicht bei der Wunschliste) */}
+                      {target !== "wishlist" && (
+                        <select value={c.condition} onChange={(e) => setCondition(idx, e.target.value)}
+                          data-testid="scan-condition" aria-label={t.field_condition}
+                          className="min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-xs">
+                          <option value="">{t.field_condition}</option>
+                          {(enums?.zustand ?? []).map((z) => <option key={z} value={z}>{valueLabel(z, lang)}</option>)}
+                        </select>
+                      )}
                     </div>
                   </div>
                 </div>

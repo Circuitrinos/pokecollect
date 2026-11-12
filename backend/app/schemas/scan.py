@@ -108,8 +108,9 @@ class ScanCommitItem(BaseModel):
     folierung: Optional[str] = None
     muster: Optional[str] = None           # Folierungs-Muster (#63)
     prize_pack: bool = False               # Play! Pokémon-Stempel (Prize Pack), im Scan angehakt
+    erste_edition: bool = False            # 1st-Edition-Stempel, im Scan angehakt
     sprache: Optional[str] = "DE"
-    zustand: Optional[str] = None
+    zustand: Optional[str] = None          # Mint … Played (ZUSTAND_VALUES), leer = nicht angegeben
     notizen: Optional[str] = None
     tcgdex_card_id: Optional[str] = None
     set_id: Optional[str] = None
@@ -127,6 +128,16 @@ class ScanCommitItem(BaseModel):
     # Scan-Commit legt Karten an → dieselbe Steuerzeichen-Sperre wie CardBase
     # (ein NUL im erkannten Namen endete sonst als 500, #55).
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
+
+    @field_validator("zustand", mode="before")
+    @classmethod
+    def _zustand(cls, v):
+        from app.schemas.card import ZUSTAND_VALUES
+        if v in (None, ""):
+            return None
+        if v not in ZUSTAND_VALUES:
+            raise ValueError(f"zustand: einer von {ZUSTAND_VALUES}")
+        return v
 
 
 class ScanCommitRequest(BaseModel):

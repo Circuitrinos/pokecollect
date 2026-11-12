@@ -497,6 +497,7 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                 folierung=item.folierung,
                 muster=item.muster,
                 prize_pack=item.prize_pack,
+                erste_edition=item.erste_edition,
                 sprache=item.sprache or "DE",
                 zustand=item.zustand,
                 notizen=item.notizen,

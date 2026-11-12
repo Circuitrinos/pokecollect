@@ -846,6 +846,7 @@ export type ScanCommitItem = {
   folierung?: string | null;
   muster?: string | null;      // Folierungs-Muster (#63)
   prize_pack?: boolean;        // Play! Pokémon-Stempel (Prize Pack)
+  erste_edition?: boolean;     // 1st-Edition-Stempel
   sprache?: string | null;
   zustand?: string | null;
   notizen?: string | null;

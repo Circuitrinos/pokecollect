@@ -220,3 +220,60 @@ def test_crop_suggest_for_own_cards(client, fake_matcher, monkeypatch):
             client.delete(f"{API}/cards/{c}/image")
             client.delete(f"{API}/cards/{c}")
         _drop_user(bob)
+
+
+def test_admin_fixes_crops_and_stamps_of_other_users(client, fake_matcher, monkeypatch):
+    """Datensätze: der Admin korrigiert Zuschnitt und Stempel auch an fremden Karten; sonst bleibt alles getrennt."""
+    from test_multiuser import _client_for, _drop_user, _make_user
+
+    from app.models.card import PokemonCard
+    from app.services import stamp_finder
+
+    async def post(files, form):
+        return {"templates": 1, "inliers": 77, "art_inliers": 20, "corner_err": 0.012, "geo_ok": True,
+                "suggested_quad": BETTER}
+
+    async def find(photo, hint):
+        return {"quad": QUAD, "score": 0.9, "ok": True, "template": True}
+
+    monkeypatch.setattr(scan_quality, "_post_verify", post)
+    monkeypatch.setattr(stamp_finder, "find", find)
+    bob = _make_user("bob-admin-fix")
+    carol = _make_user("carol-admin-fix")
+    bob_c, carol_c = _client_for(bob), _client_for(carol)
+    try:
+        cid = _card(bob_c, "sv03-125", prize_pack=True)
+        _upload(bob_c, cid, _jpeg((30, 60, 90)), QUAD)
+        f = {"file": ("t.jpg", _jpeg((5, 5, 5)), "image/jpeg")}
+        stamp = {"quad": [[0.79, 0.37], [0.96, 0.37], [0.96, 0.465], [0.79, 0.465]]}
+        # andere Benutzer: weiterhin nichts
+        assert carol_c.post(f"{API}/cards/{cid}/crop-suggest", files=f, data={"quad": json.dumps(QUAD)}).status_code == 404
+        assert carol_c.post(f"{API}/cards/{cid}/recrop", files=f, data={"quad": json.dumps(BETTER)}).status_code == 404
+        assert carol_c.put(f"{API}/cards/{cid}/stamp", json=stamp).status_code == 404
+        assert carol_c.post(f"{API}/cards/{cid}/stamp-suggest", json={}).status_code == 404
+        # Admin: die Foto-Werkzeuge gehen …
+        r = client.post(f"{API}/cards/{cid}/crop-suggest", files=f, data={"quad": json.dumps(QUAD)})
+        assert r.status_code == 200, r.text
+        r = client.post(f"{API}/cards/{cid}/recrop", files=f, data={"quad": json.dumps(BETTER)})
+        assert r.status_code == 200, r.text
+        assert r.json()["bild_quad"] == BETTER and r.json()["id"] == cid
+        r = client.put(f"{API}/cards/{cid}/stamp", json=stamp)
+        assert r.status_code == 200, r.text
+        assert r.json()["stamp_quad"] == stamp["quad"]
+        assert client.post(f"{API}/cards/{cid}/stamp-suggest", json={}).json()["ok"] is True
+        # … die Karte bleibt bei Bob, mit seinen Änderungen sichtbar für ihn
+        mine = bob_c.get(f"{API}/cards/{cid}").json()
+        assert mine["bild_quad"] == BETTER and mine["stamp_quad"] == stamp["quad"]
+        db = SessionLocal()
+        try:
+            assert db.get(PokemonCard, cid, execution_options={"all_users": True}).user_id == bob
+        finally:
+            db.close()
+        # … aber sonst bleibt fremd fremd: lesen, ändern, löschen
+        assert client.get(f"{API}/cards/{cid}").status_code == 404
+        assert client.put(f"{API}/cards/{cid}", json={"notizen": "x"}).status_code == 404
+        assert client.delete(f"{API}/cards/{cid}/image").status_code == 404
+        assert bob_c.get(f"{API}/cards/{cid}").status_code == 200
+    finally:
+        _drop_user(bob)
+        _drop_user(carol)
