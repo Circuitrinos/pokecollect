@@ -56,6 +56,9 @@ _MARK_RE = re.compile(r"^[A-Z]$")
 _TRAINER = {"trainer", "dresseur", "allenatore", "entrenador", "treinador", "trainers", "トレーナーズ"}
 _ENERGY = {"energy", "energie", "énergie", "energia", "energía", "エネルギー"}
 _BASIC = {"basic", "basis", "base", "de base", "básica", "basica", "基本"}
+_SPECIAL = {"special", "spezial", "spéciale", "speciale", "especial", "特殊"}
+_BASIC_TYPES = {"grass", "fire", "water", "lightning", "psychic", "fighting", "darkness", "metal", "fairy"}
+_BASIC_NAME_RE = re.compile(r"(?:basic )?(\w+) energy")
 
 
 def norm_mark(value) -> Optional[str]:
@@ -93,14 +96,33 @@ def _kind(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _is_basic_energy(category: Optional[str], energy_type: Optional[str]) -> bool:
-    return _kind(category) == "energy" and (energy_type or "").strip().lower() in _BASIC
+def _basic_energy_name(name: Optional[str]) -> Optional[str]:
+    """„Psychic Energy" / „Basic Psychic Energy" → "psychic", sonst None."""
+    m = _BASIC_NAME_RE.fullmatch((name or "").strip().lower())
+    return m.group(1) if m and m.group(1) in _BASIC_TYPES else None
+
+
+def _is_basic_energy(category: Optional[str], energy_type: Optional[str], name: Optional[str] = None) -> bool:
+    """
+    Basis-Energie? TCGdex' energyType allein taugt nicht: Basis-Energien kommen
+    teils ohne oder mit „Normal" (z. B. SVE), und „Normal" steht auch bei
+    Spezial-Energien (Luminous Energy). Darum zählt zusätzlich der Name — außer
+    bei den alten Spezial-Darkness/-Metal-Energien, die als Special geführt sind.
+    """
+    if _kind(category) != "energy":
+        return False
+    et = (energy_type or "").strip().lower()
+    if et in _BASIC:
+        return True
+    t = _basic_energy_name(name)
+    return t is not None and not (et in _SPECIAL and t in ("darkness", "metal"))
 
 
 def _reprint_key(row: TcgdexCatalog) -> Optional[tuple[str, str]]:
     """Schlüssel für die Reprint-Regel: nur Trainer und Spezial-Energie."""
     kind = _kind(row.category)
-    if kind not in ("trainer", "energy") or _is_basic_energy(row.category, row.energy_type):
+    if kind not in ("trainer", "energy") or _is_basic_energy(row.category, row.energy_type,
+                                                              row.name_en or row.name):
         return None
     name = (row.name_en or row.name or "").strip().lower()
     return (kind, name) if name else None
@@ -140,7 +162,7 @@ def _reprint_marks(db: Session, keys: set[tuple[str, str]]) -> dict[tuple, str]:
     for category, energy_type, name, mark, ekey in rows:
         kind = _kind(category)
         mark = norm_mark(mark)
-        if mark is None or kind not in ("trainer", "energy") or _is_basic_energy(category, energy_type):
+        if mark is None or kind not in ("trainer", "energy") or _is_basic_energy(category, energy_type, name):
             continue
         key = (kind, (name or "").strip())
         if key not in keys:
@@ -155,7 +177,7 @@ def _compute(row: Optional[TcgdexCatalog], own_mark: Optional[str],
              reprints: dict[tuple, str]) -> tuple[Optional[str], Optional[str], bool, Optional[str]]:
     """→ (regulation_mark, legal_mark, basic_energy, name_mark) für eine Karte."""
     checked = row is not None and bool(row.regulation_checked)
-    basic = checked and _is_basic_energy(row.category, row.energy_type)
+    basic = checked and _is_basic_energy(row.category, row.energy_type, row.name_en or row.name)
     # Katalog gewinnt; kennt er kein Zeichen, bleibt ein von Hand gesetztes.
     mark = (norm_mark(row.regulation_mark) if checked else None) or norm_mark(own_mark)
     if mark is None and not checked:

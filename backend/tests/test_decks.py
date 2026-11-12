@@ -60,6 +60,11 @@ def catalog(client):
         _row(f"{P}1-120", f"{P}1", "120", "Prime Spec", "Trainer", trainer_type="Item", rarity="ACE SPEC Rare"),
         _row(f"{P}2-121", f"{P}2", "121", "Other Spec", "Trainer", trainer_type="Item", rarity="ACE SPEC Rare"),
         _row(f"{P}e-005", f"{P}e", "005", "Psychic Energy", "Energy", mark=None, energy_type="Basic"),
+        # wie TCGdex' SVE-Energien: „Normal" bzw. gar kein energyType, kein Zeichen
+        _row(f"{P}e-009", f"{P}e", "009", "Grass Energy", "Energy", mark=None, energy_type="Normal"),
+        _row(f"{P}e-011", f"{P}e", "011", "Water Energy", "Energy", mark=None, energy_type=None),
+        # „Normal" steht bei TCGdex auch an Spezial-Energien
+        _row(f"{P}e-191", f"{P}e", "191", "Luminous Energy", "Energy", mark="G", energy_type="Normal"),
         _row(f"{P}2-030", f"{P}2", "030", "Stage Testmon", "Pokemon", stage="Stage1"),
     ])
     db.commit()
@@ -179,6 +184,23 @@ def test_legal_deck_and_basic_rule(client, catalog):
     db.close()
     deck2 = client.get(f"{API}/decks/{deck2['id']}").json()
     assert _issues(deck2)["basic_unknown"]["level"] == "warning" and deck2["legality"]["need_data"] is True
+
+
+def test_basic_energy_by_name_when_tcgdex_says_normal_or_nothing(client, catalog):
+    """SVE-Basis-Energien (energyType „Normal" oder leer, ohne Zeichen) sind überall legal und ohne
+    Kopienlimit; eine Spezial-Energie mit „Normal" bleibt Spezial-Energie."""
+    text = ("Pokémon: 1\n4 Testmon ex TDA 62\n\nTrainer: 1\n4 Boss's Orders TDA 114\n\n"
+            "Energy: 2\n30 Grass Energy TDE 9\n22 Water Energy TDE 11\n")
+    deck = client.post(f"{API}/decks", json={"name": "Test-SVE", "text": text}).json()["deck"]
+    assert deck["legality"]["status"] == "legal", deck["legality"]
+    energy = [s for s in deck["slots"] if s["section"] == "energy"]
+    assert {s["status"] for s in energy} == {"basic"}
+    text2 = text.replace("22 Water Energy TDE 11", "17 Water Energy TDE 11\n5 Luminous Energy TDE 191")
+    deck2 = client.post(f"{API}/decks", json={"name": "Test-Luminous", "text": text2}).json()["deck"]
+    issues = _issues(deck2)
+    assert "too_many_copies" in issues and "not_in_format" in issues
+    lum = next(s for s in deck2["slots"] if s["name"] == "Luminous Energy")
+    assert lum["status"] == "not_legal"
 
 
 def test_slots_add_change_remove(client, catalog):

@@ -309,3 +309,18 @@ def test_sortier_helfer():
     import re
     pat = re.compile(sorting.then_pattern(("a", "b")))
     assert pat.match("a,-b") and pat.match("") and not pat.match("a,b,a") and not pat.match("c")
+
+
+def test_basic_energy_by_name_when_energy_type_is_unreliable():
+    """TCGdex: Basis-Energien teils mit „Normal" oder ohne energyType, „Normal" auch an Spezial-Energien."""
+    basic = regulation._is_basic_energy
+    assert basic("Energy", "Basic", "Feuerenergie")
+    assert basic("Energy", "Normal", "Psychic Energy")
+    assert basic("Energy", None, "Basic Grass Energy")
+    assert basic("Energy", "Special", "Psychic Energy")          # falsch einsortiert: Name zählt
+    assert not basic("Energy", "Normal", "Luminous Energy")
+    assert not basic("Energy", "Special", "Darkness Energy")      # alte Spezial-Darkness-Energie
+    assert not basic("Energy", "Special", "Metal Energy")
+    assert basic("Energy", None, "Darkness Energy")
+    assert not basic("Trainer", None, "Psychic Energy")
+    assert not basic("Energy", None, None)

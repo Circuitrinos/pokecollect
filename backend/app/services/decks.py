@@ -117,7 +117,7 @@ def _kind(row: Optional[TcgdexCatalog]) -> Optional[str]:
 
 def _is_basic_energy(row: Optional[TcgdexCatalog], name: str) -> bool:
     if row is not None and row.regulation_checked and row.category:
-        return regulation._is_basic_energy(row.category, row.energy_type)
+        return regulation._is_basic_energy(row.category, row.energy_type, row.name_en or row.name or name)
     return basic_energy_type(name) is not None
 
 
