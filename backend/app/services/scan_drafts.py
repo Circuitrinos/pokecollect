@@ -32,7 +32,8 @@ MAX_STATE_BYTES = 2 * 1024 * 1024
 MAX_PHOTO_BYTES = 12 * 1024 * 1024
 MAX_PER_USER = 30            # ältere Entwürfe fallen beim Anlegen eines neuen weg
 KEEP_DAYS = 30
-THUMB_SIDE = 320
+THUMB_SIDE = 640            # Vorschau auf „Offene Scans" (das ganze Foto, auch am Handy scharf)
+MAX_OUTLINES = 60
 
 
 def parse_state(raw: str | bytes) -> dict:
@@ -57,6 +58,27 @@ def _name(c: dict) -> str:
     return str(s.get("kartenname") or r.get("name") or "?")[:80]
 
 
+def _quad(v: Any) -> list[list[float]] | None:
+    if isinstance(v, list) and len(v) == 4 and all(
+            isinstance(p, list) and len(p) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in p)
+            for p in v):
+        return [[round(min(1.0, max(0.0, float(x))), 4) for x in p] for p in v]
+    return None
+
+
+def _outline(c: dict) -> list[list[float]] | None:
+    """Wo die Karte im Foto liegt: von Hand gesetzte Ecken, sonst die erkannten (Ecken oder Rechteck)."""
+    raw = c.get("raw") if isinstance(c.get("raw"), dict) else {}
+    q = _quad(c.get("editedQuad")) or _quad(raw.get("quad"))
+    if q:
+        return q
+    b = raw.get("bbox")
+    if isinstance(b, list) and len(b) == 4 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in b):
+        x, y, w, h = (float(v) for v in b)
+        return _quad([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+    return None
+
+
 def _id(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
@@ -71,7 +93,10 @@ def summary(state: dict) -> dict:
             "target": target,
             "collection_id": _id(state.get("collectionId")) if target == "collection" else None,
             "deck_id": _id(state.get("deckId")) if target == "deck" else None,
-            "mode": state.get("mode") if isinstance(state.get("mode"), str) else None}
+            "mode": state.get("mode") if isinstance(state.get("mode"), str) else None,
+            # Umrisse der Karten fürs ganze Foto (Kopien ohne eigene Stelle im Foto fehlen)
+            "outlines": [{"quad": q, "saved": bool(c.get("saved"))}
+                         for c in cands if not c.get("variantOf") and (q := _outline(c))][:MAX_OUTLINES]}
 
 
 def saved_map(state: dict) -> dict[str, Any]:

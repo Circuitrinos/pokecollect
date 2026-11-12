@@ -1018,6 +1018,7 @@ export type ScanDraftSummary = {
   summary: {
     open?: number; saved?: number; names?: string[]; target?: string | null; mode?: string | null;
     collection_id?: number | null; deck_id?: number | null;
+    outlines?: { quad: number[][]; saved: boolean }[];   // wo die Karten im Foto liegen (normiert)
   };
   erstellt_am: string | null;
   aktualisiert_am: string | null;

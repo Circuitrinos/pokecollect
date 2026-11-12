@@ -35,7 +35,8 @@ def test_draft_roundtrip_and_privacy(client):
     d = _create(client, _state("a", "b", "c"))
     try:
         assert d["summary"] == {"open": 3, "saved": 0, "names": ["Karte a", "Karte b", "Karte c"],
-                                "target": "pokedex", "collection_id": None, "deck_id": None, "mode": "multi"}
+                                "target": "pokedex", "collection_id": None, "deck_id": None, "mode": "multi",
+                                "outlines": []}
         assert d["id"] in [x["id"] for x in client.get(f"{API}/scan/drafts").json()]
         got = client.get(f"{API}/scan/drafts/{d['id']}").json()
         assert [c["key"] for c in got["state"]["candidates"]] == ["a", "b", "c"]
@@ -139,3 +140,22 @@ def test_summary_names_the_destination():
     assert scan_drafts.summary(st)["deck_id"] == 3 and scan_drafts.summary(st)["collection_id"] is None
     st = {**_state("a"), "target": "collection", "collectionId": "7"}
     assert scan_drafts.summary(st)["collection_id"] is None
+
+
+def test_summary_outlines_the_cards_in_the_photo():
+    """Fürs ganze Foto auf „Offene Scans": wo jede Karte liegt und ob sie schon gespeichert ist."""
+    q = [[0.1, 0.1], [0.4, 0.1], [0.4, 0.5], [0.1, 0.5]]
+    st = {"candidates": [
+        {"key": "a", "raw": {"quad": q}},
+        {"key": "b", "raw": {"quad": q}, "editedQuad": [[0.5, 0.1], [0.9, 0.1], [0.9, 0.5], [0.5, 0.5]],
+         "saved": {"ids": [1], "name": "B"}},
+        {"key": "c", "raw": {"bbox": [0.2, 0.6, 0.3, 0.35]}},
+        {"key": "d", "raw": {"quad": q}, "variantOf": "a"},       # weiteres Exemplar: keine eigene Stelle
+        {"key": "e", "raw": {"quad": "kaputt"}},
+    ]}
+    out = scan_drafts.summary(st)["outlines"]
+    assert out == [
+        {"quad": q, "saved": False},
+        {"quad": [[0.5, 0.1], [0.9, 0.1], [0.9, 0.5], [0.5, 0.5]], "saved": True},
+        {"quad": [[0.2, 0.6], [0.5, 0.6], [0.5, 0.95], [0.2, 0.95]], "saved": False},
+    ]

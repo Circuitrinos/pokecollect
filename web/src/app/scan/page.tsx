@@ -540,7 +540,24 @@ export default function ScanPage() {
       if (st.layout) setLayout(st.layout);
       setSetPokedexRep(!!st.setPokedexRep);
       setSlot(st.slot ?? null);
-      const list = (st.candidates ?? []).map((c) => ({ ...c, cropUrl: null, saving: false, rematching: false }) as EditableCandidate);
+      // Fehlende Felder auffüllen (ältere oder unvollständige Entwürfe) — nur anhängen,
+      // damit ein vollständiger Entwurf unverändert bleibt (sonst gleich wieder gesendet)
+      const list = (st.candidates ?? []).map((c0) => {
+        const c: Partial<EditableCandidate> = { ...c0 };
+        c.key ??= nextKey();
+        c.uncertain_fields ??= [];
+        c.foil_options ??= [];
+        c.alternatives ??= [];
+        c.suggested ??= {};
+        c.raw ??= { name: null, set_code: null, number: null, language: null, position: null, confidence: null, bbox: null, quad: null };
+        c.match ??= null;
+        c.position ??= null;
+        c.confidence ??= 0;
+        c.include ??= true;
+        c.copies ??= 1;
+        c.condition ??= "";
+        return { ...c, cropUrl: null, saving: false, rematching: false } as EditableCandidate;
+      });
       setCandidates(list);
       draftRef.current = id;
       lastSentRef.current = JSON.stringify(st);
