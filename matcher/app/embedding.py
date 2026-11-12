@@ -12,6 +12,16 @@ instead of the pHash top 300. Without the model file nothing changes (pHash
 only, as before); while catalog embeddings are still incomplete, the full pHash
 preselection stays on as well, so no card becomes unreachable.
 
+Domain correction (EMBED_DOMAIN, on by default once there are enough learned
+scan photos): photos and catalog images live in different corners of the
+embedding space — a shiny photo lands next to old holo scans whose catalog
+image shows foil sheen, whatever its artwork. So the photo is centred on the
+mean of the users' confirmed scan photos, the catalog on its own mean, and
+each catalog card loses half its "photo hubness" (mean similarity to its 10
+nearest scan photos of other cards). Measured with embed_experiment on 914
+scan crops: top-1 72 % -> 92 %, true card in the shortlist 98.1 % -> 99.7 %;
+on 783 detector crops 74 % -> 90 % and 96.2 % -> 98.9 %.
+
 Files in DATA_DIR (/data):
   dinov2_vits14_cls.onnx  the model (export_matcher.py on a PC with PyTorch)
   dinov2_catalog.npz      catalog embeddings computed on that PC (optional
@@ -49,6 +59,9 @@ EMBED_TOP = int(os.getenv("EMBED_TOP", "30"))         # cards from the embedding
 LEARNED_TOP = int(os.getenv("LEARNED_TOP", "5"))          # cards added from learned scan photos
 LEARNED_MIN_SIM = float(os.getenv("LEARNED_MIN_SIM", "0.5"))
 PHASH_TOP = int(os.getenv("PHASH_TOP", "10"))         # templates from pHash on top of that
+DOMAIN = os.getenv("EMBED_DOMAIN", "1") != "0"        # domain correction (see above)
+DOMAIN_MIN_PHOTOS = int(os.getenv("EMBED_DOMAIN_MIN_PHOTOS", "50"))
+HUB_K = int(os.getenv("EMBED_HUB_K", "10"))
 MIN_COVERAGE = float(os.getenv("EMBED_MIN_COVERAGE", "0.98"))
 THREADS = int(os.getenv("EMBED_THREADS", "0"))        # 0 = onnxruntime default
 IN_W, IN_H = 224, 308
@@ -106,6 +119,44 @@ class EmbSnapshot:
     mat: np.ndarray          # (N, D) float32, L2-normalised
 
 
+@dataclass(frozen=True)
+class Domain:
+    """Catalog scored the photo way (see the module docstring)."""
+    key: tuple
+    ids: list[str]
+    mu_photo: np.ndarray     # (1, D) mean scan photo
+    cat: np.ndarray          # (N, D) catalog minus its mean, L2-normalised
+    penalty: np.ndarray      # (N,) half each card's photo hubness
+
+
+def _norm(x: np.ndarray) -> np.ndarray:
+    return x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-9)
+
+
+def build_domain(snap: EmbSnapshot, photo_ids: list[str], photos: np.ndarray, key: tuple = (),
+                 k: int = HUB_K, chunk: int = 2048) -> Domain | None:
+    """
+    Domain correction from the learned scan photos (ids = their confirmed cards).
+    A card's own photos don't count towards its hubness, so being the right
+    answer is never penalised. None with too few photos.
+    """
+    if not snap.ids or len(photo_ids) < DOMAIN_MIN_PHOTOS or photos.shape[1] != snap.mat.shape[1]:
+        return None
+    mu = photos.mean(axis=0, keepdims=True)
+    cat = _norm(snap.mat - snap.mat.mean(axis=0, keepdims=True)).astype(np.float32)
+    ph = _norm(photos - mu).astype(np.float32)
+    pos = {c: i for i, c in enumerate(snap.ids)}
+    owner = np.array([pos.get(c, -1) for c in photo_ids])
+    k = min(k, len(photo_ids) - 1)
+    pen = np.empty(len(cat), np.float32)
+    for s in range(0, len(cat), chunk):
+        sims = cat[s:s + chunk] @ ph.T
+        sims[owner[None, :] == np.arange(s, s + len(sims))[:, None]] = -np.inf
+        pen[s:s + chunk] = np.partition(sims, -k, axis=1)[:, -k:].mean(axis=1)
+    pen[~np.isfinite(pen)] = 0.0           # a card with (almost) all the photos
+    return Domain(key, snap.ids, mu.astype(np.float32), cat, pen / 2)
+
+
 class EmbIndex:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -151,15 +202,19 @@ class EmbIndex:
         self.add(ids, emb, save=False)
         return len(self) - before
 
-    def top(self, q: np.ndarray, n: int) -> list[str]:
+    def top(self, q: np.ndarray, n: int, domain: Domain | None = None) -> list[str]:
         """Best n card ids for query vectors q (k, D): a card scores its best match."""
-        snap = self._snap
-        if not snap.ids:
-            return []
-        s = (q @ snap.mat.T).max(axis=0)
+        if domain is not None:
+            ids = domain.ids
+            s = (_norm(q - domain.mu_photo) @ domain.cat.T).max(axis=0) - domain.penalty
+        else:
+            ids = self._snap.ids
+            if not ids:
+                return []
+            s = (q @ self._snap.mat.T).max(axis=0)
         n = min(n, len(s))
         idx = np.argpartition(-s, n - 1)[:n]
-        return [snap.ids[i] for i in idx[np.argsort(-s[idx])]]
+        return [ids[i] for i in idx[np.argsort(-s[idx])]]
 
 
 # ── service ──────────────────────────────────────────────────────────────────
@@ -172,6 +227,9 @@ class Shortlist:
         self.index = EmbIndex()
         # embeddings of users' confirmed scan photos (learn.py), several per card allowed
         self._learned: tuple[list[str], np.ndarray] = ([], np.zeros((0, 0), np.float32))
+        self._learned_ver = 0
+        self._domain: Domain | None = None
+        self._domain_lock = threading.Lock()
         self.coverage = 0.0
         self.status = {"active": False, "model": str(MODEL_PATH), "error": None, "cards": 0,
                        "coverage": 0.0, "backfill": {"running": False, "todo": 0, "done": 0, "failed": 0,
@@ -223,7 +281,31 @@ class Shortlist:
 
     def set_learned(self, ids: list[str], mat: np.ndarray) -> None:
         self._learned = (list(ids), mat.astype(np.float32) if mat.size else np.zeros((0, 0), np.float32))
+        self._learned_ver += 1
         self.status["learned_photos"] = len(ids)
+
+    def domain(self) -> Domain | None:
+        """The domain correction for the current catalog index and learned photos (rebuilt when either grows)."""
+        if not DOMAIN:
+            return None
+        snap = self.index.snapshot()
+        key = (len(snap.ids), self._learned_ver)
+        d = self._domain
+        if d is not None and d.key == key:
+            return d
+        with self._domain_lock:
+            if self._domain is None or self._domain.key != key:
+                l_ids, l_mat = self._learned
+                t = time.perf_counter()
+                built = build_domain(snap, l_ids, l_mat, key)
+                # remember "not enough photos" for this key too, so it isn't rebuilt per query
+                self._domain = built or Domain(key, [], np.zeros((1, 0), np.float32),
+                                               np.zeros((0, 0), np.float32), np.zeros(0, np.float32))
+                self.status["domain"] = {"active": built is not None, "photos": len(l_ids),
+                                         "min_photos": DOMAIN_MIN_PHOTOS,
+                                         "build_ms": round(1000 * (time.perf_counter() - t))}
+            d = self._domain
+        return d if d.ids else None
 
     def shortlist(self, card_bgr: np.ndarray) -> tuple[list[str], int] | None:
         """(card ids, how many pHash templates to add) or None = old behaviour."""
@@ -232,7 +314,7 @@ class Shortlist:
         q = self.query(card_bgr)
         if q is None:
             return None
-        ids = self.index.top(q, EMBED_TOP)
+        ids = self.index.top(q, EMBED_TOP, self.domain())
         l_ids, l_mat = self._learned
         if l_ids:
             s = (q @ l_mat.T).max(axis=0)

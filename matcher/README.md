@@ -12,7 +12,12 @@ Pipeline per photo:
    whose embedding is closest to the photo (0° and 180°, after auto-levels), plus the
    10 best pHash templates. Without it: the 300 best by 63-bit pHash and HSV histogram.
    On real binder photos the DINOv2 top 5 held the right card ~96 % of the time; the
-   pHash top 300 ~64 % (`embed_experiment`).
+   pHash top 300 ~64 % (`embed_experiment`). With 50+ learned scan photos the
+   shortlist is domain-corrected: the photo is centred on the mean scan photo, the
+   catalog on its own mean, and each catalog image loses half its similarity to scan
+   photos of other cards (catalog scans with foil sheen otherwise attract every shiny
+   photo). On 914 scan crops top-1 went from 72 % to 92 % and the true card reached
+   the ORB check for 99.7 % instead of 98.1 %; `/health` → `embedding.domain`.
 4. **Match**: ORB + ratio test on the shortlist (threaded), RANSAC homography on the top 20.
    The scores that matter are the *art inliers*, meaning inliers inside the artwork
    window. Inliers on the frame and text box are shared by every card of an era.
@@ -68,6 +73,9 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 | `EMBED_TOP` | `30` | cards taken from the DINOv2 shortlist |
 | `PHASH_TOP` | `10` | pHash templates added to it |
 | `EMBED_MIN_COVERAGE` | `0.98` | below this, the full pHash preselection stays on too |
+| `EMBED_DOMAIN` | `1` | domain correction of the DINOv2 shortlist (`0` = plain cosine) |
+| `EMBED_DOMAIN_MIN_PHOTOS` | `50` | learned scan photos needed before the correction switches on |
+| `EMBED_HUB_K` | `10` | nearest scan photos (of other cards) that measure a catalog image's "photo hubness" |
 | `EMBED_THREADS` | `0` | onnxruntime threads (0 = its default) |
 | `BACKGROUND_DELAY_MIN` | `10` | wait before the extension pass + embedding backfill after a start (they then run at low CPU priority, so first scans after a reboot don't compete) |
 | `LEARN` | `1` | use confirmed scan photos as extra references (see below) |
