@@ -375,6 +375,7 @@ async def scan(
         if extra:
             c.alternatives = extra.alternatives
             c.needs_choice = extra.needs_choice
+            c.stamp = extra.stamp
             if extra.needs_choice:  # kein eindeutiger Treffer → ehrliche, niedrige Sicherheit
                 c.confidence = min(c.confidence, extra.confidence)
     return ScanResponse(

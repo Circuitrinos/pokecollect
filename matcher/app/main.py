@@ -295,8 +295,26 @@ def _overlap(a: np.ndarray, b: np.ndarray) -> float:
                                          cv2.contourArea(b.astype(np.float32))))
 
 
-def _result(d: matcher.Decision, quad: np.ndarray, shape, position: int | None) -> dict:
-    h, w = shape[:2]
+def _stamp_on(img: np.ndarray, quad: np.ndarray) -> dict | None:
+    """
+    Play! stamp on this card (the learned template, stamp.py), checked on the
+    upright card as the app crops it. None without a template or a match.
+    """
+    if stamp.load_template() is None:
+        return None
+    h, w = img.shape[:2]
+    try:
+        with timing.phase("stamp"):
+            r = stamp.find(recrop.warp_upright(img, np.float32(quad) / [w, h], stamp.H))
+    except cv2.error:
+        return None
+    if r is None:
+        return None
+    return {**r, "ok": r["score"] >= stamp.MIN_SCORE, "sure": r["score"] >= stamp.SURE_SCORE}
+
+
+def _result(d: matcher.Decision, quad: np.ndarray, img: np.ndarray, position: int | None) -> dict:
+    h, w = img.shape[:2]
     return {
         "position": position,
         "quad": [[round(float(x) / w, 4), round(float(y) / h, 4)] for x, y in quad],
@@ -307,6 +325,8 @@ def _result(d: matcher.Decision, quad: np.ndarray, shape, position: int | None) 
         "candidates": [{**_card_info(c.card_id), "score": round(c.score, 1), "inliers": c.inliers,
                         "art_inliers": c.art_inliers,
                         "good_matches": c.good, "phash_distance": c.phash_dist} for c in d.candidates],
+        # Prize Pack: Play!-Stempel auf der erkannten Karte (nur wenn sie erkannt ist)
+        "stamp": _stamp_on(img, quad) if d.candidates else None,
     }
 
 
@@ -631,7 +651,7 @@ def _stamp_request(data: bytes, hint: list | None) -> dict:
     r = stamp.find(img, hint)
     if r is None:
         return {"quad": None, "score": None, "ok": False, "template": True}
-    return {**r, "ok": r["score"] >= stamp.MIN_SCORE, "template": True}
+    return {**r, "ok": r["score"] >= stamp.MIN_SCORE, "sure": r["score"] >= stamp.SURE_SCORE, "template": True}
 
 
 @app.get("/stamp/template")
@@ -787,7 +807,7 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> 
                 opts.append(detect.whole_image_as_card(cell) + [x0, y0])
                 d, q = _best_of(img, opts, top_k)
                 if d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD:  # skip empty pockets
-                    cards.append(_result(d, q, img.shape, r * cols + c))
+                    cards.append(_result(d, q, img, r * cols + c))
     elif mode == "multi":
         # Match every outline, then keep the strongest matches greedily and drop
         # anything overlapping a kept one. Mats, merged pairs and partial
@@ -813,19 +833,19 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> 
                 kept.append((key, q, card, cands))
         for _, q, card, cands in sorted(kept, key=lambda t: (t[1][:, 1].mean(), t[1][:, 0].mean())):
             d, oq = _decide(card, cands, q)
-            cards.append(_result(d, oq, img.shape, None))
+            cards.append(_result(d, oq, img, None))
     elif mode == "card":
         # Already a straightened card (the user set its corners in the app):
         # no detection, match the whole image as the card.
         quad = detect.whole_image_as_card(img)
         card = detect.warp(img, quad)
         d, q = _decide(card, _match(card, store.snapshot(), top_k), quad)
-        cards.append(_result(d, q, img.shape, None))
+        cards.append(_result(d, q, img, None))
     else:  # single
         dets = [x for x in _detect(img, max_cards=5, nested=True) if x.area_frac > 0.05]
         opts = [x.quad for x in dets] + [detect.whole_image_as_card(img)]
         d, q = _best_of(img, opts, top_k)
-        cards.append(_result(d, q, img.shape, None))
+        cards.append(_result(d, q, img, None))
 
     return {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
             "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}

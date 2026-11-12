@@ -398,7 +398,9 @@ images plus a CSV per card to start training a pattern classifier.
 
 Enough to train? matcher/tools/dataset_report.py <this zip> counts what the
 detector, the stamp detector and a foil classifier can use and how far each
-is from a useful size.
+is from a useful size. matcher/tools/stamp_eval.py <this zip> measures the
+Play! stamp template on your cards; matcher/tools/foil_eval.py <holo_diff
+output> how well the foil difference tells reverse holos apart.
 """
 
 

@@ -159,3 +159,13 @@ def test_summary_outlines_the_cards_in_the_photo():
         {"quad": [[0.5, 0.1], [0.9, 0.1], [0.9, 0.5], [0.5, 0.5]], "saved": True},
         {"quad": [[0.2, 0.6], [0.5, 0.6], [0.5, 0.95], [0.2, 0.95]], "saved": False},
     ]
+
+
+def test_photo_without_recognised_cards_is_kept(client):
+    """Nichts erkannt: das Foto wird trotzdem ein offener Scan (zum Markieren von Hand)."""
+    d = _create(client, {"v": 1, "mode": "single", "target": "pokedex", "candidates": [], "noneDetected": True})
+    try:
+        assert d["summary"]["open"] == 0 and d["summary"]["saved"] == 0 and d["summary"]["outlines"] == []
+        assert client.get(f"{API}/scan/drafts/{d['id']}").json()["state"]["noneDetected"] is True
+    finally:
+        client.delete(f"{API}/scan/drafts/{d['id']}")

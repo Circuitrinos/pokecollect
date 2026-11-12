@@ -802,6 +802,8 @@ export type ScanCandidate = {
   // Bild-Abgleich („local"): weitere Treffer + „bitte wählen" (kein eindeutiger Treffer)
   alternatives?: ScanAlternative[];
   needs_choice?: boolean;
+  // Play!-Stempel (Prize Pack) auf der erkannten Karte: ok = Hinweis, sure = vorab angehakt
+  stamp?: { score: number; quad: number[][]; ok: boolean; sure: boolean } | null;
 };
 
 export type ScanAlternative = {

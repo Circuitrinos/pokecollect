@@ -63,8 +63,8 @@ def test_status_ohne_bild_abgleich_hat_kein_local(client):
     assert client.get("/api/v1/scan/status").json()["local"] is None
 
 
-def _scan(client, png_bytes):
-    r = client.post("/api/v1/scan", files={"file": ("scan.png", png_bytes, "image/png")})
+def _scan(client, png_bytes, mode="single"):
+    r = client.post("/api/v1/scan", files={"file": ("scan.png", png_bytes, "image/png")}, data={"mode": mode})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -131,3 +131,21 @@ def test_modus_card_ohne_bild_abgleich_liest_als_einzelkarte(client, png_bytes, 
         assert calls["mode"] == "single"
     finally:
         client.put("/api/v1/settings", json={"scan_reader_provider": "gemini"})
+
+
+def test_scan_gibt_stempel_befund_weiter(client, provider_local, png_bytes):
+    """Play!-Stempel: der Befund des matchers kommt beim Kandidaten an (sure → das UI hakt Prize Pack an)."""
+    card = lambda cid, stamp: {"position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],  # noqa: E731
+                               "auto": True, "confidence": 0.95, "stamp": stamp,
+                               "candidates": [{"card_id": cid, "name": "X", "local_id": "1"}]}
+    provider_local(200, {"mode": "multi", "ms": 10, "cards": [
+        card("sv03-1", {"score": 0.93, "quad": [[0.7, 0.4], [0.9, 0.4], [0.9, 0.5], [0.7, 0.5]], "ok": True, "sure": True}),
+        card("sv03-2", {"score": 0.4, "quad": [[0.7, 0.4], [0.9, 0.4], [0.9, 0.5], [0.7, 0.5]], "ok": False, "sure": False}),
+        card("sv03-3", None),                     # ohne Vorlage / älterer matcher
+        card("sv03-4", {"score": "kaputt"}),
+    ]})
+    body = _scan(client, png_bytes, mode="multi")
+    stamps = {c["raw"]["tcgdex_card_id"]: c["stamp"] for c in body["candidates"]}
+    assert stamps["sv03-1"]["sure"] is True and stamps["sv03-1"]["score"] == 0.93
+    assert stamps["sv03-2"]["ok"] is False
+    assert stamps["sv03-3"] is None and stamps["sv03-4"] is None

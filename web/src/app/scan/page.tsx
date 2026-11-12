@@ -19,6 +19,7 @@ import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 import { outlineSuggestion } from "@/lib/outline";
 import SlotPicker, { pageSizeOf } from "@/components/SlotPicker";
 import { cropToCardPhoto, loadImg, normalizeOrientation, shrinkForUpload, CropTransform } from "@/lib/cardCrop";
+import { ringOrder } from "@/lib/cropOrient";
 import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -34,7 +35,8 @@ type EditableCandidate = ScanCandidate & {
   usePhoto: boolean;        // eigenes Foto als Kartenbild (true) vs. Katalogbild (false; Foto lernt trotzdem mit)
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
-  prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — vom Nutzer angehakt
+  prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — angehakt (von Hand oder vom Stempel-Fund)
+  prizePackSet?: boolean;   // von Hand gesetzt: ein neuer Stempel-Befund ändert es nicht mehr
   firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
   condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
   copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
@@ -94,6 +96,7 @@ type DraftState = {
   v: 1; mode: ScanMode; target: ScanTarget; collectionId: number | null; deckId: number | null;
   priority: string; layout: string; setPokedexRep: boolean; slot: number | null;
   candidates: Partial<EditableCandidate>[];
+  noneDetected?: boolean;   // nichts erkannt: Foto zum Markieren von Hand behalten
 };
 const forDraft = (c: EditableCandidate): Partial<EditableCandidate> => {
   const o: Partial<EditableCandidate> = { ...c };
@@ -102,6 +105,16 @@ const forDraft = (c: EditableCandidate): Partial<EditableCandidate> => {
   delete o.rematching;
   return o;
 };
+// Wo die Karte im Foto liegt: von Hand gesetzte Ecken, sonst die erkannten (Ecken oder Rechteck).
+// Weitere Exemplare (variantOf) haben keine eigene Stelle.
+const outlineOf = (c: EditableCandidate): number[][] | null => {
+  if (c.variantOf) return null;
+  if (c.editedQuad?.length === 4) return c.editedQuad;
+  if (c.raw?.quad?.length === 4) return c.raw.quad;
+  const b = c.raw?.bbox;
+  return b?.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null;
+};
+
 const conflictDetail = (e: unknown): string | null => {
   const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
   return r?.status === 409 && typeof r.data?.detail === "string" ? r.data.detail : null;
@@ -369,9 +382,12 @@ export default function ScanPage() {
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
 
+  // nichts erkannt (Foto als offener Scan behalten): leer heißt dann nicht „fertig"
+  const noneDetectedRef = useRef(false);
   const serializeDraft = (list: EditableCandidate[]): DraftState => ({
     v: 1, mode, target, collectionId, deckId, priority, layout, setPokedexRep, slot,
     candidates: list.map(forDraft),
+    ...(noneDetectedRef.current ? { noneDetected: true } : {}),
   });
   const serializeRef = useRef(serializeDraft);
   serializeRef.current = serializeDraft;
@@ -438,6 +454,7 @@ export default function ScanPage() {
   // ist überholt — zurück zur Aufnahme, damit nichts doppelt gespeichert wird.
   const draftGone = () => {
     draftSessionRef.current++;
+    noneDetectedRef.current = false;
     draftRef.current = null;
     setDraftId(null);
     setDraftStatus(null);
@@ -482,7 +499,9 @@ export default function ScanPage() {
     const id = draftRef.current;
     if (id == null) return;
     const list = candidatesRef.current;
-    if (leaving && !list.some((c) => !c.saved)) {
+    // alles gespeichert/verworfen → Entwurf weg; ein leerer Scan ohne Erkennung bleibt
+    const done = list.length ? list.every((c) => c.saved) : !noneDetectedRef.current;
+    if (leaving && done) {
       if (leaving === "unload") scanDraftApi.removeOnLeave(id);
       else void removeScanDraft(id);
       draftRef.current = null;
@@ -512,6 +531,7 @@ export default function ScanPage() {
   // Prüfung beendet (bestätigt / alles verworfen): Entwurf löschen
   const closeDraft = () => {
     draftSessionRef.current++;
+    noneDetectedRef.current = false;
     const id = draftRef.current;
     draftRef.current = null;
     setDraftId(null);
@@ -532,6 +552,7 @@ export default function ScanPage() {
         if (prev) URL.revokeObjectURL(prev);
         return URL.createObjectURL(p.data);
       });
+      noneDetectedRef.current = !!st.noneDetected;
       if (st.mode) setMode(st.mode);
       if (st.target) setTarget(st.target);
       setCollectionId(st.collectionId ?? null);
@@ -601,17 +622,46 @@ export default function ScanPage() {
     if (draftRef.current != null) void resumeDraft(draftRef.current);
   };
 
+  // Nichts erkannt (oder die Erkennung schlug fehl): das Foto trotzdem als offenen
+  // Scan behalten — die Erkennung kann sich irren; später „Übersehene Karte
+  // nachtragen". Die Aufnahme bleibt offen (Serienscan), „Öffnen" geht gleich hin.
+  const keepUnrecognised = async (photo: Blob, failed: boolean) => {
+    const prev = noneDetectedRef.current;
+    noneDetectedRef.current = true;
+    const st = serializeRef.current([]);
+    noneDetectedRef.current = prev;
+    try {
+      const r = await scanDraftApi.create(photo, st);
+      refreshScanDrafts();
+      toast((tt) => (
+        <span className="flex flex-wrap items-center gap-2" data-testid="scan-kept-empty">
+          <span>{failed ? t.scan_kept_failed : t.scan_kept_none}</span>
+          <button type="button" className="rounded bg-pokemon-blue px-2 py-1 text-xs text-white"
+            onClick={() => { toast.dismiss(tt.id); void resumeRef.current(r.data.id); }}>
+            {t.scan_kept_open}
+          </button>
+        </span>
+      ), { icon: "📌", duration: 7000 });
+    } catch {
+      toast.error(failed ? t.scan_error : t.scan_no_results);
+    }
+  };
+  const keepRef = useRef(keepUnrecognised);
+  keepRef.current = keepUnrecognised;
+
   const runScan = useCallback(async (rawBlob: Blob) => {
     setBusy(true);
+    let blob: Blob | null = null;
     try {
       // EXIF-Orientierung fest einbacken (Anzeige == Zuschnitt) und vor dem
       // Senden verkleinern → schnellere Analyse. bbox/quad beziehen sich auf
       // genau dieses Bild, daher merken wir es als Quelle für die Zuschnitte.
-      const blob = await downscaleImage(await normalizeOrientation(rawBlob));
-      sourceBlobRef.current = blob;
+      const photo = await downscaleImage(await normalizeOrientation(rawBlob));
+      blob = photo;
+      sourceBlobRef.current = photo;
       setSourceUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(blob);
+        return URL.createObjectURL(photo);
       });
       const { cols, rows } = parseLayout(layout);
       const res = await scanApi.scan(blob, {
@@ -629,7 +679,7 @@ export default function ScanPage() {
         usePhoto: !!(c.raw?.bbox || c.raw?.quad) && !c.match?.image_url,
         cropUrl: null,
         imPokedex: setPokedexRep,
-        prizePack: false,
+        prizePack: !!c.stamp?.sure,              // Play!-Stempel sicher gefunden → vorab angehakt
         firstEdition: false,
         condition: "",
         copies: 1,
@@ -650,9 +700,10 @@ export default function ScanPage() {
         toast(t.scan_limit_fallback, { icon: "⚠️" });
       }
       if (!list.length) {
-        toast.error(t.scan_no_results);
+        await keepRef.current(blob, false);
         return;
       }
+      noneDetectedRef.current = false;
       setCandidates(list);
       setStep("review");
       void startDraftRef.current(blob, list);
@@ -667,7 +718,8 @@ export default function ScanPage() {
         } catch { /* Vorschau optional */ }
       });
     } catch {
-      toast.error(t.scan_error);
+      if (blob) await keepRef.current(blob, true);
+      else toast.error(t.scan_error);
     } finally {
       setBusy(false);
     }
@@ -695,7 +747,7 @@ export default function ScanPage() {
   const setCopies = (idx: number, n: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, copies: Math.min(50, Math.max(1, n)) } : c)));
   const togglePrizePack = (idx: number) =>
-    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, prizePack: !c.prizePack } : c)));
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, prizePack: !c.prizePack, prizePackSet: true } : c)));
 
   const updateField = (idx: number, key: string, value: unknown) => {
     setCandidates((prev) =>
@@ -773,6 +825,8 @@ export default function ScanPage() {
           include: !n.needs_choice,
           chosenId: null,
           usePhoto: c.usePhoto || !n.match?.image_url,
+          // neuer Zuschnitt, neuer Stempel-Befund — außer Prize Pack wurde von Hand gesetzt
+          prizePack: c.prizePackSet ? c.prizePack : !!n.stamp?.sure,
           rematching: false,
         };
       }));
@@ -1092,6 +1146,17 @@ export default function ScanPage() {
   // „Später bestätigen": diese Prüfung bleibt als offener Scan liegen, gleich das
   // nächste Foto — viele Karten am Stück scannen, alles später unter „Offene Scans".
   const [parked, setParked] = useState(0);
+  // Prüfung: das ganze Foto mit den gefundenen Karten oben (ein-/ausklappbar, gemerkt)
+  const [showPhoto, setShowPhoto] = useState(true);
+  useEffect(() => {
+    try { setShowPhoto(localStorage.getItem("scan_show_photo") !== "0"); } catch { /* egal */ }
+  }, []);
+  const toggleShowPhoto = () => setShowPhoto((v) => {
+    try { localStorage.setItem("scan_show_photo", v ? "0" : "1"); } catch { /* egal */ }
+    return !v;
+  });
+  const scrollToCard = (key: string) =>
+    document.getElementById(`scan-card-${key}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const confirmLater = async () => {
     if (busy) return;
     setBusy(true);
@@ -1116,6 +1181,7 @@ export default function ScanPage() {
       }
       // loslassen, nicht löschen
       draftSessionRef.current++;
+      noneDetectedRef.current = false;
       draftRef.current = null;
       setDraftId(null);
       setDraftStatus(null);
@@ -1351,7 +1417,55 @@ export default function ScanPage() {
             </div>
             <button type="button" onClick={() => backToCapture()} className="shrink-0 text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
           </div>
-          {sourceUrl && mode !== "single" && (
+          {candidates.length === 0 && (
+            <p className="rounded border border-amber-700/50 bg-amber-950/30 p-2 text-xs text-amber-200" data-testid="scan-none-found">
+              {t.scan_none_found_hint}
+            </p>
+          )}
+          {sourceUrl && (() => {
+            // Das ganze Foto: jede gefundene Karte umrandet und nummeriert wie in der Liste —
+            // eine Karte ohne Rahmen wurde übersehen
+            const marked = candidates.map((c) => ({ c, q: outlineOf(c) })).filter((x): x is { c: EditableCandidate; q: number[][] } => !!x.q);
+            return (
+              <div className="rounded-lg bg-pokemon-card p-2" data-testid="scan-photo-overview">
+                <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-400">
+                  <span>{showPhoto ? t.scan_photo_hint : t.scan_photo_title}</span>
+                  <button type="button" onClick={toggleShowPhoto} data-testid="scan-photo-toggle"
+                    className="shrink-0 text-pokemon-blue hover:underline">
+                    {showPhoto ? t.scan_photo_hide : t.scan_photo_show}
+                  </button>
+                </div>
+                {showPhoto && (
+                  <div className="flex justify-center">
+                    <div className="relative inline-block max-w-full">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={sourceUrl} alt="" className="block h-auto max-h-[50vh] w-auto max-w-full rounded" />
+                      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none">
+                        {marked.map(({ c, q }) => (
+                          <polygon key={c.key} points={ringOrder(q).map(([x, y]) => `${x},${y}`).join(" ")}
+                            fill={c.saved ? "rgba(34,197,94,0.18)" : "rgba(250,204,21,0.08)"}
+                            stroke={c.saved ? "#22c55e" : c.include ? "#facc15" : "#9ca3af"} strokeWidth={2}
+                            strokeDasharray={c.include || c.saved ? undefined : "4 3"} vectorEffect="non-scaling-stroke"
+                            data-testid="scan-photo-outline" />
+                        ))}
+                      </svg>
+                      {marked.map(({ c, q }, i) => (
+                        <button type="button" key={c.key} onClick={() => scrollToCard(c.key)}
+                          title={String((c.suggested as Record<string, unknown>)?.kartenname ?? c.raw?.name ?? "")}
+                          data-testid="scan-photo-badge"
+                          className={`absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-[10px] font-bold shadow ${
+                            c.saved ? "bg-green-500 text-black" : "bg-pokemon-yellow text-black"}`}
+                          style={{ left: `${(q.reduce((a, p) => a + p[0], 0) / 4) * 100}%`, top: `${(q.reduce((a, p) => a + p[1], 0) / 4) * 100}%` }}>
+                          {i + 1}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {sourceUrl && (mode !== "single" || candidates.length === 0) && (
             <button type="button" onClick={() => setAddingMissed(true)} title={t.scan_add_missed_hint}
               data-testid="scan-add-missed"
               className="w-full rounded-lg border border-dashed border-gray-600 py-2 text-sm text-gray-300 hover:border-gray-400 hover:text-white">
@@ -1361,6 +1475,12 @@ export default function ScanPage() {
 
           {candidates.map((c, idx) => {
             const s = c.suggested as Record<string, unknown>;
+            // Nummer wie im Foto oben (nur Karten mit eigener Stelle im Foto)
+            const photoNo = outlineOf(c) ? candidates.slice(0, idx + 1).filter((x) => outlineOf(x)).length : null;
+            const noBadge = photoNo != null && (
+              <span className={`mr-2 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-black ${
+                c.saved ? "bg-green-500" : "bg-pokemon-yellow"}`} data-testid="scan-card-no">{photoNo}</span>
+            );
             const uncertain = c.uncertain_fields.length > 0;
             const foilOptions = c.foil_options.length ? c.foil_options : (enums?.folierung ?? ["Normal"]);
             const pokedexNr = (s.pokedex_nr as number) ?? c.match?.dex_id ?? null;
@@ -1368,22 +1488,23 @@ export default function ScanPage() {
             const baseImgLang = imageLangOf(c.match?.image_url);
             if (c.saved) {
               return (
-                <div key={c.key} data-testid="scan-card-saved"
-                  className="flex items-center justify-between gap-2 rounded-lg border border-green-800 bg-green-900/20 px-3 py-2 text-sm">
-                  <span className="text-green-300 truncate">✓ {t.scan_card_saved((lang === "EN" && c.saved.name_en) || c.saved.name, c.saved.ids.length)}</span>
+                <div key={c.key} data-testid="scan-card-saved" id={`scan-card-${c.key}`}
+                  className="flex scroll-mt-20 items-center justify-between gap-2 rounded-lg border border-green-800 bg-green-900/20 px-3 py-2 text-sm">
+                  <span className="flex min-w-0 items-center text-green-300">{noBadge}<span className="truncate">✓ {t.scan_card_saved((lang === "EN" && c.saved.name_en) || c.saved.name, c.saved.ids.length)}</span></span>
                   <Link href={`/cards/${c.saved.ids[0]}`} className="shrink-0 text-xs text-pokemon-blue hover:underline">{t.scan_open_card}</Link>
                 </div>
               );
             }
             return (
-              <div key={c.key} data-testid="scan-card"
-                className={`rounded-lg border p-3 ${
+              <div key={c.key} data-testid="scan-card" id={`scan-card-${c.key}`}
+                className={`scroll-mt-20 rounded-lg border p-3 ${
                   c.needs_choice ? "border-pokemon-yellow"
                   : !c.include ? "border-gray-800 opacity-50" : uncertain ? "border-pokemon-red" : "border-gray-700"
                 } bg-pokemon-card`}>
                 {/* Kopfzeile: Pokédex-Nr. + Übernehmen / Im Pokédex */}
                 <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                  <span className="text-xs text-gray-400">
+                  <span className="flex items-center text-xs text-gray-400">
+                    {noBadge}
                     {pokedexNr != null ? `#${String(pokedexNr).padStart(4, "0")}` : <span className="text-gray-600">{t.scan_no_dex}</span>}
                     {c.variantOf && <span className="ml-2 rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200">↳ {t.scan_variant_badge}</span>}
                     {c.added && <span className="ml-2 rounded bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-200">{t.scan_added_badge}</span>}
@@ -1396,8 +1517,16 @@ export default function ScanPage() {
                       </label>
                     )}
                     <label className="flex items-center gap-1 text-gray-300" title={t.prize_pack_hint}>
-                      <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} />
+                      <input type="checkbox" checked={c.prizePack} onChange={() => togglePrizePack(idx)} data-testid="scan-prize-pack" />
                       {t.scan_prize_pack}
+                      {c.stamp?.ok && (
+                        // Play!-Stempel gefunden (sicher: schon angehakt) bzw. vielleicht: bitte prüfen
+                        <span data-testid="scan-stamp-found" data-sure={c.stamp.sure ? "1" : "0"}
+                          title={c.stamp.sure ? t.scan_stamp_found_hint : t.scan_stamp_maybe_hint}
+                          className={`rounded px-1 py-0.5 text-[10px] ${c.stamp.sure ? "bg-yellow-900/50 text-yellow-200" : "bg-gray-700 text-gray-200"}`}>
+                          {c.stamp.sure ? t.scan_stamp_found(Math.round(c.stamp.score * 100)) : t.scan_stamp_maybe(Math.round(c.stamp.score * 100))}
+                        </span>
+                      )}
                     </label>
                     {/* 1st Edition: immer anhakbar — der Katalog kennt die Varianten nicht
                         zuverlässig; kennt er keine, nur blasser mit Hinweis */}
@@ -1653,7 +1782,7 @@ export default function ScanPage() {
                 const blocked = busy || candidates.some((c) => c.rematching || c.saving);
                 return (
                   <>
-                    {candidates.some((c) => !c.saved) && (
+                    {(candidates.some((c) => !c.saved) || candidates.length === 0) && (
                       // Handy: eigene Zeile über den beiden; breiter: links daneben
                       <button type="button" onClick={() => void confirmLater()} disabled={blocked}
                         data-testid="scan-later" title={t.scan_later_hint}

@@ -59,6 +59,14 @@ class ScanAlternative(BaseModel):
     art_inliers: int = 0
 
 
+class ScanStamp(BaseModel):
+    """Play!-Stempel auf der erkannten Karte (Bild-Abgleich mit der gelernten Vorlage)."""
+    score: float
+    quad: list[list[float]]              # Ecken auf der aufrechten Karte (0..1)
+    ok: bool = False                     # sieht nach Stempel aus → Hinweis
+    sure: bool = False                   # sicher genug → Prize Pack vorab angehakt
+
+
 class ScanCandidate(BaseModel):
     """
     Ein Scan-Treffer inkl. Vorbefüllung für den Bestätigungs-Dialog.
@@ -75,6 +83,7 @@ class ScanCandidate(BaseModel):
     # (kein eindeutiger Treffer). Leer/False bei allen anderen Engines.
     alternatives: list[ScanAlternative] = []
     needs_choice: bool = False
+    stamp: Optional[ScanStamp] = None     # nur Bild-Abgleich mit gelernter Stempel-Vorlage
 
 
 class ScanResponse(BaseModel):

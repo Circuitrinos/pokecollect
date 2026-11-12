@@ -74,3 +74,10 @@ export function cardOrder(quad: number[][], w: number, h: number, byPosition = f
   if (d(q[0], q[1]) > d(q[0], q[3])) q = [q[1], q[2], q[3], q[0]];
   return q;
 }
+
+/** Ecken rund um die Mitte sortiert — zum Zeichnen (eine Erkennung liefert sie nicht immer der Reihe nach). */
+export function ringOrder(quad: number[][]): number[][] {
+  const cx = quad.reduce((a, p) => a + p[0], 0) / quad.length;
+  const cy = quad.reduce((a, p) => a + p[1], 0) / quad.length;
+  return [...quad].sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+}

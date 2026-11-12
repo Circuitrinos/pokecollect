@@ -7,6 +7,7 @@ import { X } from "lucide-react";
 import { ScanDraftSummary, scanDraftApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { removeScanDraft } from "@/lib/useScanDrafts";
+import { ringOrder } from "@/lib/cropOrient";
 
 /** Foto des Entwurfs als Blob-URL (braucht die Anmeldung): Vorschau oder das ganze Foto. */
 function useDraftImage(id: number, full = false): string | null {
@@ -53,7 +54,7 @@ export function DraftPhoto({ draft, full = false, imgClassName = "block w-full h
       {outlines.length > 0 && (
         <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none">
           {outlines.map((o, i) => (
-            <polygon key={i} points={o.quad.map(([x, y]) => `${x},${y}`).join(" ")}
+            <polygon key={i} points={ringOrder(o.quad).map(([x, y]) => `${x},${y}`).join(" ")}
               fill={o.saved ? "rgba(34,197,94,0.18)" : "rgba(250,204,21,0.10)"}
               stroke={o.saved ? "#22c55e" : "#facc15"} strokeWidth={full ? 2.5 : 2} vectorEffect="non-scaling-stroke"
               data-testid={o.saved ? "draft-outline-saved" : "draft-outline-open"} />
@@ -137,8 +138,11 @@ export default function ScanDraftList({ drafts, onResume, busy, detailed, placeN
     const when = d.aktualisiert_am
       ? new Date(d.aktualisiert_am).toLocaleString(lang === "EN" ? "en-US" : "de-DE", { dateStyle: "short", timeStyle: "short" })
       : "";
+    const empty = !(d.summary.open ?? 0) && !(d.summary.saved ?? 0);
     return {
-      names: (names.join(", ") || "—") + (more > 0 ? ` ${t.scan_draft_more_cards(more)}` : ""),
+      // nichts erkannt: Foto zum Markieren von Hand
+      names: empty ? t.scan_draft_none_found
+        : (names.join(", ") || "—") + (more > 0 ? ` ${t.scan_draft_more_cards(more)}` : ""),
       place: [targetLabel(d.summary.target), placeName?.(d), modeLabel(d.summary.mode)].filter(Boolean).join(" · "),
       meta: t.scan_draft_meta(d.summary.open ?? 0, d.summary.saved ?? 0, when),
     };

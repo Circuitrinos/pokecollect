@@ -163,6 +163,21 @@ contrast-evened greys at a few scales. On 27 Prize Pack photos (each found with
 a template learned from the other 26) stamps scored 0.87–0.96 apart from one
 heavy glare (0.52); 150 cards without a stamp stayed at or below 0.60.
 
+While scanning, every recognised card is checked for the stamp (`/match` →
+`stamp: {score, quad, ok, sure}`): `STAMP_SURE_SCORE` (default 0.85) ticks
+Prize Pack in the review, `STAMP_MIN_SCORE` (default 0.75) shows a "stamp?"
+hint. `tools/stamp_eval.py <scan dataset zip>` measures both on your own cards
+(each marked stamp held out once, every card without Prize Pack as a false
+alarm check) and suggests values for the two variables.
+
+### Foil (`tools/holo_diff.py`, `tools/foil_eval.py`)
+
+`holo_diff.py` aligns each scanned card to its plain catalog image and keeps
+the difference — mostly foil: a reverse holo lights up the frame, a holo the
+art. `foil_eval.py <holo_diff output>` tests how well those numbers tell
+Normal / Holo / Reverse Holo apart on cards they were not fitted on (folds by
+card) and how many "reverse holo?" hints would be right.
+
 ### Learning from scans
 
 Every card saved from a scan with "use photo" keeps the straightened photo, the

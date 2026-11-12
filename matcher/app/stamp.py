@@ -28,7 +28,10 @@ W, H = 460, 643                              # card size everything runs at
 BOX = (0.17, 0.09)                           # stamp size (card fractions) before a template exists
 ZONES = ((0.0, 0.28, 0.34, 0.68), (0.66, 0.28, 1.0, 0.68))   # x0, y0, x1, y1: left / right of the art
 SCALES = np.arange(0.84, 1.20, 0.04)
-MIN_SCORE = 0.75                             # stamps score ~0.9+, other artwork ≤ ~0.65
+# stamps score ~0.9+, other artwork ≤ ~0.65; tools/stamp_eval.py measures both on
+# the scan dataset and suggests values for these two (env, without a rebuild)
+MIN_SCORE = float(os.getenv("STAMP_MIN_SCORE", "0.75"))    # "looks like a stamp": shown as a hint
+SURE_SCORE = float(os.getenv("STAMP_SURE_SCORE", "0.85"))  # sure enough to tick Prize Pack in the scan
 MARGIN = 0.35                                # crop margin around a sample, of the stamp size
 
 

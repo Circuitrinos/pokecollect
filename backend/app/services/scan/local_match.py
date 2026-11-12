@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 
-from app.schemas.scan import ScanAlternative, ScanRawRead
+from app.schemas.scan import ScanAlternative, ScanRawRead, ScanStamp
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ class LocalExtra:
     alternatives: list[ScanAlternative] = field(default_factory=list)
     needs_choice: bool = False
     confidence: float = 0.0
+    stamp: Optional[ScanStamp] = None
 
 
 @dataclass
@@ -100,6 +101,16 @@ def _bbox(quad: list[list[float]]) -> list[float]:
     return [x0, y0, min(1.0, max(xs)) - x0, min(1.0, max(ys)) - y0]
 
 
+def _stamp(raw) -> Optional[ScanStamp]:
+    """Stempel-Befund des Matchers übernehmen (ältere Matcher liefern keinen)."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ScanStamp(score=float(raw["score"]), quad=raw["quad"], ok=bool(raw.get("ok")), sure=bool(raw.get("sure")))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
                   rows: int = 0, cols: int = 0) -> LocalResult:
     t0 = time.perf_counter()
@@ -148,5 +159,6 @@ async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: st
             ) for c in cands if c.get("card_id")],
             needs_choice=not card.get("auto", False),
             confidence=float(card.get("confidence") or 0.0),
+            stamp=_stamp(card.get("stamp")),
         )
     return LocalResult(reads=reads, extras=extras)
