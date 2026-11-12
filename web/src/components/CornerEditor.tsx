@@ -15,6 +15,7 @@ export type CornerSuggestion = { quad: number[][]; ok: boolean; label: string };
 
 export default function CornerEditor({
   imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest, suggestOnOpen = false,
+  suggestTexts,
 }: {
   imageUrl: string;
   initialQuad: number[][];
@@ -31,6 +32,8 @@ export default function CornerEditor({
   suggest?: (quad: number[][], transform: CropTransform) => Promise<CornerSuggestion | null>;
   // gleich beim Öffnen einen Vorschlag holen (z. B. Bild aus der Websuche zuschneiden)
   suggestOnOpen?: boolean;
+  // eigene Texte für den Vorschlag (Standard: Kartenkanten)
+  suggestTexts?: { hint?: string; busy?: string; none?: string };
 }) {
   const { t } = useI18n();
   const [quad, setQuadState] = useState<number[][]>(initialQuad);
@@ -333,8 +336,8 @@ export default function CornerEditor({
             sugg.state === "done" ? (sugg.ok ? "bg-green-950/60 text-green-200" : "bg-amber-950/60 text-amber-200") : "bg-gray-800 text-gray-300"}`}
             data-testid="corner-suggest" data-state={sugg.state === "done" ? (sugg.ok ? "pass" : "weak") : sugg.state}>
             <span className="flex-1 min-w-0">
-              {sugg.state === "busy" ? t.corner_suggest_busy
-                : sugg.state === "none" ? t.corner_suggest_none
+              {sugg.state === "busy" ? (suggestTexts?.busy ?? t.corner_suggest_busy)
+                : sugg.state === "none" ? (suggestTexts?.none ?? t.corner_suggest_none)
                 : sugg.ok ? `✓ ${t.corner_suggest_pass(sugg.label)}` : t.corner_suggest_weak(sugg.label)}
             </span>
             {sugg.state === "done" && (
@@ -345,7 +348,7 @@ export default function CornerEditor({
             )}
           </div>
         )}
-        {suggest && !sugg && <p className="mt-2 text-[11px] text-gray-500">{t.corner_suggest_hint}</p>}
+        {suggest && !sugg && <p className="mt-2 text-[11px] text-gray-500">{suggestTexts?.hint ?? t.corner_suggest_hint}</p>}
 
         {/* Zoom + Ausrichtung */}
         <div className="flex items-center justify-center gap-1.5 mt-2 flex-wrap text-sm">

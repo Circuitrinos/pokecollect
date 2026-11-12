@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { API_BASE, StampItem, StampOverview, scanQualityApi } from "@/lib/api";
+import toast from "react-hot-toast";
+import { API_BASE, StampItem, StampOverview, StampTemplate, scanQualityApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { imageUrl } from "@/lib/utils";
 import StampEditor from "@/components/StampEditor";
@@ -13,17 +14,44 @@ export default function StampMarks() {
   const [marked, setMarked] = useState(false);
   const [data, setData] = useState<StampOverview | null>(null);
   const [editing, setEditing] = useState<StampItem | null>(null);
+  const [template, setTemplate] = useState<StampTemplate | null>(null);
+  const [learning, setLearning] = useState(false);
 
   const load = useCallback(() => {
     scanQualityApi.stamps(marked).then((r) => setData(r.data)).catch(() => {});
   }, [marked]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { scanQualityApi.stampTemplate().then((r) => setTemplate(r.data)).catch(() => {}); }, []);
+
+  const learn = async () => {
+    setLearning(true);
+    try {
+      const r = await scanQualityApi.learnStampTemplate();
+      toast.success(t.stamps_learned(r.data.samples, r.data.marked, r.data.guessed));
+      setTemplate({ exists: true, samples: r.data.samples, marked: r.data.marked, built_at: r.data.built_at });
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : t.form_save_error);
+    } finally {
+      setLearning(false);
+    }
+  };
 
   const nameOf = (it: StampItem) => (lang === "EN" && it.english_name) || it.name;
   const c = data?.counts;
   return (
     <div className="space-y-3" data-testid="stamp-marks">
       <p className="text-gray-400 text-xs">{t.stamps_hint}</p>
+      <div className="flex flex-wrap items-center gap-3 rounded bg-gray-800/60 px-3 py-2" data-testid="stamp-template">
+        <span className="text-sm text-gray-300 flex-1 min-w-0">
+          {template?.exists ? t.stamps_template(template.samples ?? 0, template.marked ?? 0) : t.stamps_template_none}
+          <span className="block text-[11px] text-gray-500">{t.stamps_learn_hint}</span>
+        </span>
+        <button type="button" onClick={() => void learn()} disabled={learning} data-testid="stamp-template-learn"
+          className="rounded bg-pokemon-blue px-3 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50">
+          {learning ? t.stamps_learning : t.stamps_learn}
+        </button>
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         {c && <span className="text-gray-300 text-sm">{t.stamps_counts(c.marked, c.photos)}</span>}
         <label className="ml-auto flex items-center gap-2 text-xs text-gray-300 cursor-pointer">

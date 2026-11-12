@@ -1,14 +1,17 @@
 "use client";
+import { useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { API_BASE, Card, cardApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { imageUrl } from "@/lib/utils";
-import CornerEditor from "@/components/CornerEditor";
+import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 
 // Play!-Pokémon-Stempel im Kartenfoto markieren (vier Ecken, Kartenkoordinaten)
 // — Trainingsdaten für einen Stempel-Detektor (Scan-Datensatz: stamp.yaml).
-// Kartenseite und Admin-Liste „Play!-Stempel".
-export const DEFAULT_STAMP: number[][] = [[0.42, 0.43], [0.58, 0.43], [0.58, 0.51], [0.42, 0.51]];
+// Kartenseite und Admin-Liste „Play!-Stempel". Mit gelernter Vorlage schlägt der
+// Bild-Abgleich den Stempel vor: beim Öffnen überall, nach dem Ziehen um die Ecken.
+// Der Stempel sitzt unten rechts (manchmal links) am Bildfenster.
+export const DEFAULT_STAMP: number[][] = [[0.79, 0.375], [0.96, 0.375], [0.96, 0.47], [0.79, 0.47]];
 
 export default function StampEditor({ cardId, photo, version, initialQuad, onSaved, onClose }: {
   cardId: number;
@@ -19,8 +22,20 @@ export default function StampEditor({ cardId, photo, version, initialQuad, onSav
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const [noTemplate, setNoTemplate] = useState(false);
+  const askedRef = useRef(false);
   const src = imageUrl(photo, API_BASE, version ?? undefined);
   if (!src) return null;
+  // erster Vorschlag ohne Hinweis (beide Stellen), danach um die gezogenen Ecken
+  const suggest = async (quad: number[][]): Promise<CornerSuggestion | null> => {
+    const hint = askedRef.current || initialQuad ? quad : null;
+    askedRef.current = true;
+    const r = await cardApi.stampSuggest(cardId, hint);
+    setNoTemplate(!r.data.template);
+    if (!r.data.quad) return null;
+    const pct = Math.round((r.data.score ?? 0) * 100);
+    return { quad: r.data.quad, ok: r.data.ok, label: r.data.ok ? t.stamp_suggest_found(pct) : t.stamp_suggest_maybe(pct) };
+  };
   const save = async (quad: number[][] | null) => {
     try {
       const r = await cardApi.setStamp(cardId, quad);
@@ -38,6 +53,10 @@ export default function StampEditor({ cardId, photo, version, initialQuad, onSav
       title={t.stamp_title}
       hint={t.stamp_hint}
       orientable={false}
+      suggest={suggest}
+      suggestOnOpen={!initialQuad}
+      suggestTexts={{ hint: t.stamp_suggest_hint, busy: t.stamp_suggest_busy,
+        none: noTemplate ? t.stamp_suggest_no_template : t.stamp_suggest_none }}
       onCancel={onClose}
       onApply={(quad) => void save(quad)}
       extra={initialQuad ? (

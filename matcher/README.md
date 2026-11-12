@@ -90,12 +90,25 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 - `POST /outline` (multipart): `file` (any picture), optionally `quad` (rough corners,
   fractions) and `refs` (comma-separated catalog ids, e.g. other prints of the same name).
   With refs the card is found by its artwork (ORB on the whole picture or around the rough
-  corners against those templates) and then settled like `/verify`; otherwise, or when no
-  reference shares the artwork, the rough corners snap to the card-shaped outline the
-  detector finds there (without corners: the most card-like outline; a picture that is just
-  the card comes back whole). Returns `quad` (card's TL first) or null, `method`
-  (`reference` | `edges`) and `reference`. Used by the app's picture finder to crop
-  pictures pasted from an image search.
+  corners against those templates) and then settled like `/verify`. Otherwise, or when no
+  reference shares the artwork, it looks for *a* Pokémon card rather than this one (see
+  "Card frame" below): the card-shaped outlines the detector finds near the rough corners
+  are scored against the typical card frame, and the one that looks like a card wins (not
+  its sleeve, binder pocket or art box); an exactly card-shaped outline counts too
+  (screenshots, store images, full-art cards). When none does, the frame itself is fitted
+  from the rough corners and its sides snapped onto their edges. Last resort: the outline
+  nearest the rough corners (without corners: the most card-like outline; a picture that is
+  just the card comes back whole). Returns `quad` (card's TL first) or null, `method`
+  (`reference` | `frame` | `edges`), `frame_ok` (the frame confirmed the edges) and
+  `reference`. Used by the app's picture finder to crop pictures pasted from an image search.
+- `POST /stamp` (multipart): `file` (a straightened card photo), optionally `quad` (rough
+  corners, card fractions). Finds the Play! Pokémon stamp of Prize Pack cards with the
+  learned template (see "Play! stamp" below): without `quad` at both places it sits (bottom
+  corners of the artwork), with `quad` around there. Returns `quad`, `score`, `ok` (score
+  ≥ 0.75) and `template` (false: nothing learned yet).
+- `POST /stamp/learn` (multipart): `photos`, `refs` (files) and `samples` (JSON list of
+  `{"photo": i, "box": [x0, y0, x1, y1] | null, "ref": j | null}`) — learns the template;
+  `GET /stamp/template` says whether one exists and what it was learned from.
 - `POST /verify` (multipart): `file` (a saved, straightened scan photo), `card_id`, optionally
   `original` + `quad` (the corners it was cut along). Compares the photo with that card's
   catalog images only (learned photos are left out, they would match themselves) and returns
@@ -105,6 +118,42 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
   matcher crops again along its suggestion and looks again, up to 3 times, until the corners
   settle (`refine_passes` says how many crops it checked). Used by the app's admin tool
   "Weak scans".
+
+### Card frame (`app/frame.py`)
+
+What every card shares — border, name bar, HP, attack box, weakness line, bottom
+text — as one mean gradient map (`app/frame_template.png`): the desaturated
+gradients of many catalog images averaged, so the artworks wash out. Fitting
+it ignores the artwork window and everything outside the card, otherwise the
+fit is pulled onto the art box, a sleeve or the binder pocket. Fitting =
+a coarse search (scale × rotation × shift by normalised correlation around the
+start corners), then an ECC homography on two pyramid levels; the correlation
+is the score (≥ 0.3: a card frame). `frame.score(picture, corners)` alone tells
+how much an outline looks like a card.
+
+On 120 binder-page phone photos (cards in sleeves, rough corners ~3% off) the
+outline came back with a median corner error of 1.5% instead of 3.2%, 76%
+within 3% instead of 49%; on clean catalog/store pages it is as exact as the
+plain edges and picks the right outline more often.
+
+Rebuild the template from more cards (other eras, other languages):
+
+    python tools/frame_template.py --dataset scans.zip      # references/ of a scan-dataset export
+    python tools/frame_template.py --images /path/to/cards   # upright, tightly cropped card images
+
+### Play! stamp (`app/stamp.py`)
+
+The stamp template is learned from the collection, not shipped: the app's admin
+section "Play! stamps" → "Learn template" sends the hand-marked stamps and, for
+Prize Pack photos nobody marked yet, the unstamped catalog image (the stamp is
+where the photo differs most from it, at the bottom corners of the artwork).
+A few self-training rounds re-find every sample with the current mean and drop
+the ones that don't fit; the box is then moved onto the stamp's outline. The
+template lives in the data volume (`stamp_template.png` + `.json`); learn again
+after marking more. Matching is normalised correlation on desaturated,
+contrast-evened greys at a few scales. On 27 Prize Pack photos (each found with
+a template learned from the other 26) stamps scored 0.87–0.96 apart from one
+heavy glare (0.52); 150 cards without a stamp stayed at or below 0.60.
 
 ### Learning from scans
 

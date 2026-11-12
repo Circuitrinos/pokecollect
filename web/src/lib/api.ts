@@ -321,6 +321,9 @@ export const cardApi = {
   },
   scanCheck: (id: number) => api.get<ScanCheck | null>(`/cards/${id}/scan-check`),
   setStamp: (id: number, quad: number[][] | null) => api.put<Card>(`/cards/${id}/stamp`, { quad }),
+  // Play!-Stempel im eigenen Foto vorschlagen (gelernte Vorlage; um quad herum, wenn gegeben)
+  stampSuggest: (id: number, quad: number[][] | null) =>
+    api.post<StampSuggestion>(`/cards/${id}/stamp-suggest`, { quad }),
   // Grobe Ecken → Vorschlag vom Bild-Abgleich (nichts wird gespeichert)
   cropSuggest: (id: number, file: Blob, quad: number[][]) => {
     const form = new FormData();
@@ -622,6 +625,10 @@ export type StampItem = {
   set: string | null; number: string | null; tcgdex_card_id: string | null; photo: string;
   stamp_quad: number[][] | null; updated_at: string | null;
 };
+export interface StampSuggestion { quad: number[][] | null; score: number | null; ok: boolean; template: boolean }
+export interface StampTemplate { exists: boolean; samples?: number; marked?: number; built_at?: string | null }
+export interface StampLearnResult { samples: number; marked: number; guessed: number; built_at: string }
+
 export type StampOverview = { counts: { photos: number; marked: number; unmarked: number }; items: StampItem[] };
 
 export type ScanQualityOverview = {
@@ -639,6 +646,8 @@ export const scanQualityApi = {
   dismiss: (cardId: number) => api.post(`/scan-quality/${cardId}/dismiss`),
   check: (cardId: number) => api.post<ScanRecheck>(`/scan-quality/${cardId}/check`),
   stamps: (marked = false) => api.get<StampOverview>("/scan-quality/stamps", { params: { marked } }),
+  stampTemplate: () => api.get<StampTemplate>("/scan-quality/stamps/template"),
+  learnStampTemplate: () => api.post<StampLearnResult>("/scan-quality/stamps/template"),
   // Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren")
   tryCrop: (cardId: number, file: Blob, quad: number[][]) => {
     const form = new FormData();
@@ -967,8 +976,8 @@ export const catalogApi = {
     const form = new FormData();
     form.append("file", file, "picture.jpg");
     if (quad) form.append("quad", JSON.stringify(quad));
-    return api.post<{ quad: number[][] | null; method: "reference" | "edges"; reference: string | null;
-      reference_label: string | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
+    return api.post<{ quad: number[][] | null; method: "reference" | "frame" | "edges"; frame_ok?: boolean;
+      reference: string | null; reference_label: string | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
   },
   uploadPicture: (cardId: string, file: Blob) => {
     const form = new FormData();

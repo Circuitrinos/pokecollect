@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 import json
 
-from . import detect, embedding, learn, matcher, numocr, recrop, timing
+from . import detect, embedding, frame, learn, matcher, numocr, recrop, stamp, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -446,6 +446,84 @@ def _outline_by_reference(img: np.ndarray, rough: np.ndarray, ref_ids: list[str]
             "inliers": int(loc["inliers"]), "iou": None}
 
 
+FRAME_SEEDS = 4
+FRAME_EDGE_MIN = 0.25       # an edge outline that scores this much as a card frame is the card
+FRAME_EXACT_RECT = 0.03     # rectangularity of an outline that is exactly card-shaped
+FRAME_TIE = 0.04            # outlines scoring within this of the best count as the same
+FRAME_AGREE = 0.025         # of the card width: an edge outline this close to the fitted frame
+FRAME_EDGE_SLACK = 0.06     # the fitted frame must look this much more like a card to beat the edges
+
+
+def _outline_by_frame(img: np.ndarray, rough: np.ndarray, hint: bool, cands: list[np.ndarray]) -> dict | None:
+    """
+    "A Pokémon card" rather than "this card", with the mean card frame (frame.py):
+
+    - every card-shaped edge outline (near the hint) is scored for how much it
+      looks like a card frame; edges give the exact corners, the frame says
+      which outline is the card and not its sleeve, pocket or art box. An
+      exactly card-shaped outline counts too (full-art cards hide the frame)
+    - when none looks like a card, the frame itself is fitted from the hint
+      (or, without one, from the biggest outlines and the whole picture) and
+      its sides snapped onto their edges
+    """
+    if not frame.available():
+        return None
+    h, w = img.shape[:2]
+    rough = np.float32(rough)
+    area = lambda c: float(cv2.contourArea(np.float32(c)))   # noqa: E731
+    shaped = [detect.portrait_order(c) for c in cands if detect._rectangularity(c) <= 2.5 and area(c) >= 0.02 * w * h]
+    if hint:
+        shaped = [c for c in shaped if detect._iou(rough, c) >= OUTLINE_MIN_IOU]
+    scored = sorted(((frame.score(img, c), c) for c in shaped), key=lambda x: -x[0])
+
+    def exact(group):
+        # outlines a pixel apart score alike: keep the one the edge picker prefers
+        if hint:
+            return max(group, key=lambda x: detect._iou(rough, x[1]) - 0.05 * detect._rectangularity(x[1]))
+        return max(group, key=lambda x: area(x[1]) * float(np.exp(-detect._rectangularity(x[1]))))
+
+    # a card frame, or an exact 63:88 rectangle (screenshots, store images; full-art
+    # cards whose artwork hides the frame) — photos never give one of those by chance
+    trusted = [x for x in scored if x[0] >= FRAME_EDGE_MIN or detect._rectangularity(x[1]) <= FRAME_EXACT_RECT]
+    if trusted:
+        top = trusted[0]
+        sc, q = exact([x for x in trusted if x[0] >= top[0] - FRAME_TIE and detect._iou(top[1], x[1]) >= 0.85])
+        method, confirmed = "edges", True
+    else:
+        if hint:
+            seeds = [rough]
+        else:
+            seeds = [c for _, c in sorted(((area(c), c) for c in shaped), key=lambda x: -x[0])[:FRAME_SEEDS]]
+            if 0.62 <= w / h <= 0.82:
+                seeds.append(detect.whole_image_as_card(img))
+        fitted = None
+        for seed in seeds:
+            r = frame.fit(img, seed)
+            if r is None or r["score"] < frame.MIN_SCORE:
+                continue
+            fq = frame.snap_edges(img, r["quad"])
+            if not detect.plausible_quad(fq, img.shape) or (hint and detect._iou(rough, fq) < OUTLINE_MIN_IOU):
+                continue
+            if fitted is None or r["score"] > fitted[0]:
+                fitted = (r["score"], fq)
+        if fitted is None:
+            return None
+        sc, q, method, confirmed = fitted[0], fitted[1], "frame", False
+        # an edge outline where the frame landed has the exact corners
+        side = float(np.linalg.norm(q[1] - q[0]))
+        near = [x for x in scored if float(np.abs(detect.portrait_order(x[1]) - q).max()) < FRAME_AGREE * side]
+        if near:
+            sc, q = exact(near)
+            method, confirmed = "edges", True
+        elif scored and scored[0][0] >= frame.score(img, q) - FRAME_EDGE_SLACK:
+            # they disagree and the edge outline looks about as much like a card
+            sc, q = exact([x for x in scored if x[0] >= scored[0][0] - FRAME_TIE and detect._iou(scored[0][1], x[1]) >= 0.85])
+            method = "edges"
+    out = np.clip(q / [w, h], 0.0, 1.0)
+    return {"quad": np.round(out, 4).tolist(), "method": method, "score": sc, "frame_ok": confirmed,
+            "iou": round(float(detect._iou(rough, q)), 3) if hint else None, "candidates": len(cands)}
+
+
 def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -> dict:
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
@@ -462,6 +540,7 @@ def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -
         rough = None
     if rough is None:
         rough = detect.whole_image_as_card(img)
+    area_of = lambda c: float(cv2.contourArea(np.float32(c)))   # noqa: E731
     if ref_ids and state["status"] == "ready":
         found = _outline_by_reference(img, rough, ref_ids)
         if found is not None:
@@ -473,6 +552,9 @@ def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -
     x0, y0, x1, y1 = max(0, x - mx), max(0, y - my), min(w, x + bw + mx), min(h, y + bh + my)
     if (x1 - x0) * (y1 - y0) < 0.8 * w * h and x1 - x0 > 40 and y1 - y0 > 40:
         cands += [d.quad + np.float32([x0, y0]) for d in detect.detect_cards(img[y0:y1, x0:x1], max_cards=12, nested=True)]
+    found = _outline_by_frame(img, rough, area_of(rough) <= 0.9 * w * h, cands)
+    if found is not None:
+        return found
 
     area = lambda c: float(cv2.contourArea(c.astype(np.float32)))   # noqa: E731
     card_shaped = [c for c in cands if detect._rectangularity(c) <= 2.5]
@@ -496,6 +578,102 @@ def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -
     out = (np.clip(best / [w, h], 0.0, 1.0)).round(4).tolist()
     return {"quad": out, "method": "edges", "iou": round(float(detect._iou(rough, best)), 3),
             "candidates": len(cands)}
+
+
+STAMP_MAX_SAMPLES = 300
+
+
+@app.post("/stamp")
+async def find_stamp(file: UploadFile = File(...), quad: str = Form("")) -> dict:
+    """Play! stamp in a straightened card photo (around `quad`, card fractions, if given)."""
+    data = await file.read()
+    if not data or len(data) > MAX_BYTES:
+        raise HTTPException(400, "empty or oversized image")
+    try:
+        hint = json.loads(quad) if quad else None
+        hint = hint if isinstance(hint, list) and len(hint) == 4 else None
+    except ValueError:
+        hint = None
+    return await run_in_threadpool(_stamp_request, data, hint)
+
+
+def _stamp_request(data: bytes, hint: list | None) -> dict:
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "unreadable image")
+    if stamp.load_template() is None:
+        return {"quad": None, "score": None, "ok": False, "template": False}
+    r = stamp.find(img, hint)
+    if r is None:
+        return {"quad": None, "score": None, "ok": False, "template": True}
+    return {**r, "ok": r["score"] >= stamp.MIN_SCORE, "template": True}
+
+
+@app.get("/stamp/template")
+def stamp_template() -> dict:
+    tpl = stamp.load_template()
+    if tpl is None:
+        return {"exists": False}
+    meta = tpl[1]
+    return {"exists": True, "samples": meta.get("samples"), "marked": meta.get("marked"),
+            "w": meta.get("w"), "h": meta.get("h"), "built_at": meta.get("built_at")}
+
+
+@app.post("/stamp/learn")
+async def learn_stamp(photos: list[UploadFile] = File(...), refs: list[UploadFile] = File(default=[]),
+                      samples: str = Form(...)) -> dict:
+    """
+    Learn the stamp template from the collection: `samples` = JSON list of
+    {"photo": index into photos, "box": [x0, y0, x1, y1] (hand-marked) or null,
+    "ref": index into refs (the unstamped catalog image) or null}.
+    """
+    try:
+        spec = json.loads(samples)
+    except ValueError:
+        raise HTTPException(400, "samples: invalid JSON") from None
+    if not isinstance(spec, list) or len(spec) > STAMP_MAX_SAMPLES:
+        raise HTTPException(400, "samples: list of at most %d" % STAMP_MAX_SAMPLES)
+    photo_data = [await f.read() for f in photos]
+    ref_data = [await f.read() for f in refs]
+    return await run_in_threadpool(_learn_stamp, spec, photo_data, ref_data)
+
+
+def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> dict:
+    def decode(blobs, i, flags=cv2.IMREAD_COLOR):
+        if not isinstance(i, int) or not 0 <= i < len(blobs) or len(blobs[i]) > MAX_BYTES:
+            return None
+        return cv2.imdecode(np.frombuffer(blobs[i], np.uint8), flags)
+    use, marked, guessed = [], 0, 0
+    for s in spec:
+        if not isinstance(s, dict):
+            continue
+        card = decode(photo_data, s.get("photo"))
+        if card is None:
+            continue
+        box = s.get("box")
+        if isinstance(box, list) and len(box) == 4 and all(isinstance(v, (int, float)) for v in box) \
+                and 0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1:
+            use.append((card, tuple(float(v) for v in box), True))
+            marked += 1
+            continue
+        ref = decode(ref_data, s.get("ref"), cv2.IMREAD_UNCHANGED)
+        if ref is None:
+            continue
+        b, strength = stamp.difference_box(card, ref)
+        if strength >= 1.8:          # a clear difference where stamps sit
+            use.append((card, b, False))
+            guessed += 1
+    if len(use) < 3:
+        raise HTTPException(422, f"too few stamps to learn from ({len(use)}; at least 3)")
+    built = stamp.build(use)
+    if built is None:
+        raise HTTPException(422, "no template")
+    tpl, meta = built
+    meta["built_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    stamp.save(tpl, meta)
+    log.info("stamp template: %d samples (%d marked, %d from catalog differences)", meta["samples"], marked, guessed)
+    return {"samples": meta["samples"], "marked": marked, "guessed": guessed, "w": meta["w"], "h": meta["h"],
+            "built_at": meta["built_at"]}
 
 
 @app.post("/match")

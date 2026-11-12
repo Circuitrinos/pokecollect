@@ -82,10 +82,12 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
     smallRef.current ??= await shrink(orig);
     const r = await catalogApi.pictureOutline(cardId, smallRef.current, quad);
     if (!r.data.quad) return null;
-    // Über das Artwork eines gleichnamigen Drucks gefunden = verlässlich; nur Kanten = bitte prüfen
-    return r.data.method === "reference"
-      ? { quad: r.data.quad, ok: true, label: t.pic_crop_matched(r.data.reference_label ?? r.data.reference ?? "") }
-      : { quad: r.data.quad, ok: false, label: t.pic_crop_found };
+    // Artwork eines gleichnamigen Drucks oder Kanten, die wie ein Kartenrahmen aussehen = verlässlich;
+    // nur an den Rahmen angelegt oder nur Kanten = bitte prüfen
+    if (r.data.method === "reference")
+      return { quad: r.data.quad, ok: true, label: t.pic_crop_matched(r.data.reference_label ?? r.data.reference ?? "") };
+    if (r.data.frame_ok) return { quad: r.data.quad, ok: true, label: t.pic_crop_card };
+    return { quad: r.data.quad, ok: false, label: r.data.method === "frame" ? t.pic_crop_frame : t.pic_crop_found };
   };
   const applyCrop = async (quad: number[][], transform: CropTransform) => {
     const orig = originalRef.current;

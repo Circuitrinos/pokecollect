@@ -225,8 +225,10 @@ def same_name_refs(db: Session, row: TcgdexCatalog, limit: int = 24) -> list[str
 async def outline(data: bytes, quad: Optional[list], refs: Optional[list[str]] = None) -> dict:
     """Grobe Ecken eines Bilds (Zuschneiden im Bild-Finder) an die echten
     Kartenkanten anlegen — matcher /outline: über das Artwork gleichnamiger
-    Drucke (refs), sonst über die Kanten. → {"quad": Ecken (0..1) oder None,
-    "method": "reference" | "edges", "reference": Katalog-ID};
+    Drucke (refs), sonst über einen typischen Kartenrahmen (frame_ok: die
+    Kanten sehen wie eine Karte aus) und zuletzt nur über die Kanten.
+    → {"quad": Ecken (0..1) oder None, "method": "reference" | "frame" | "edges",
+    "frame_ok": bool, "reference": Katalog-ID};
     wirft httpx.HTTPError, wenn der Dienst nicht antwortet."""
     import json
 
@@ -241,4 +243,5 @@ async def outline(data: bytes, quad: Optional[list], refs: Optional[list[str]] =
     body = r.json()
     q = body.get("quad")
     return {"quad": q if isinstance(q, list) and len(q) == 4 else None,
-            "method": body.get("method") or "edges", "reference": body.get("reference")}
+            "method": body.get("method") or "edges", "frame_ok": bool(body.get("frame_ok")),
+            "reference": body.get("reference")}

@@ -20,6 +20,7 @@ from app.services.card_images import (
     ImageValidationError,
     backfill_images_task,
     remove_card_images,
+    safe_media_path,
     replace_crop,
     store_card_image,
     store_scan_photo,
@@ -707,6 +708,25 @@ def set_stamp(card_id: int, payload: StampUpdate, db: Session = Depends(get_db))
     db.commit()
     db.refresh(card)
     return _card_response(db, card)
+
+
+@router.post("/{card_id}/stamp-suggest")
+async def stamp_suggest(card_id: int, payload: StampUpdate, db: Session = Depends(get_db)):
+    """Play!-Stempel im eigenen Foto vorschlagen (gelernte Vorlage; um `quad` herum, wenn gegeben).
+    → {"quad" oder null, "score", "ok", "template"}."""
+    import httpx
+
+    from app.services import stamp_finder
+
+    card = _card_or_404(card_id, db)
+    photo = safe_media_path(card.bild_scan_pfad or card.bild_karte_pfad)
+    if photo is None or not photo.is_file():
+        raise HTTPException(status_code=409, detail="Kein eigenes Foto zum Markieren")
+    db.commit()     # Lesetransaktion nicht über den Abgleich offen halten
+    try:
+        return await stamp_finder.find(photo, payload.quad)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
 
 
 @router.get("/{card_id}/scan-check")

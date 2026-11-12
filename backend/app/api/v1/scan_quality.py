@@ -6,6 +6,8 @@ POST /scan-quality/{id}/dismiss  als in Ordnung markieren (bis sich das Foto än
 POST /scan-quality/{id}/check    diese Karte sofort neu prüfen (nach dem Korrigieren)
 POST /scan-quality/{id}/try      einen Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren")
 GET  /scan-quality/stamps        Prize-Pack-Fotos zum Markieren des Play!-Stempels (Trainingsdaten)
+GET  /scan-quality/stamps/template   gelernte Stempel-Vorlage (Vorschläge beim Markieren)
+POST /scan-quality/stamps/template   Vorlage neu lernen (markierte + übrige Prize-Pack-Fotos)
 """
 
 import json
@@ -136,6 +138,30 @@ def stamps(
             "updated_at": r["aktualisiert_am"].isoformat() if r["aktualisiert_am"] else None,
         } for r in rows],
     }
+
+
+@router.get("/stamps/template")
+async def stamp_template():
+    """Gelernte Play!-Stempel-Vorlage im Bild-Abgleich (Vorschläge beim Markieren)."""
+    from app.services import stamp_finder
+
+    try:
+        return await stamp_finder.status()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+
+
+@router.post("/stamps/template")
+async def learn_stamp_template():
+    """Vorlage aus den markierten Stempeln und den übrigen Prize-Pack-Fotos (gegen das Katalogbild) lernen."""
+    from app.services import stamp_finder
+
+    try:
+        return await stamp_finder.learn()
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
 
 
 @router.post("/run")

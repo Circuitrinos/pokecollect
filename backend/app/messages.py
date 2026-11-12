@@ -81,6 +81,8 @@ EN: dict[str, str] = {
     "Bild zu groß (max. 15 MB)": "Image too large (max. 15 MB)",
     "Ungültige Ecken": "Invalid corners",
     "Kein eigenes Foto zum Markieren": "There is no photo of your own to mark",
+    "Zu wenige Stempel zum Lernen — mindestens 3 von Hand markieren":
+        "Too few stamps to learn from — mark at least 3 by hand",
     "Karte ohne Katalog-Zuordnung": "The card isn't linked to a catalog card",
     "4 Ecken mit Werten zwischen 0 und 1 erwartet": "Expected 4 corners with values between 0 and 1",
     "Markierung zu klein": "The marked area is too small",

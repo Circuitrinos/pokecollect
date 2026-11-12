@@ -351,7 +351,8 @@ async def upload_picture(card_id: str, request: Request, file: UploadFile = File
 async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str = Form(""),
                           db: Session = Depends(get_db)):
     """Bild zuschneiden (Bild-Finder): grobe Ecken an die Kartenkanten anlegen — über das
-    Artwork gleichnamiger Drucke, sonst über die Kanten. → {"quad", "method", "reference"}."""
+    Artwork gleichnamiger Drucke, sonst über einen typischen Kartenrahmen, zuletzt über die
+    Kanten. → {"quad", "method", "frame_ok", "reference", "reference_label"}."""
     import json
 
     import httpx

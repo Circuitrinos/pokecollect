@@ -140,7 +140,7 @@ def test_picture_outline_forwards_to_the_matcher(client, row, monkeypatch):
     async def outline(data, quad, refs=None):
         seen.update(data=data, quad=quad, refs=refs)
         return {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "reference",
-                "reference": "testpic-blw-1"}
+                "frame_ok": False, "reference": "testpic-blw-1"}
 
     monkeypatch.setattr(picture_finder, "outline", outline)
     try:
@@ -149,7 +149,7 @@ def test_picture_outline_forwards_to_the_matcher(client, row, monkeypatch):
                         data={"quad": json.dumps(rough)})
         assert r.status_code == 200, r.text
         assert r.json() == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "reference",
-                            "reference": "testpic-blw-1", "reference_label": "BLW 1"}
+                            "frame_ok": False, "reference": "testpic-blw-1", "reference_label": "BLW 1"}
         # nur gleichnamige Drucke mit Bild
         assert seen == {"data": b"img", "quad": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                         "refs": ["testpic-blw-1"]}
@@ -168,3 +168,34 @@ def test_picture_outline_forwards_to_the_matcher(client, row, monkeypatch):
         db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id.in_(["testpic-blw-1", "testpic-noimg-2", "testpic-other-3"])))
         db.commit()
         db.close()
+
+
+def test_picture_outline_reads_the_matcher_answer(monkeypatch):
+    """matcher /outline → quad, Methode (Artwork / Kartenrahmen / Kanten) und ob der Rahmen die Kanten bestätigt."""
+    import asyncio
+
+    import httpx
+    from app.services import picture_finder
+
+    answers = iter([
+        {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "frame", "score": 0.41, "frame_ok": False},
+        {"quad": [[0.2, 0.1], [0.8, 0.1], [0.8, 0.9], [0.2, 0.9]], "method": "edges", "frame_ok": True},
+        {"quad": None, "method": "edges", "iou": 0.0},
+    ])
+    sent = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        return httpx.Response(200, json=next(answers))
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    rough = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    a = asyncio.run(picture_finder.outline(b"img", rough))
+    assert a == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "frame", "frame_ok": False,
+                 "reference": None}
+    b = asyncio.run(picture_finder.outline(b"img", rough, ["x-1"]))
+    assert (b["method"], b["frame_ok"]) == ("edges", True)
+    assert b"x-1" in sent[1]
+    c = asyncio.run(picture_finder.outline(b"img", None))
+    assert c == {"quad": None, "method": "edges", "frame_ok": False, "reference": None}
