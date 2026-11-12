@@ -5,16 +5,22 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import { APP_VERSION } from "@/lib/version";
 import BurgerMenu from "@/components/BurgerMenu";
-import { isNavActive, scanHref, visibleNavTargets } from "@/lib/navRegistry";
+import { FileClock } from "lucide-react";
+import { DRAFTS_PATH, isNavActive, scanHref, visibleNavTargets } from "@/lib/navRegistry";
 import { useMe } from "@/lib/useMe";
+import { useScanDrafts, useScanDraftsLive } from "@/lib/useScanDrafts";
+import DraftCount from "@/components/DraftCount";
 
 // Haben rechts eigene Knöpfe
-const OWN_BUTTON = new Set(["scan", "settings"]);
+const OWN_BUTTON = new Set(["scan", "scandrafts", "settings"]);
 
 export default function Navbar() {
   const { t, lang, setLang } = useI18n();
   const pathname = usePathname() ?? "/";
   const isAdmin = useMe()?.is_admin ?? false;
+  useScanDraftsLive();
+  const pendingScans = useScanDrafts()?.length ?? 0;
+  const onDrafts = pathname === DRAFTS_PATH;
   // Passen nicht alle Links in die Kopfzeile: ☰ statt Links. Die Links bleiben
   // dann unsichtbar im Layout, damit weiter gemessen werden kann, wann sie
   // wieder passen (sonst würde die Kopfzeile hin- und herspringen).
@@ -70,6 +76,12 @@ export default function Navbar() {
           {lang === "DE" ? "EN" : "DE"}
         </button>
         <Link href="/settings" className="hidden md:inline-block text-gray-400 hover:text-white text-sm">⚙ {t.nav_settings}</Link>
+        <Link href={DRAFTS_PATH} title={t.nav_scan_drafts} aria-label={t.nav_scan_drafts_count(pendingScans)}
+          aria-current={onDrafts ? "page" : undefined} data-testid="nav-scan-drafts"
+          className={`hidden md:inline-flex items-center gap-1 rounded px-1.5 py-1 text-sm ${onDrafts ? "text-pokemon-yellow" : "text-gray-400 hover:text-white"}`}>
+          <FileClock size={18} />
+          <DraftCount n={pendingScans} />
+        </Link>
         <Link
           href={scanHref(pathname)}
           className="hidden md:inline-block bg-pokemon-blue text-white text-sm px-3 py-1.5 rounded hover:bg-blue-500 text-center"

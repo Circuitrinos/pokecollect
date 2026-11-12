@@ -13,18 +13,24 @@ import { useEffect, useState } from "react";
 export function createCachedResource<T>(fetcher: () => Promise<T>) {
   let cache: T | null = null;
   let pending: Promise<T> | null = null;
+  let gen = 0;                       // nur der jüngste Abruf schreibt (refresh während eines Abrufs)
   const listeners = new Set<(value: T) => void>();
+
+  const publish = (value: T) => {
+    cache = value;
+    listeners.forEach((l) => l(value));
+  };
 
   const load = (): Promise<T> => {
     if (!pending) {
+      const mine = ++gen;
       pending = fetcher()
         .then((value) => {
-          cache = value;
-          listeners.forEach((l) => l(value));
+          if (mine === gen) publish(value);
           return value;
         })
         .catch((err) => {
-          pending = null;
+          if (mine === gen) pending = null;
           throw err;
         });
     }
@@ -34,6 +40,14 @@ export function createCachedResource<T>(fetcher: () => Promise<T>) {
   const refresh = (): Promise<T> => {
     pending = null;
     return load();
+  };
+
+  /** Lokal ändern (z. B. gelöschten Eintrag sofort ausblenden); ein laufender Abruf zählt nicht mehr. */
+  const update = (fn: (value: T | null) => T) => {
+    gen++;
+    const value = fn(cache);
+    pending = Promise.resolve(value);
+    publish(value);
   };
 
   function useResource(): { data: T | null; refresh: () => Promise<T> } {
@@ -48,5 +62,5 @@ export function createCachedResource<T>(fetcher: () => Promise<T>) {
     return { data, refresh };
   }
 
-  return { useResource, refresh };
+  return { useResource, refresh, update };
 }

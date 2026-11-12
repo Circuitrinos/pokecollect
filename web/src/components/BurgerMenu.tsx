@@ -10,11 +10,14 @@ import { Menu, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { isNavActive, navHref, visibleNavTargets } from "@/lib/navRegistry";
 import { useMe } from "@/lib/useMe";
+import { useScanDrafts } from "@/lib/useScanDrafts";
+import DraftCount from "@/components/DraftCount";
 
 export default function BurgerMenu() {
   const isAdmin = useMe()?.is_admin ?? false;
   const { t } = useI18n();
   const pathname = usePathname() ?? "/";
+  const pendingScans = useScanDrafts()?.length ?? 0;
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -131,6 +134,7 @@ export default function BurgerMenu() {
                   >
                     <Icon size={20} className="shrink-0" />
                     <span>{t[labelKey]}</span>
+                    {key === "scandrafts" && <DraftCount n={pendingScans} className="ml-auto" />}
                   </Link>
                 );
               })}

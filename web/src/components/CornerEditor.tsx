@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { clamp, CropTransform } from "@/lib/cardCrop";
+import { cardOrder, screenOrder, UPRIGHT, viewFor, ViewOrient } from "@/lib/cropOrient";
 import { useI18n } from "@/lib/i18n";
 
 /**
@@ -11,7 +12,9 @@ import { useI18n } from "@/lib/i18n";
  *   verschieben (innen greifen oder ✥ in der Mitte)
  * - Zoom & Verschieben per Fingergesten (Pinch/1-Finger-Drag) und am Desktop
  *   per Mausrad / Linksklick-halten
- * - Flip/Rotate als manuelle Ausrichtungs-Korrektur
+ * - Drehen/Spiegeln der Ansicht: was auf dem Bildschirm oben ist, ist oben —
+ *   die Ecken werden danach neu sortiert (1 = oben links, wie angezeigt), der
+ *   Zuschnitt und der Vorschlag nehmen die Karte so herum, wie sie zu sehen ist
  * Wird im Scan-Review und auf der Detailseite verwendet.
  */
 export type CornerSuggestion = { quad: number[][]; ok: boolean; label: string };
@@ -63,12 +66,17 @@ export function moveQuad(start: number[][], dx: number, dy: number): number[][] 
   return start.map(([x, y]) => [x + mx, y + my]);
 }
 
+// Ecken kommen schon richtig herum; Drehen/Spiegeln steckt in ihrer Reihenfolge
+const NO_TRANSFORM: CropTransform = { flipH: false, flipV: false, rotate: 0 };
+
 export default function CornerEditor({
-  imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest, suggestOnOpen = false,
-  suggestTexts,
+  imageUrl, initialQuad, autoOrder = false, onCancel, onApply, title, hint, orientable = true, extra, suggest,
+  suggestOnOpen = false, suggestTexts,
 }: {
   imageUrl: string;
   initialQuad: number[][];
+  // Reihenfolge der Start-Ecken ohne Bedeutung (Erkennung): nach Bildposition sortieren
+  autoOrder?: boolean;
   onCancel: () => void;
   onApply: (quad: number[][], transform: CropTransform) => void;
   // Andere Verwendungen (z. B. Play!-Stempel markieren): eigener Titel/Hinweis,
@@ -100,6 +108,7 @@ export default function CornerEditor({
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
   const [rotate, setRotate] = useState(0);
+  const [fit, setFit] = useState(1);              // gedreht (90°/270°): Bild in die Ansicht einpassen
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 });
 
   const vpRef = useRef<HTMLDivElement | null>(null);
@@ -115,38 +124,83 @@ export default function CornerEditor({
   const flipHRef = useRef(false);
   const flipVRef = useRef(false);
   const imgSizeRef = useRef({ w: 0, h: 0 });
+  const fitRef = useRef(1);
+  const initRef = useRef<{ quad: number[][]; orient: ViewOrient } | null>(null);
+  const touchedRef = useRef(false);               // Ausrichtung von Hand geändert
+  const suggestTimer = useRef<number | null>(null);
 
   const setView = (z: number, p: { x: number; y: number }) => {
     zoomRef.current = z; panRef.current = p;
     setZoom(z); setPan(p);
   };
-  const doRotate = () => { const r = (rotateRef.current + 90) % 360; rotateRef.current = r; setRotate(r); };
-  const doFlipH = () => { flipHRef.current = !flipHRef.current; setFlipH(flipHRef.current); };
-  const doFlipV = () => { flipVRef.current = !flipVRef.current; setFlipV(flipVRef.current); };
-  const resetOrient = () => {
-    rotateRef.current = 0; flipHRef.current = false; flipVRef.current = false;
-    setRotate(0); setFlipH(false); setFlipV(false);
+  const orientNow = (): ViewOrient => ({ rotate: rotateRef.current, flipH: flipHRef.current, flipV: flipVRef.current });
+  const setOrient = (o: ViewOrient) => {
+    rotateRef.current = o.rotate; flipHRef.current = o.flipH; flipVRef.current = o.flipV;
+    setRotate(o.rotate); setFlipH(o.flipH); setFlipV(o.flipV);
+    // quer gedreht: so verkleinern, dass das ganze Bild in die Ansicht passt
+    const vp = vpRef.current, { w, h } = imgSizeRef.current;
+    const f = vp && w && h && o.rotate % 180 !== 0 ? Math.min(1, vp.clientWidth / h, vp.clientHeight / w) : 1;
+    fitRef.current = f;
+    setFit(f);
   };
+  // Ecken in Bildschirm-Reihenfolge (1 = oben links, wie angezeigt): so wird zugeschnitten
+  const oriented = (q: number[][], o: ViewOrient = orientNow()): number[][] => {
+    const { w, h } = imgSizeRef.current;
+    return orientable && w > 0 && h > 0 ? screenOrder(q, o, w, h) : q;
+  };
+  const turn = (o: ViewOrient) => {
+    touchedRef.current = true;
+    setOrient(o);
+    setQuad(oriented(quadRef.current, o));
+    // neue Ausrichtung → neuer Vorschlag (die Karte ist jetzt anders herum)
+    if (suggestRef.current) {
+      seqRef.current++;
+      setSugg(null);
+      if (suggestTimer.current) window.clearTimeout(suggestTimer.current);
+      suggestTimer.current = window.setTimeout(() => runSuggestRef.current(), 450);
+    }
+  };
+  const doRotate = () => turn({ ...orientNow(), rotate: (rotateRef.current + 90) % 360 });
+  const doFlipH = () => turn({ ...orientNow(), flipH: !flipHRef.current });
+  const doFlipV = () => turn({ ...orientNow(), flipV: !flipVRef.current });
+  useEffect(() => () => { if (suggestTimer.current) window.clearTimeout(suggestTimer.current); }, []);
   // Vorschlag holen; ältere Antworten werden verworfen, wenn inzwischen neu gezogen wurde
   const runSuggest = () => {
     const fn = suggestRef.current;
     if (!fn) return;
     const seq = ++seqRef.current;
     setSugg({ state: "busy" });
-    fn(quadRef.current, { flipH: flipHRef.current, flipV: flipVRef.current, rotate: rotateRef.current })
+    fn(oriented(quadRef.current), NO_TRANSFORM)
       .then((r) => { if (seq === seqRef.current) setSugg(r ? { state: "done", ...r } : { state: "none" }); })
       .catch(() => { if (seq === seqRef.current) setSugg({ state: "none" }); });
   };
   const runSuggestRef = useRef(runSuggest);
   runSuggestRef.current = runSuggest;
-  useEffect(() => {
+  // Start: die Ansicht so gedreht, dass die Ecken in ihrer Reihenfolge aufrecht
+  // stehen. Erkannte Ecken (autoOrder) erst wie im Vorschaubild ordnen: nach
+  // Bildposition, quer liegende Karte ins Hochformat. Feste Start-Rahmen bleiben.
+  const initOnce = (w: number, h: number) => {
+    if (initRef.current) return;
+    const q = orientable && autoOrder ? cardOrder(initialQuad, w, h, true) : initialQuad;
+    const o = orientable ? viewFor(q, w, h) : UPRIGHT;
+    initRef.current = { quad: q, orient: o };
+    setQuad(q);
+    setOrient(o);
     if (suggestOnOpen) runSuggestRef.current();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
   const applySuggestion = () => {
     if (sugg?.state !== "done") return;
-    setQuad(sugg.quad);
-    resetOrient();          // vorgeschlagene Ecken sind schon richtig herum
+    const { w, h } = imgSizeRef.current;
+    if (!orientable || !w || !h) {
+      setQuad(sugg.quad);
+    } else if (touchedRef.current) {
+      setQuad(oriented(sugg.quad));        // von Hand ausgerichtet: die Ausrichtung bleibt
+    } else {
+      // Vorschläge kommen mit der Karten-Ecke oben links zuerst → so herum zeigen
+      const q = cardOrder(sugg.quad, w, h);
+      setOrient(viewFor(q, w, h));
+      setQuad(q);
+    }
     seqRef.current++;
     setSugg(null);
   };
@@ -155,7 +209,7 @@ export default function CornerEditor({
   // Bildmitte (transform-origin 0 0). Identisch zur Matrix in der Zeiger-Zuordnung.
   const layerTransform = (() => {
     const cx = imgSize.w / 2, cy = imgSize.h / 2;
-    const fx = flipH ? -1 : 1, fy = flipV ? -1 : 1;
+    const fx = flipH ? -fit : fit, fy = flipV ? -fit : fit;
     return `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) translate(${cx}px, ${cy}px) rotate(${rotate}deg) scale(${fx}, ${fy}) translate(${-cx}px, ${-cy}px)`;
   })();
 
@@ -257,7 +311,8 @@ export default function CornerEditor({
     const { w, h } = imgSizeRef.current;
     const off = vpRef.current?.getBoundingClientRect();
     const cx = w / 2, cy = h / 2;
-    const fx = flipHRef.current ? -1 : 1, fy = flipVRef.current ? -1 : 1;
+    const k = fitRef.current;
+    const fx = flipHRef.current ? -k : k, fy = flipVRef.current ? -k : k;
     const M = new DOMMatrix()
       .translate(panRef.current.x, panRef.current.y)
       .scale(zoomRef.current)
@@ -358,6 +413,7 @@ export default function CornerEditor({
                 imgSizeRef.current = size;
                 setImgSize(size);
                 centerView();
+                if (size.w > 0 && size.h > 0) initOnce(size.w, size.h);
               }}
             />
             <svg
@@ -391,7 +447,7 @@ export default function CornerEditor({
                   className="absolute flex h-5 w-9 items-center justify-center touch-none cursor-grab"
                   style={{
                     left: `${((a[0] + b[0]) / 2) * 100}%`, top: `${((a[1] + b[1]) / 2) * 100}%`,
-                    transform: `translate(-50%, -50%) rotate(${deg}deg) scale(${1 / zoom})`,
+                    transform: `translate(-50%, -50%) rotate(${deg}deg) scale(${1 / (zoom * fit)})`,
                   }}>
                   <span className={`block h-2 w-7 rounded-full border ${on ? "bg-pokemon-blue border-white" : "bg-pokemon-yellow/90 border-black"}`} />
                 </button>
@@ -404,7 +460,7 @@ export default function CornerEditor({
                 active?.kind === "move" ? "bg-pokemon-blue text-white border-white" : "bg-black/60 text-pokemon-yellow border-pokemon-yellow/80"}`}
               style={{
                 left: `${centroid[0] * 100}%`, top: `${centroid[1] * 100}%`,
-                transform: `translate(-50%, -50%) scale(${1 / zoom}) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${-rotate}deg)`,
+                transform: `translate(-50%, -50%) scale(${1 / (zoom * fit)}) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${-rotate}deg)`,
               }}>✥</button>
             {quad.map(([x, y], i) => (
               <button type="button"
@@ -417,7 +473,7 @@ export default function CornerEditor({
                   left: `${x * 100}%`, top: `${y * 100}%`,
                   // Gegen Zoom/Drehen/Spiegeln gegensteuern → Marker bleibt rund,
                   // konstant groß und die Ziffer aufrecht/lesbar.
-                  transform: `translate(-50%, -50%) scale(${1 / zoom}) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${-rotate}deg)`,
+                  transform: `translate(-50%, -50%) scale(${1 / (zoom * fit)}) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${-rotate}deg)`,
                 }}
               >
                 {i + 1}
@@ -436,6 +492,8 @@ export default function CornerEditor({
                 backgroundRepeat: "no-repeat",
                 backgroundSize: `${bgW}px ${bgH}px`,
                 backgroundPosition: `${LOUPE / 2 - ap[0] * bgW}px ${LOUPE / 2 - ap[1] * bgH}px`,
+                // so gedreht/gespiegelt wie die Ansicht
+                transform: `rotate(${rotate}deg) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1})`,
               }}
             >
               <div className="absolute left-1/2 top-0 h-full w-px bg-pokemon-yellow/70" />
@@ -494,14 +552,20 @@ export default function CornerEditor({
 
         <div className="flex gap-2 justify-end mt-3 flex-wrap">
           {extra && <div className="mr-auto flex items-center gap-2">{extra}</div>}
-          <button type="button" onClick={() => { setQuad(initialQuad); resetOrient(); centerView(); seqRef.current++; setSugg(null); }}
+          <button type="button" onClick={() => {
+            const init = initRef.current;
+            setQuad(init?.quad ?? initialQuad);
+            setOrient(init?.orient ?? UPRIGHT);
+            touchedRef.current = false;
+            centerView(); seqRef.current++; setSugg(null);
+          }}
             className="text-gray-400 hover:text-white text-sm px-3 py-1.5">
             {t.scan_corners_reset}
           </button>
           <button type="button" onClick={onCancel} className="bg-gray-700 text-white text-sm px-3 py-1.5 rounded hover:bg-gray-600">
             {t.scan_corners_cancel}
           </button>
-          <button type="button" onClick={() => onApply(quad, { flipH, flipV, rotate })}
+          <button type="button" onClick={() => onApply(oriented(quad), NO_TRANSFORM)}
             className="bg-green-600 text-white text-sm px-4 py-1.5 rounded hover:bg-green-700">
             {t.scan_corners_apply}
           </button>

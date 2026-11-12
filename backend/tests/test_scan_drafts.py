@@ -35,7 +35,7 @@ def test_draft_roundtrip_and_privacy(client):
     d = _create(client, _state("a", "b", "c"))
     try:
         assert d["summary"] == {"open": 3, "saved": 0, "names": ["Karte a", "Karte b", "Karte c"],
-                                "target": "pokedex", "mode": "multi"}
+                                "target": "pokedex", "collection_id": None, "deck_id": None, "mode": "multi"}
         assert d["id"] in [x["id"] for x in client.get(f"{API}/scan/drafts").json()]
         got = client.get(f"{API}/scan/drafts/{d['id']}").json()
         assert [c["key"] for c in got["state"]["candidates"]] == ["a", "b", "c"]
@@ -130,3 +130,12 @@ def test_drafts_are_left_out_of_backups(client):
         assert "scan_drafts" not in tables and "pokemon_cards" in tables
     finally:
         client.delete(f"{API}/scan/drafts/{d['id']}")
+
+
+def test_summary_names_the_destination():
+    st = {**_state("a"), "target": "collection", "collectionId": 7, "deckId": 3}
+    assert scan_drafts.summary(st)["collection_id"] == 7 and scan_drafts.summary(st)["deck_id"] is None
+    st = {**_state("a"), "target": "deck", "collectionId": 7, "deckId": 3}
+    assert scan_drafts.summary(st)["deck_id"] == 3 and scan_drafts.summary(st)["collection_id"] is None
+    st = {**_state("a"), "target": "collection", "collectionId": "7"}
+    assert scan_drafts.summary(st)["collection_id"] is None

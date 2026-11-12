@@ -8,6 +8,7 @@ import {
   Library,
   BookOpen,
   ScanLine,
+  FileClock,
   Star,
   BarChart3,
   Package,
@@ -25,6 +26,7 @@ export type NavKey =
   | "decks"
   | "catalog"
   | "scan"
+  | "scandrafts"
   | "wishlist"
   | "stats"
   | "friends"
@@ -40,6 +42,8 @@ export type NavLabelKey =
   | "nav_decks"
   | "nav_catalog"
   | "nav_scan_short"
+  | "nav_scan_drafts"
+  | "nav_scan_drafts_short"
   | "nav_wishlist"
   | "nav_statistics"
   | "nav_friends"
@@ -52,6 +56,8 @@ export type NavTarget = {
   href: string;
   Icon: LucideIcon;
   labelKey: NavLabelKey;
+  /** Kürzere Beschriftung für die untere Leiste (sonst labelKey) */
+  shortLabelKey?: NavLabelKey;
   // exact: aktiver Zustand nur bei exakter Pfadgleichheit (nötig für "/", das
   // sonst jeden Pfad als Präfix matchen würde).
   exact?: boolean;
@@ -66,6 +72,8 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: "catalog", href: "/catalog", Icon: BookOpen, labelKey: "nav_catalog" },
   { key: "decks", href: "/decks", Icon: Layers, labelKey: "nav_decks" },
   { key: "scan", href: "/scan", Icon: ScanLine, labelKey: "nav_scan_short" },
+  // Offene Scans (Prüfseite als Entwurf) — mit Zähler in Menü, Leiste und Kopfzeile
+  { key: "scandrafts", href: "/scan/drafts", Icon: FileClock, labelKey: "nav_scan_drafts", shortLabelKey: "nav_scan_drafts_short" },
   { key: "wishlist", href: "/wishlist", Icon: Star, labelKey: "nav_wishlist" },
   { key: "stats", href: "/stats", Icon: BarChart3, labelKey: "nav_statistics" },
   { key: "friends", href: "/friends", Icon: Users, labelKey: "nav_friends" },
@@ -91,6 +99,8 @@ export function isNavKey(x: unknown): x is NavKey {
 
 // Aktiver Zustand eines Ziels für den aktuellen Pfad — eine Routine für Burger
 // und BottomNav (DRY), damit beide identisch highlighten.
+export const DRAFTS_PATH = "/scan/drafts";
+
 /**
  * Scan-Ziel mit Kontext: merkt sich die aktuelle Seite (from=, dorthin führt
  * „Zurück" nach dem Scan) und wählt von einer Sammlungsseite aus diese
@@ -102,7 +112,9 @@ export function scanHref(pathname: string): string {
   if (m) q.set("collection", m[1]);
   const d = pathname.match(/^\/decks\/(\d+)(?:\/|$)/);
   if (d) q.set("deck", d[1]);
-  if (pathname !== "/" && pathname !== "/collections" && !pathname.startsWith("/scan")) q.set("from", pathname);
+  if (pathname !== "/" && pathname !== "/collections" && (!pathname.startsWith("/scan") || pathname.startsWith(DRAFTS_PATH))) {
+    q.set("from", pathname);
+  }
   const s = q.toString();
   return s ? `/scan?${s}` : "/scan";
 }
@@ -110,8 +122,14 @@ export function scanHref(pathname: string): string {
 /** Rücksprungziel aus ?from= — nur app-interne Pfade (kein //host, kein Schema). */
 export function safeReturnPath(from: string | null): string | null {
   if (!from || !from.startsWith("/") || from.startsWith("//") || from.includes("\\")) return null;
+  if (from === DRAFTS_PATH) return from;          // fortgesetzter Entwurf → zurück zur Liste
   if (from.startsWith("/scan") || from === "/login" || from.startsWith("/auth/")) return null;
   return from;
+}
+
+/** Scan-Seite: einen offenen Entwurf fortsetzen, danach zurück zur Liste. */
+export function resumeDraftHref(id: number): string {
+  return `/scan?draft=${id}&from=${encodeURIComponent(DRAFTS_PATH)}`;
 }
 
 /** Link eines Navigationsziels für die aktuelle Seite (Scan nimmt die Sammlung mit). */
@@ -119,7 +137,13 @@ export function navHref(target: NavTarget, pathname: string): string {
   return target.key === "scan" ? scanHref(pathname) : target.href;
 }
 
-export function isNavActive(pathname: string, target: NavTarget): boolean {
+function matches(pathname: string, target: NavTarget): boolean {
   if (target.exact) return pathname === target.href;
   return pathname === target.href || pathname.startsWith(target.href + "/");
+}
+
+// Das genaueste Ziel gewinnt: /scan/drafts ist „Offene Scans", nicht „Scan"
+export function isNavActive(pathname: string, target: NavTarget): boolean {
+  if (!matches(pathname, target)) return false;
+  return !NAV_TARGETS.some((o) => o !== target && o.href.length > target.href.length && matches(pathname, o));
 }

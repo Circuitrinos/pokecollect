@@ -7,6 +7,8 @@
  * Homographie (feines Gitter), sonst achsenparalleler/zentrierter Zuschnitt.
  */
 
+import { cardOrder } from "@/lib/cropOrient";
+
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function loadImg(url: string): Promise<HTMLImageElement> {
@@ -166,19 +168,6 @@ function warpPerspective(
   return true;
 }
 
-/**
- * Sortiert 4 Punkte (Pixel) nach Bildposition in die Reihenfolge
- * TL,TR,BR,BL. Robust gegen falsche Eck-Reihenfolge der Erkennung (verhindert
- * gespiegelte/auf-dem-Kopf-stehende Zuschnitte). Nur für den Auto-Pfad – bei
- * manueller Eingabe legt der Nutzer die Reihenfolge selbst fest.
- */
-function orderQuad(pts: number[][]): number[][] {
-  const byY = [...pts].sort((a, b) => a[1] - b[1]);
-  const top = byY.slice(0, 2).sort((a, b) => a[0] - b[0]);    // TL, TR
-  const bottom = byY.slice(2, 4).sort((a, b) => a[0] - b[0]); // BL, BR
-  return [top[0], top[1], bottom[1], bottom[0]];
-}
-
 export type CropTransform = { flipH?: boolean; flipV?: boolean; rotate?: number };
 
 /** Wendet Spiegelung/Drehung (90°-Schritte) auf ein fertiges Canvas an. */
@@ -218,14 +207,12 @@ export async function cropToCardPhoto(
     let usedQuad = false;
 
     if (opts?.quad && opts.quad.length === 4) {
-      let src = opts.quad.map(([x, y]) => [clamp(x, 0, 1) * img.width, clamp(y, 0, 1) * img.height]);
-      // Auto-Pfad: Ecken nach Bildposition sortieren (gegen Spiegelung/Kopfstand).
-      if (opts.autoOrient) src = orderQuad(src);
+      // Auto-Pfad: Ecken nach Bildposition sortieren (gegen Spiegelung/Kopfstand);
       // Karten sind Hochformat: liegt die Karte quer, Ecken um 1 rotieren.
+      const clamped = opts.quad.map(([x, y]) => [clamp(x, 0, 1), clamp(y, 0, 1)]);
+      const src = cardOrder(clamped, img.width, img.height, !!opts.autoOrient)
+        .map(([x, y]) => [x * img.width, y * img.height]);
       const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-      if (dist(src[0], src[1]) > dist(src[0], src[3])) {
-        src = [src[1], src[2], src[3], src[0]];
-      }
       // Plausibilität: ein Karten-Viereck ist ~0.72:1. Im Auto-Pfad einen stark
       // entarteten Streifen (Fehlerkennung bei mehreren Karten) verwerfen und auf
       // bbox/zentriert zurückfallen, statt ein verzerrtes Bild zu erzeugen.

@@ -446,6 +446,26 @@ def _outline_by_reference(img: np.ndarray, rough: np.ndarray, ref_ids: list[str]
             "inliers": int(loc["inliers"]), "iou": None}
 
 
+def _upright(quad: np.ndarray) -> np.ndarray:
+    """Corners the way the app crops them: an outline lying sideways starts one corner on (cards are portrait)."""
+    q = np.float32(quad)
+    if np.linalg.norm(q[1] - q[0]) > np.linalg.norm(q[3] - q[0]):
+        q = np.roll(q, -1, axis=0)
+    return q
+
+
+def _oriented_like(quad: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """
+    `quad`'s corners re-ordered (turned and/or mirrored) to lie closest to `ref`'s:
+    the editor's rough corners carry the orientation the user sees (card's TL
+    first, also when the photo shows it sideways or upside down), and an edge
+    outline only knows where its corners are.
+    """
+    q, r = np.float32(quad), np.float32(ref)
+    options = [np.roll(o, -k, axis=0) for o in (q, q[::-1]) for k in range(4)]
+    return min(options, key=lambda o: float(np.linalg.norm(o - r, axis=1).sum()))
+
+
 FRAME_SEEDS = 4
 FRAME_EDGE_MIN = 0.25       # an edge outline that scores this much as a card frame is the card
 FRAME_EXACT_RECT = 0.03     # rectangularity of an outline that is exactly card-shaped
@@ -471,7 +491,10 @@ def _outline_by_frame(img: np.ndarray, rough: np.ndarray, hint: bool, cands: lis
     h, w = img.shape[:2]
     rough = np.float32(rough)
     area = lambda c: float(cv2.contourArea(np.float32(c)))   # noqa: E731
-    shaped = [detect.portrait_order(c) for c in cands if detect._rectangularity(c) <= 2.5 and area(c) >= 0.02 * w * h]
+    # with a hint, the outlines are turned the way the user holds the card: the frame
+    # is scored that way up (a sideways or upside-down card scores as one)
+    orient = (lambda c: _oriented_like(detect.portrait_order(c), rough)) if hint else detect.portrait_order  # noqa: E731
+    shaped = [orient(c) for c in cands if detect._rectangularity(c) <= 2.5 and area(c) >= 0.02 * w * h]
     if hint:
         shaped = [c for c in shaped if detect._iou(rough, c) >= OUTLINE_MIN_IOU]
     scored = sorted(((frame.score(img, c), c) for c in shaped), key=lambda x: -x[0])
@@ -511,7 +534,7 @@ def _outline_by_frame(img: np.ndarray, rough: np.ndarray, hint: bool, cands: lis
         sc, q, method, confirmed = fitted[0], fitted[1], "frame", False
         # an edge outline where the frame landed has the exact corners
         side = float(np.linalg.norm(q[1] - q[0]))
-        near = [x for x in scored if float(np.abs(detect.portrait_order(x[1]) - q).max()) < FRAME_AGREE * side]
+        near = [x for x in scored if float(np.abs(_oriented_like(x[1], q) - q).max()) < FRAME_AGREE * side]
         if near:
             sc, q = exact(near)
             method, confirmed = "edges", True
@@ -535,7 +558,7 @@ def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -
         h, w = img.shape[:2]
     try:
         q = json.loads(quad) if quad else None
-        rough = np.float32(np.float32(q) * [w, h]) if isinstance(q, list) and len(q) == 4 else None
+        rough = _upright(np.float32(q) * [w, h]) if isinstance(q, list) and len(q) == 4 else None
     except (ValueError, TypeError):
         rough = None
     if rough is None:
@@ -575,6 +598,8 @@ def _outline_request(data: bytes, quad: str, ref_ids: list[str] | None = None) -
     if best is None:
         return {"quad": None, "method": "edges", "iou": 0.0, "candidates": len(cands)}
     best = detect.portrait_order(best)
+    if area(rough) <= 0.9 * w * h:
+        best = _oriented_like(best, rough)          # the way the user holds the card
     out = (np.clip(best / [w, h], 0.0, 1.0)).round(4).tolist()
     return {"quad": out, "method": "edges", "iou": round(float(detect._iou(rough, best)), 3),
             "candidates": len(cands)}

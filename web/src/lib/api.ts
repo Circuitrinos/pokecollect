@@ -1015,7 +1015,10 @@ export type ScanModelList = { models: ScanModelSuggestion[]; source: "live" | "c
 export type DraftSaved = { ids: number[]; name: string; name_en?: string | null };
 export type ScanDraftSummary = {
   id: number;
-  summary: { open?: number; saved?: number; names?: string[]; target?: string | null; mode?: string | null };
+  summary: {
+    open?: number; saved?: number; names?: string[]; target?: string | null; mode?: string | null;
+    collection_id?: number | null; deck_id?: number | null;
+  };
   erstellt_am: string | null;
   aktualisiert_am: string | null;
 };

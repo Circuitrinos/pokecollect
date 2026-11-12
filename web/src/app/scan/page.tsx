@@ -6,8 +6,10 @@ import toast from "react-hot-toast";
 import {
   Collection, DeckSummary, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
   cardApi, collectionApi, deckApi, scanApi,
-  ScanAlternative, scanDraftApi, ScanDraftSummary, DraftSaved,
+  ScanAlternative, scanDraftApi, DraftSaved,
 } from "@/lib/api";
+import { ScanDraftPanel } from "@/components/ScanDraftList";
+import { refreshScanDrafts, removeScanDraft, useScanDrafts } from "@/lib/useScanDrafts";
 import { useEnums } from "@/lib/useEnums";
 import { useSets } from "@/lib/useSets";
 import { useSettings } from "@/lib/useSettings";
@@ -362,13 +364,8 @@ export default function ScanPage() {
   const draftRef = useRef<number | null>(null);
   const draftSessionRef = useRef(0);              // ein verspätet angelegter Entwurf einer beendeten Prüfung fliegt
   const lastSentRef = useRef("");
-  const deletingRef = useRef(new Set<number>());   // Liste neu geladen, bevor das Löschen durch ist → nicht zeigen
   const [draftStatus, setDraftStatus] = useState<"saving" | "saved" | "error" | null>(null);
-  const [drafts, setDrafts] = useState<ScanDraftSummary[]>([]);
-  const [allDrafts, setAllDrafts] = useState(false);
-  const [draftThumbs, setDraftThumbs] = useState<Record<number, string>>({});
-  const thumbsRef = useRef(draftThumbs);
-  thumbsRef.current = draftThumbs;
+  const drafts = useScanDrafts() ?? [];          // offene Entwürfe (auch anderer Geräte), oben im Aufnahme-Schritt
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
 
@@ -393,6 +390,7 @@ export default function ScanPage() {
       lastSentRef.current = JSON.stringify(st);
       setDraftId(r.data.id);            // ab jetzt gleicht der Effekt unten Änderungen ab
       setDraftStatus("saved");
+      refreshScanDrafts();
     } catch {
       if (draftSessionRef.current === session) setDraftStatus("error");
     }
@@ -441,6 +439,7 @@ export default function ScanPage() {
     setEditorIdx(null);
     setCandidates([]);
     setStep("setup");
+    refreshScanDrafts();
     toast(t.scan_draft_gone, { icon: "ℹ️" });
   };
   const draftGoneRef = useRef(draftGone);
@@ -473,12 +472,13 @@ export default function ScanPage() {
 
   // Tab im Hintergrund / Seite verlassen: letzten Stand noch schicken. Ist nichts
   // mehr offen (alles gespeichert oder verworfen), braucht es den Entwurf nicht mehr.
-  const flushDraft = (leaving: boolean) => {
+  const flushDraft = (leaving: "unload" | "navigate" | null) => {
     const id = draftRef.current;
     if (id == null) return;
     const list = candidatesRef.current;
     if (leaving && !list.some((c) => !c.saved)) {
-      scanDraftApi.removeOnLeave(id);
+      if (leaving === "unload") scanDraftApi.removeOnLeave(id);
+      else void removeScanDraft(id);
       draftRef.current = null;
       return;
     }
@@ -490,18 +490,16 @@ export default function ScanPage() {
   flushRef.current = flushDraft;
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === "hidden") flushRef.current(false);
+      if (document.visibilityState === "hidden") flushRef.current(null);
       else if (stepRef.current === "review") void refreshRef.current();
-      else if (stepRef.current === "setup") loadDraftsRef.current();
     };
-    const onHide = () => flushRef.current(true);
+    const onHide = () => flushRef.current("unload");
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pagehide", onHide);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("pagehide", onHide);
-      flushRef.current(true);                 // Navigation innerhalb der App
-      Object.values(thumbsRef.current).forEach((u) => URL.revokeObjectURL(u));
+      flushRef.current("navigate");           // Navigation innerhalb der App
     };
   }, []);
 
@@ -513,27 +511,9 @@ export default function ScanPage() {
     setDraftId(null);
     setDraftStatus(null);
     lastSentRef.current = "";
-    if (id != null) {
-      deletingRef.current.add(id);
-      setDrafts((ds) => ds.filter((d) => d.id !== id));
-      void scanDraftApi.remove(id).catch(() => {}).finally(() => deletingRef.current.delete(id));
-    }
+    if (id != null) void removeScanDraft(id);
   };
-
-  const loadDrafts = useCallback(() => {
-    scanDraftApi.list().then((r) => setDrafts(r.data.filter((d) => !deletingRef.current.has(d.id)))).catch(() => {});
-  }, []);
-  const loadDraftsRef = useRef(loadDrafts);
-  useEffect(() => { if (step === "setup") loadDrafts(); }, [step, loadDrafts]);
-  // Vorschaubilder brauchen die Anmeldung → als Blob laden
-  useEffect(() => {
-    drafts.forEach((d) => {
-      if (thumbsRef.current[d.id]) return;
-      scanDraftApi.thumb(d.id)
-        .then((r) => setDraftThumbs((m) => (m[d.id] ? m : { ...m, [d.id]: URL.createObjectURL(r.data) })))
-        .catch(() => {});
-    });
-  }, [drafts]);
+  useEffect(() => { if (step === "setup") refreshScanDrafts(); }, [step]);
 
   const resumeDraft = async (id: number) => {
     setBusy(true);
@@ -573,7 +553,7 @@ export default function ScanPage() {
       });
     } catch {
       toast.error(t.scan_draft_load_error);
-      loadDrafts();
+      refreshScanDrafts();
     } finally {
       setBusy(false);
     }
@@ -582,11 +562,15 @@ export default function ScanPage() {
   const resumeRef = useRef(resumeDraft);
   resumeRef.current = resumeDraft;
 
-  const discardDraft = async (id: number) => {
-    if (!confirm(t.scan_draft_discard_confirm)) return;
-    await scanDraftApi.remove(id).catch(() => {});
-    setDrafts((ds) => ds.filter((d) => d.id !== id));
-  };
+  // Von der Seite „Offene Scans" (/scan?draft=<id>): diesen Entwurf gleich öffnen
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const id = Number(url.searchParams.get("draft"));
+    if (!Number.isInteger(id) || id <= 0) return;
+    url.searchParams.delete("draft");                  // Neu laden nach dem Abschluss → normale Aufnahme
+    window.history.replaceState(window.history.state, "", url.pathname + url.search);
+    void resumeRef.current(id);
+  }, []);
 
   // Schon gespeichert (anderes Gerät): Hinweis und den aktuellen Stand des Entwurfs laden
   const onConflict = (detail: string) => {
@@ -1114,44 +1098,7 @@ export default function ScanPage() {
 
       {step === "setup" && (
         <div className="space-y-4">
-          {drafts.length > 0 && (
-            <div className="rounded-lg border border-pokemon-blue/40 bg-pokemon-card p-3" data-testid="scan-drafts">
-              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">
-                <h2 className="text-sm font-medium text-white">{t.scan_drafts_title(drafts.length)}</h2>
-                <span className="text-[11px] text-gray-500">{t.scan_drafts_hint}</span>
-              </div>
-              <ul className="space-y-2">
-                {(allDrafts ? drafts : drafts.slice(0, 3)).map((d) => (
-                  <li key={d.id} className="flex items-center gap-3" data-testid="scan-draft">
-                    {draftThumbs[d.id]
-                      // eslint-disable-next-line @next/next/no-img-element
-                      ? <img src={draftThumbs[d.id]} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
-                      : <div className="h-12 w-12 shrink-0 rounded bg-gray-800" />}
-                    <div className="min-w-0 flex-1 text-xs">
-                      <div className="truncate text-gray-200">{(d.summary.names ?? []).join(", ") || "—"}</div>
-                      <div className="text-gray-500">
-                        {t.scan_draft_meta(d.summary.open ?? 0, d.summary.saved ?? 0,
-                          d.aktualisiert_am ? new Date(d.aktualisiert_am).toLocaleString(lang === "EN" ? "en-US" : "de-DE",
-                            { dateStyle: "short", timeStyle: "short" }) : "")}
-                      </div>
-                    </div>
-                    <button type="button" onClick={() => void resumeDraft(d.id)} disabled={busy} data-testid="scan-draft-resume"
-                      className="shrink-0 rounded bg-pokemon-blue px-3 py-1.5 text-xs text-white hover:opacity-90 disabled:opacity-50">
-                      {t.scan_draft_resume}
-                    </button>
-                    <button type="button" onClick={() => void discardDraft(d.id)} aria-label={t.scan_draft_discard}
-                      title={t.scan_draft_discard} data-testid="scan-draft-discard"
-                      className="shrink-0 px-1 text-gray-500 hover:text-red-400">✕</button>
-                  </li>
-                ))}
-              </ul>
-              {drafts.length > 3 && (
-                <button type="button" onClick={() => setAllDrafts((v) => !v)} className="mt-2 text-xs text-gray-400 hover:text-white">
-                  {allDrafts ? t.scan_drafts_less : t.scan_drafts_more(drafts.length - 3)}
-                </button>
-              )}
-            </div>
-          )}
+          <ScanDraftPanel drafts={drafts} onResume={(id) => void resumeDraft(id)} busy={busy} />
           {/* Modus – kompakt, damit die Aufnahme ohne Scrollen sichtbar ist */}
           <div>
             <div className="grid grid-cols-3 gap-1 rounded-lg bg-gray-800/70 p-1" role="radiogroup" aria-label={t.scan_mode}>
@@ -1670,6 +1617,7 @@ export default function ScanPage() {
         <CornerEditor
           imageUrl={sourceUrl}
           initialQuad={initialQuadFor(candidates[editorIdx])}
+          autoOrder={!candidates[editorIdx].editedQuad}
           onCancel={() => setEditorIdx(null)}
           onApply={(quad, transform) => void applyCorners(editorIdx, quad, transform)}
           suggest={outlineSuggest(candidates[editorIdx].match?.tcgdex_card_id ?? null)}

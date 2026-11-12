@@ -57,13 +57,20 @@ def _name(c: dict) -> str:
     return str(s.get("kartenname") or r.get("name") or "?")[:80]
 
 
+def _id(v: Any) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
 def summary(state: dict) -> dict:
-    """Für die Liste: offene/gespeicherte Karten, die ersten Namen, Ziel und Modus."""
+    """Für die Liste: offene/gespeicherte Karten, die ersten Namen, Ziel (mit Sammlung/Deck) und Modus."""
     cands = state.get("candidates", [])
     open_ = [c for c in cands if not c.get("saved")]
+    target = state.get("target") if isinstance(state.get("target"), str) else None
     return {"open": len(open_), "saved": len(cands) - len(open_),
             "names": [_name(c) for c in open_[:4]],
-            "target": state.get("target") if isinstance(state.get("target"), str) else None,
+            "target": target,
+            "collection_id": _id(state.get("collectionId")) if target == "collection" else None,
+            "deck_id": _id(state.get("deckId")) if target == "deck" else None,
             "mode": state.get("mode") if isinstance(state.get("mode"), str) else None}
 
 
