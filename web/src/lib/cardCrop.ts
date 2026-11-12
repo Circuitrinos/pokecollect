@@ -18,6 +18,23 @@ export function loadImg(url: string): Promise<HTMLImageElement> {
   });
 }
 
+/** Großes Bild zum Hochladen verkleinern (für Vorschläge: die Ecken sind normiert, die Auflösung zählt kaum). */
+export async function shrinkForUpload(blob: Blob, maxSide = 1600): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImg(url);
+    const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+    if (k >= 1 && blob.size < 4_000_000) return blob;
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k);
+    c.height = Math.round(img.height * k);
+    c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise<Blob>((res) => c.toBlob((b) => res(b ?? blob), "image/jpeg", 0.9));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /**
  * Backt die EXIF-Orientierung fest in die Pixel ein und entfernt die Marke.
  * Wichtig, damit Anzeige (<img>) und Canvas-Zuschnitt IMMER dieselbe Ausrichtung

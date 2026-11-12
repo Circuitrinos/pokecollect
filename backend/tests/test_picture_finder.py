@@ -199,3 +199,52 @@ def test_picture_outline_reads_the_matcher_answer(monkeypatch):
     assert b"x-1" in sent[1]
     c = asyncio.run(picture_finder.outline(b"img", None))
     assert c == {"quad": None, "method": "edges", "frame_ok": False, "reference": None}
+
+
+def test_scan_outline_for_every_user(client, row, monkeypatch):
+    """Scan → übersehene Karte / Ecken anpassen: Eck-Vorschlag für alle Benutzer; mit erkannter Karte
+    über ihr Artwork (sie selbst zuerst, dann gleichnamige Drucke), ohne über Rahmen/Kanten."""
+    import httpx
+    from app.services import picture_finder
+    from test_multiuser import _client_for, _drop_user, _make_user
+
+    db = SessionLocal()
+    db.add(TcgdexCatalog(card_id="testscan-blw-1", region="west", set_id="testscan-blw", set_code="BLW", local_id="1",
+                         name="Serpifeu", name_en="Snivy", image_url="https://assets.tcgdex.net/en/bw/bw1/1/high.webp"))
+    db.commit()
+    db.close()
+    seen = []
+
+    async def outline(data, quad, refs=None):
+        seen.append({"quad": quad, "refs": refs})
+        return {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "frame", "frame_ok": True,
+                "reference": None}
+
+    monkeypatch.setattr(picture_finder, "outline", outline)
+    bob = _make_user("bob-scan-outline")
+    bc = _client_for(bob)
+    f = {"file": ("p.jpg", b"img", "image/jpeg")}
+    rough = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.7], [0.3, 0.7]]
+    try:
+        r = bc.post(f"{API}/scan/outline", files=f, data={"quad": json.dumps(rough)})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "method": "frame",
+                            "frame_ok": True, "reference": None, "reference_label": None}
+        assert seen[-1] == {"quad": rough, "refs": None}
+        assert bc.post(f"{API}/scan/outline", files=f, data={"card_id": CID}).status_code == 200
+        assert seen[-1]["refs"] == [CID, "testscan-blw-1"]          # die Karte selbst, dann gleichnamige
+        assert bc.post(f"{API}/scan/outline", files=f, data={"card_id": "../etc passwd"}).status_code == 200
+        assert seen[-1]["refs"] is None                              # unbrauchbare ID: ohne Referenz
+        assert bc.post(f"{API}/scan/outline", files=f, data={"quad": "[[0,0]]"}).status_code == 422
+        assert bc.post(f"{API}/scan/outline", files={"file": ("p.jpg", b"", "image/jpeg")}).status_code == 400
+
+        async def down(data, quad, refs=None):
+            raise httpx.HTTPError("down")
+        monkeypatch.setattr(picture_finder, "outline", down)
+        assert bc.post(f"{API}/scan/outline", files=f).status_code == 503
+    finally:
+        _drop_user(bob)
+        db = SessionLocal()
+        db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id == "testscan-blw-1"))
+        db.commit()
+        db.close()

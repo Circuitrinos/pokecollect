@@ -13,9 +13,10 @@ import { useSets } from "@/lib/useSets";
 import { useSettings } from "@/lib/useSettings";
 import SetPicker from "@/components/SetPicker";
 import RaritySelect from "@/components/RaritySelect";
-import CornerEditor from "@/components/CornerEditor";
+import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
+import { outlineSuggestion } from "@/lib/outline";
 import SlotPicker, { pageSizeOf } from "@/components/SlotPicker";
-import { cropToCardPhoto, loadImg, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
+import { cropToCardPhoto, loadImg, normalizeOrientation, shrinkForUpload, CropTransform } from "@/lib/cardCrop";
 import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -443,6 +444,17 @@ export default function ScanPage() {
 
   // Start-Viereck für den Eck-Editor: korrigierte Ecken › erkannte Ecken ›
   // Bounding-Box › grober Default.
+  // Eck-Vorschlag (übersehene Karte nachtragen, Ecken anpassen): grobe Ecken → echte
+  // Kartenkanten; mit erkannter Karte über ihr Artwork, sonst Kartenrahmen/Kanten.
+  const outlineSmallRef = useRef<{ src: Blob; small: Blob } | null>(null);
+  const outlineSuggest = (cardId: string | null) => async (quad: number[][]): Promise<CornerSuggestion | null> => {
+    const src = sourceBlobRef.current;
+    if (!src) return null;
+    if (outlineSmallRef.current?.src !== src) outlineSmallRef.current = { src, small: await shrinkForUpload(src) };
+    const r = await scanApi.outline(outlineSmallRef.current.small, quad, cardId);
+    return outlineSuggestion(r.data, t);
+  };
+
   const initialQuadFor = (c: EditableCandidate): number[][] => {
     if (c.editedQuad && c.editedQuad.length === 4) return c.editedQuad;
     if (c.raw?.quad && c.raw.quad.length === 4) return c.raw.quad;
@@ -1337,6 +1349,7 @@ export default function ScanPage() {
           initialQuad={[[0.38, 0.33], [0.62, 0.33], [0.62, 0.67], [0.38, 0.67]]}
           onCancel={() => setAddingMissed(false)}
           onApply={(quad, transform) => void addMissedCard(quad, transform)}
+          suggest={outlineSuggest(null)}
         />
       )}
 
@@ -1346,6 +1359,8 @@ export default function ScanPage() {
           initialQuad={initialQuadFor(candidates[editorIdx])}
           onCancel={() => setEditorIdx(null)}
           onApply={(quad, transform) => void applyCorners(editorIdx, quad, transform)}
+          suggest={outlineSuggest(candidates[editorIdx].match?.tcgdex_card_id ?? null)}
+          suggestOnOpen={!!candidates[editorIdx].match?.tcgdex_card_id}
         />
       )}
 

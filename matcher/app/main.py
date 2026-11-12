@@ -385,20 +385,20 @@ def _detect_request(data: bytes) -> dict:
 @app.post("/outline")
 async def outline(file: UploadFile = File(...), quad: str = Form(""), refs: str = Form("")) -> dict:
     """
-    Snap rough corners to the card's real edges (the app's crop editor for a
-    picture pasted from an image search). With refs (catalog ids of other prints
-    of the same name) the card is found by its artwork and settled like "Fix
-    crop"; otherwise, or when no print shares the artwork, the card-shaped
-    outline the detector finds that best overlaps the rough corners.
-    → {"quad": [[x, y]…] (fractions, card's TL first) or null, "method": "reference" | "edges",
-       "reference", "inliers", "iou"}.
+    Snap rough corners to the card's real edges (the app's crop editors: a
+    picture pasted from an image search, a card the scan missed, adjusted
+    corners). With refs (the recognised card and/or other prints of the same
+    name) the card is found by its artwork and settled like "Fix crop";
+    otherwise, or when no print shares the artwork, by the typical card frame
+    and the card-shaped outlines the detector finds near the rough corners.
+    → {"quad": [[x, y]…] (fractions, card's TL first) or null,
+       "method": "reference" | "frame" | "edges", "frame_ok", "reference", …}.
+    Works before the catalog is loaded too, just without the artwork stage.
     """
-    if state["status"] != "ready":
-        raise HTTPException(503, f"matcher not ready: {state['status']}")
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
-    ref_ids = [r.strip() for r in refs.split(",") if r.strip()][:24]
+    ref_ids = [r.strip() for r in refs.split(",") if r.strip()][:24] if state["status"] == "ready" else []
     return await run_in_threadpool(_outline_request, data, quad, ref_ids)
 
 

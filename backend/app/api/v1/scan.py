@@ -9,6 +9,7 @@ GET  /api/v1/scan/status   welche Engine aktiv ist (für die UI)
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Optional
 from datetime import datetime, timezone
@@ -434,6 +435,44 @@ def _plan_slots(db: Session, collection: Collection, payload: ScanCommitRequest)
                 plan[(i, c)] = take(cursor)
                 cursor = plan[(i, c)] + 1
     return plan, used
+
+
+_CARD_ID_RE = re.compile(r"[\w.\-]{1,64}")
+
+
+@router.post("/outline")
+async def scan_outline(file: UploadFile = File(...), quad: str = Form(""), card_id: str = Form(""),
+                       db: Session = Depends(get_db)):
+    """
+    Ecken im Scan-Foto vorschlagen (übersehene Karte nachtragen, Ecken anpassen):
+    grobe Ecken an die echten Kartenkanten anlegen. Mit card_id (die erkannte
+    Karte) über ihr Artwork und das gleichnamiger Drucke, sonst über einen
+    typischen Kartenrahmen, zuletzt über die Kanten.
+    → {"quad", "method", "frame_ok", "reference", "reference_label"}.
+    """
+    import httpx
+
+    from app.services import picture_finder
+
+    data = await file.read(picture_finder.OUTLINE_MAX_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+    if len(data) > picture_finder.OUTLINE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 12 MB)")
+    try:
+        q = picture_finder.parse_rough_quad(quad)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Ungültige Ecken")
+    refs: list[str] = []
+    if card_id and _CARD_ID_RE.fullmatch(card_id):
+        refs.append(card_id)
+        row = catalog_row_for(db, card_id)
+        if row is not None:
+            refs += picture_finder.same_name_refs(db, row, limit=8)
+    try:
+        return await picture_finder.outline_labelled(db, data, q, refs or None)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
 
 
 @router.post("/commit", response_model=ScanCommitResponse)

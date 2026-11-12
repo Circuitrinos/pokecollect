@@ -977,8 +977,7 @@ export const catalogApi = {
     const form = new FormData();
     form.append("file", file, "picture.jpg");
     if (quad) form.append("quad", JSON.stringify(quad));
-    return api.post<{ quad: number[][] | null; method: "reference" | "frame" | "edges"; frame_ok?: boolean;
-      reference: string | null; reference_label: string | null }>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
+    return api.post<OutlineResult>(`/catalog/${encodeURIComponent(cardId)}/picture/outline`, form);
   },
   uploadPicture: (cardId: string, file: Blob) => {
     const form = new FormData();
@@ -1008,8 +1007,24 @@ export const catalogApi = {
 export type ScanModelSuggestion = { id: string; name: string };
 export type ScanModelList = { models: ScanModelSuggestion[]; source: "live" | "curated" };
 
+// Grobe Ecken an die Kartenkanten angelegt (matcher /outline): über das Artwork
+// (reference), einen typischen Kartenrahmen (frame) oder nur die Kanten (edges);
+// frame_ok = die Kanten sehen wie eine Karte aus.
+export type OutlineResult = {
+  quad: number[][] | null; method: "reference" | "frame" | "edges"; frame_ok?: boolean;
+  reference: string | null; reference_label: string | null;
+};
+
 export const scanApi = {
   status: () => api.get<ScanStatus>("/scan/status"),
+  // Ecken im Scan-Foto vorschlagen (übersehene Karte, Ecken anpassen); cardId = erkannte Karte
+  outline: (file: Blob, quad: number[][] | null, cardId?: string | null) => {
+    const form = new FormData();
+    form.append("file", file, "photo.jpg");
+    if (quad) form.append("quad", JSON.stringify(quad));
+    if (cardId) form.append("card_id", cardId);
+    return api.post<OutlineResult>("/scan/outline", form);
+  },
   // Live-Vorschau: Kartenumrisse im Kamerabild (normiert 0..1)
   detect: (frame: Blob) => {
     const form = new FormData();

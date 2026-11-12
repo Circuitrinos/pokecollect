@@ -6,12 +6,62 @@ import { useI18n } from "@/lib/i18n";
 /**
  * Manuelle Eck-Korrektur eines Kartenfotos.
  * - 4 ziehbare Punkte (TL,TR,BR,BL, normiert 0..1) + Lupe beim Ziehen
+ * - Kanten ziehen (Griff in der Kantenmitte; die Kante gleitet an ihren
+ *   Nachbarkanten entlang, die Perspektive bleibt) und den ganzen Rahmen
+ *   verschieben (innen greifen oder ✥ in der Mitte)
  * - Zoom & Verschieben per Fingergesten (Pinch/1-Finger-Drag) und am Desktop
  *   per Mausrad / Linksklick-halten
  * - Flip/Rotate als manuelle Ausrichtungs-Korrektur
  * Wird im Scan-Review und auf der Detailseite verwendet.
  */
 export type CornerSuggestion = { quad: number[][]; ok: boolean; label: string };
+
+// Was gerade gezogen wird: ein Eckpunkt, eine Kante (zwischen Ecke i und i+1) oder der ganze Rahmen
+type Drag =
+  | { kind: "corner"; i: number; start: number[][] }
+  | { kind: "edge"; i: number; start: number[][]; from: number[] }
+  | { kind: "move"; start: number[][]; from: number[] };
+
+/** Schnittpunkt der Geraden p+s·u und r+t·v (null, wenn fast parallel). */
+function intersect(p: number[], u: number[], r: number[], v: number[]): number[] | null {
+  const den = u[0] * v[1] - u[1] * v[0];
+  if (Math.abs(den) < 1e-9 * Math.hypot(...u) * Math.hypot(...v)) return null;
+  const s = ((r[0] - p[0]) * v[1] - (r[1] - p[1]) * v[0]) / den;
+  return [p[0] + s * u[0], p[1] + s * u[1]];
+}
+
+/**
+ * Kante i um `delta` (Bild-Pixel) verschieben: die Kante wandert senkrecht zu sich
+ * selbst, ihre Endpunkte gleiten auf den Nachbarkanten (die Perspektive bleibt).
+ * Rechnet in Pixeln (w×h), Ein-/Ausgabe normiert.
+ */
+export function moveEdge(start: number[][], i: number, delta: number[], w: number, h: number): number[][] {
+  const px = start.map(([x, y]) => [x * w, y * h]);
+  const A = px[i], B = px[(i + 1) % 4], P = px[(i + 3) % 4], Q = px[(i + 2) % 4];
+  const d = [B[0] - A[0], B[1] - A[1]];
+  const len = Math.hypot(d[0], d[1]) || 1;
+  const n = [-d[1] / len, d[0] / len];
+  const t = delta[0] * n[0] + delta[1] * n[1];
+  const A0 = [A[0] + t * n[0], A[1] + t * n[1]];
+  const B0 = [B[0] + t * n[0], B[1] + t * n[1]];
+  const reach = 3 * Math.max(w, h);
+  const slide = (fallback: number[], from: number[], to: number[]) => {
+    const hit = intersect(A0, d, from, [to[0] - from[0], to[1] - from[1]]);
+    return hit && Math.hypot(hit[0] - fallback[0], hit[1] - fallback[1]) < reach ? hit : fallback;
+  };
+  const out = px.map((p) => [...p]);
+  out[i] = slide(A0, P, A);
+  out[(i + 1) % 4] = slide(B0, Q, B);
+  return out.map(([x, y]) => [clamp(x / w, 0, 1), clamp(y / h, 0, 1)]);
+}
+
+/** Ganzen Rahmen um (dx, dy) verschieben, ohne das Bild zu verlassen. */
+export function moveQuad(start: number[][], dx: number, dy: number): number[][] {
+  const xs = start.map((p) => p[0]), ys = start.map((p) => p[1]);
+  const mx = clamp(dx, -Math.min(...xs), 1 - Math.max(...xs));
+  const my = clamp(dy, -Math.min(...ys), 1 - Math.max(...ys));
+  return start.map(([x, y]) => [x + mx, y + my]);
+}
 
 export default function CornerEditor({
   imageUrl, initialQuad, onCancel, onApply, title, hint, orientable = true, extra, suggest, suggestOnOpen = false,
@@ -45,7 +95,7 @@ export default function CornerEditor({
   const seqRef = useRef(0);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [active, setActive] = useState<number | null>(null);
+  const [active, setActive] = useState<Drag | null>(null);
   const [aspect, setAspect] = useState(88 / 63);
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
@@ -56,7 +106,8 @@ export default function CornerEditor({
   const imgRef = useRef<HTMLImageElement | null>(null);
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
-  const activeRef = useRef<number | null>(null);
+  const activeRef = useRef<Drag | null>(null);
+  const dragPtrRef = useRef<{ id: number; x: number; y: number } | null>(null);
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ dist: number; mid: { x: number; y: number } } | null>(null);
   // Refs für die Zeiger-Zuordnung im globalen Listener (keine veralteten Closures)
@@ -137,28 +188,22 @@ export default function CornerEditor({
       Math.hypot(a.x - b.x, a.y - b.y);
 
     const move = (e: PointerEvent) => {
-      // 1) Eckpunkt ziehen → Viewport-Punkt über die inverse Transform-Matrix
-      //    in Bild-Pixel zurückrechnen (funktioniert auch bei Drehung/Spiegelung).
-      if (activeRef.current != null) {
+      // 1) Ecke / Kante / Rahmen ziehen → Viewport-Punkt über die inverse
+      //    Transform-Matrix in Bild-Pixel zurückrechnen (auch bei Drehung/Spiegelung).
+      const drag = activeRef.current;
+      if (drag != null) {
         const { w, h } = imgSizeRef.current;
         if (w === 0 || h === 0) return;
-        const off = vpRef.current?.getBoundingClientRect();
-        const px = e.clientX - (off?.left ?? 0);
-        const py = e.clientY - (off?.top ?? 0);
-        const cx = w / 2, cy = h / 2;
-        const fx = flipHRef.current ? -1 : 1, fy = flipVRef.current ? -1 : 1;
-        const M = new DOMMatrix()
-          .translate(panRef.current.x, panRef.current.y)
-          .scale(zoomRef.current)
-          .translate(cx, cy)
-          .rotate(rotateRef.current)
-          .scale(fx, fy)
-          .translate(-cx, -cy);
-        const local = M.inverse().transformPoint(new DOMPoint(px, py));
-        const nx = clamp(local.x / w, 0, 1);
-        const ny = clamp(local.y / h, 0, 1);
-        const i = activeRef.current;
-        setQuad(quadRef.current.map((p, k) => (k === i ? [nx, ny] : p)));
+        if (dragPtrRef.current?.id === e.pointerId) dragPtrRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        const [lx, ly] = toLocalRef.current(e.clientX, e.clientY);
+        if (drag.kind === "corner") {
+          const p = [clamp(lx, 0, 1), clamp(ly, 0, 1)];
+          setQuad(quadRef.current.map((q, k) => (k === drag.i ? p : q)));
+        } else if (drag.kind === "edge") {
+          setQuad(moveEdge(drag.start, drag.i, [(lx - drag.from[0]) * w, (ly - drag.from[1]) * h], w, h));
+        } else {
+          setQuad(moveQuad(drag.start, lx - drag.from[0], ly - drag.from[1]));
+        }
         return;
       }
       // 2) Pan / Pinch
@@ -189,10 +234,12 @@ export default function CornerEditor({
     const up = (e: PointerEvent) => {
       pointersRef.current.delete(e.pointerId);
       if (pointersRef.current.size < 2) pinchRef.current = null;
-      const dragged = activeRef.current != null;
+      const drag = activeRef.current;
       activeRef.current = null;
+      dragPtrRef.current = null;
       setActive(null);
-      if (dragged) runSuggestRef.current();
+      // nur nach einer echten Änderung neu vorschlagen (nicht bei bloßem Antippen)
+      if (drag && JSON.stringify(drag.start) !== JSON.stringify(quadRef.current)) runSuggestRef.current();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -205,11 +252,44 @@ export default function CornerEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startHandle = (e: React.PointerEvent, i: number) => {
-    e.preventDefault();
+  // Viewport-Punkt (clientX/Y) → normierte Bildkoordinaten (ungeklemmt)
+  const toLocal = (clientX: number, clientY: number): number[] => {
+    const { w, h } = imgSizeRef.current;
+    const off = vpRef.current?.getBoundingClientRect();
+    const cx = w / 2, cy = h / 2;
+    const fx = flipHRef.current ? -1 : 1, fy = flipVRef.current ? -1 : 1;
+    const M = new DOMMatrix()
+      .translate(panRef.current.x, panRef.current.y)
+      .scale(zoomRef.current)
+      .translate(cx, cy)
+      .rotate(rotateRef.current)
+      .scale(fx, fy)
+      .translate(-cx, -cy);
+    const local = M.inverse().transformPoint(new DOMPoint(clientX - (off?.left ?? 0), clientY - (off?.top ?? 0)));
+    return [local.x / (w || 1), local.y / (h || 1)];
+  };
+  const toLocalRef = useRef(toLocal);
+  toLocalRef.current = toLocal;
+
+  const beginDrag = (e: React.PointerEvent, kind: "corner" | "edge" | "move", i = 0) => {
     e.stopPropagation();
-    activeRef.current = i;
-    setActive(i);
+    if (activeRef.current) {
+      // zweiter Finger während eines Zugs: das wird ein Pinch-Zoom, kein zweiter Zug
+      const d = dragPtrRef.current;
+      activeRef.current = null;
+      dragPtrRef.current = null;
+      setActive(null);
+      if (d) pointersRef.current.set(d.id, { x: d.x, y: d.y });
+      startPanPointer(e);
+      return;
+    }
+    e.preventDefault();
+    const start = quadRef.current.map((p) => [...p]);
+    const from = toLocal(e.clientX, e.clientY);
+    const drag: Drag = kind === "corner" ? { kind, i, start } : kind === "edge" ? { kind, i, start, from } : { kind, start, from };
+    activeRef.current = drag;
+    dragPtrRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    setActive(drag);
   };
   const startPanPointer = (e: React.PointerEvent) => {
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -230,7 +310,11 @@ export default function CornerEditor({
   // mit und löst stets feiner auf als die Ansicht, statt fix auf dem ganzen Foto
   // zu bleiben (#36). Kleineres FRAC = stärker vergrößert.
   const LOUPE = 124, FRAC = 0.12;
-  const ap = active != null ? quad[active] : null;
+  // Lupe: an der gezogenen Ecke bzw. Kantenmitte (beim Verschieben keine)
+  const ap = active?.kind === "corner" ? quad[active.i]
+    : active?.kind === "edge" ? [(quad[active.i][0] + quad[(active.i + 1) % 4][0]) / 2, (quad[active.i][1] + quad[(active.i + 1) % 4][1]) / 2]
+    : null;
+  const centroid = [quad.reduce((a, p) => a + p[0], 0) / 4, quad.reduce((a, p) => a + p[1], 0) / 4];
   const loupeOnRight = ap ? ap[0] < 0.5 : true;
   const bgW = (LOUPE / FRAC) * zoom;
   const bgH = bgW * aspect;
@@ -284,6 +368,9 @@ export default function CornerEditor({
                 points={quad.map(([x, y]) => `${x},${y}`).join(" ")}
                 fill="rgba(250,204,21,0.12)" stroke="#facc15" strokeWidth={2}
                 vectorEffect="non-scaling-stroke"
+                // innen greifen = ganzen Rahmen verschieben (außerhalb: Ansicht verschieben)
+                pointerEvents="all" className="cursor-move" data-testid="corner-frame"
+                onPointerDown={(e) => beginDrag(e, "move")}
               />
               {sugg?.state === "done" && (
                 <polygon
@@ -293,12 +380,38 @@ export default function CornerEditor({
                 />
               )}
             </svg>
+            {/* Kantengriffe in der Kantenmitte, entlang der Kante ausgerichtet */}
+            {quad.map((a, i) => {
+              const b = quad[(i + 1) % 4];
+              const deg = (Math.atan2((b[1] - a[1]) * imgSize.h, (b[0] - a[0]) * imgSize.w) * 180) / Math.PI;
+              const on = active?.kind === "edge" && active.i === i;
+              return (
+                <button type="button" key={`e${i}`} aria-label={t.corner_edge(i + 1)} data-testid={`corner-edge-${i}`}
+                  onPointerDown={(e) => beginDrag(e, "edge", i)}
+                  className="absolute flex h-5 w-9 items-center justify-center touch-none cursor-grab"
+                  style={{
+                    left: `${((a[0] + b[0]) / 2) * 100}%`, top: `${((a[1] + b[1]) / 2) * 100}%`,
+                    transform: `translate(-50%, -50%) rotate(${deg}deg) scale(${1 / zoom})`,
+                  }}>
+                  <span className={`block h-2 w-7 rounded-full border ${on ? "bg-pokemon-blue border-white" : "bg-pokemon-yellow/90 border-black"}`} />
+                </button>
+              );
+            })}
+            {/* Ganzen Rahmen verschieben */}
+            <button type="button" aria-label={t.corner_move} data-testid="corner-move"
+              onPointerDown={(e) => beginDrag(e, "move")}
+              className={`absolute flex h-7 w-7 items-center justify-center rounded-full border-2 text-sm touch-none cursor-move ${
+                active?.kind === "move" ? "bg-pokemon-blue text-white border-white" : "bg-black/60 text-pokemon-yellow border-pokemon-yellow/80"}`}
+              style={{
+                left: `${centroid[0] * 100}%`, top: `${centroid[1] * 100}%`,
+                transform: `translate(-50%, -50%) scale(${1 / zoom}) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${-rotate}deg)`,
+              }}>✥</button>
             {quad.map(([x, y], i) => (
               <button type="button"
                 key={i}
-                onPointerDown={(e) => startHandle(e, i)}
+                onPointerDown={(e) => beginDrag(e, "corner", i)}
                 className={`absolute w-7 h-7 rounded-full border-2 text-[10px] font-bold flex items-center justify-center touch-none ${
-                  active === i ? "bg-pokemon-blue text-white border-white" : "bg-pokemon-yellow/90 text-black border-black"
+                  active?.kind === "corner" && active.i === i ? "bg-pokemon-blue text-white border-white" : "bg-pokemon-yellow/90 text-black border-black"
                 }`}
                 style={{
                   left: `${x * 100}%`, top: `${y * 100}%`,
@@ -331,24 +444,29 @@ export default function CornerEditor({
           )}
         </div>
 
-        {suggest && sugg && (
-          <div className={`mt-2 flex flex-wrap items-center gap-2 rounded px-2 py-1.5 text-xs ${
-            sugg.state === "done" ? (sugg.ok ? "bg-green-950/60 text-green-200" : "bg-amber-950/60 text-amber-200") : "bg-gray-800 text-gray-300"}`}
-            data-testid="corner-suggest" data-state={sugg.state === "done" ? (sugg.ok ? "pass" : "weak") : sugg.state}>
-            <span className="flex-1 min-w-0">
-              {sugg.state === "busy" ? (suggestTexts?.busy ?? t.corner_suggest_busy)
-                : sugg.state === "none" ? (suggestTexts?.none ?? t.corner_suggest_none)
-                : sugg.ok ? `✓ ${t.corner_suggest_pass(sugg.label)}` : t.corner_suggest_weak(sugg.label)}
-            </span>
-            {sugg.state === "done" && (
-              <button type="button" onClick={applySuggestion} data-testid="corner-suggest-use"
-                className={`rounded px-2 py-1 text-white ${sugg.ok ? "bg-green-700 hover:bg-green-600" : "bg-amber-700 hover:bg-amber-600"}`}>
-                {t.corner_suggest_use}
-              </button>
+        {/* fester Platz: Hinweis → Vorschlag springt nicht, der (zentrierte) Dialog bleibt stehen */}
+        {suggest && (
+          <div className="mt-2 min-h-[2.25rem]">
+            {sugg && (
+              <div className={`flex flex-wrap items-center gap-2 rounded px-2 py-1.5 text-xs ${
+                sugg.state === "done" ? (sugg.ok ? "bg-green-950/60 text-green-200" : "bg-amber-950/60 text-amber-200") : "bg-gray-800 text-gray-300"}`}
+                data-testid="corner-suggest" data-state={sugg.state === "done" ? (sugg.ok ? "pass" : "weak") : sugg.state}>
+                <span className="flex-1 min-w-0">
+                  {sugg.state === "busy" ? (suggestTexts?.busy ?? t.corner_suggest_busy)
+                    : sugg.state === "none" ? (suggestTexts?.none ?? t.corner_suggest_none)
+                    : sugg.ok ? `✓ ${t.corner_suggest_pass(sugg.label)}` : t.corner_suggest_weak(sugg.label)}
+                </span>
+                {sugg.state === "done" && (
+                  <button type="button" onClick={applySuggestion} data-testid="corner-suggest-use"
+                    className={`rounded px-2 py-1 text-white ${sugg.ok ? "bg-green-700 hover:bg-green-600" : "bg-amber-700 hover:bg-amber-600"}`}>
+                    {t.corner_suggest_use}
+                  </button>
+                )}
+              </div>
             )}
+            {!sugg && <p className="text-[11px] text-gray-500">{suggestTexts?.hint ?? t.corner_suggest_hint}</p>}
           </div>
         )}
-        {suggest && !sugg && <p className="mt-2 text-[11px] text-gray-500">{suggestTexts?.hint ?? t.corner_suggest_hint}</p>}
 
         {/* Zoom + Ausrichtung */}
         <div className="flex items-center justify-center gap-1.5 mt-2 flex-wrap text-sm">

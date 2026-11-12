@@ -222,6 +222,34 @@ def same_name_refs(db: Session, row: TcgdexCatalog, limit: int = 24) -> list[str
     return list(db.scalars(q).all())
 
 
+def parse_rough_quad(raw: str) -> Optional[list]:
+    """Grobe Ecken aus dem Formular: leer → None; 4×[x,y] normiert (etwas Rand erlaubt);
+    alles andere → ValueError."""
+    import json
+
+    if not raw:
+        return None
+    try:
+        q = [[float(x), float(y)] for x, y in json.loads(raw)]
+    except (ValueError, TypeError):
+        raise ValueError("quad") from None
+    if len(q) != 4 or not all(-0.5 <= v <= 1.5 for p in q for v in p):
+        raise ValueError("quad")
+    return q
+
+
+async def outline_labelled(db: Session, data: bytes, quad: Optional[list], refs: Optional[list[str]]) -> dict:
+    """outline() plus reference_label („SETCODE Nr." des Drucks, an dessen Artwork ausgerichtet wurde)."""
+    from app.services.catalog_lookup import catalog_row_for
+
+    db.commit()     # Lesetransaktion nicht über den Abgleich offen halten
+    res = await outline(data, quad, refs)
+    ref = catalog_row_for(db, res["reference"]) if res.get("reference") else None
+    res["reference_label"] = (" ".join(x for x in (ref.set_code or ref.set_id, ref.local_id) if x)
+                              if ref is not None else None)
+    return res
+
+
 async def outline(data: bytes, quad: Optional[list], refs: Optional[list[str]] = None) -> dict:
     """Grobe Ecken eines Bilds (Zuschneiden im Bild-Finder) an die echten
     Kartenkanten anlegen — matcher /outline: über das Artwork gleichnamiger

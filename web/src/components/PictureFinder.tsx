@@ -5,27 +5,11 @@ import { API_BASE, PictureCandidates, catalogApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { spiegelUrl } from "@/lib/utils";
 import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
-import { cropToCardPhoto, CropTransform, loadImg } from "@/lib/cardCrop";
+import { cropToCardPhoto, CropTransform, shrinkForUpload } from "@/lib/cardCrop";
+import { outlineSuggestion } from "@/lib/outline";
 
 const WHOLE: number[][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
 const CATALOG_WIDTH = 734;     // Breite eines zugeschnittenen Katalogbilds (wie pokemontcg.io hires)
-
-/** Großes Bild für den Vorschlag verkleinern (die Ecken sind normiert, die Auflösung zählt nicht). */
-async function shrink(blob: Blob, maxSide = 1600): Promise<Blob> {
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = await loadImg(url);
-    const k = Math.min(1, maxSide / Math.max(img.width, img.height));
-    if (k >= 1 && blob.size < 4_000_000) return blob;
-    const c = document.createElement("canvas");
-    c.width = Math.round(img.width * k);
-    c.height = Math.round(img.height * k);
-    c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
-    return await new Promise<Blob>((res) => c.toBlob((b) => res(b ?? blob), "image/jpeg", 0.9));
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
 
 // Bild finden (Admin): Vorschläge aus offenen Quellen (TCGdex in anderen
 // Sprachen, pokemontcg.io, pokemon.com) — oder ein Bild aus der Websuche, das
@@ -79,15 +63,9 @@ export default function PictureFinder({ cardId, name, onClose, onApplied }: {
   const suggestCrop = async (quad: number[][]): Promise<CornerSuggestion | null> => {
     const orig = originalRef.current;
     if (!orig) return null;
-    smallRef.current ??= await shrink(orig);
+    smallRef.current ??= await shrinkForUpload(orig);
     const r = await catalogApi.pictureOutline(cardId, smallRef.current, quad);
-    if (!r.data.quad) return null;
-    // Artwork eines gleichnamigen Drucks oder Kanten, die wie ein Kartenrahmen aussehen = verlässlich;
-    // nur an den Rahmen angelegt oder nur Kanten = bitte prüfen
-    if (r.data.method === "reference")
-      return { quad: r.data.quad, ok: true, label: t.pic_crop_matched(r.data.reference_label ?? r.data.reference ?? "") };
-    if (r.data.frame_ok) return { quad: r.data.quad, ok: true, label: t.pic_crop_card };
-    return { quad: r.data.quad, ok: false, label: r.data.method === "frame" ? t.pic_crop_frame : t.pic_crop_found };
+    return outlineSuggestion(r.data, t);
   };
   const applyCrop = async (quad: number[][], transform: CropTransform) => {
     const orig = originalRef.current;

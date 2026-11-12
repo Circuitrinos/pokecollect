@@ -353,8 +353,6 @@ async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str 
     """Bild zuschneiden (Bild-Finder): grobe Ecken an die Kartenkanten anlegen — über das
     Artwork gleichnamiger Drucke, sonst über einen typischen Kartenrahmen, zuletzt über die
     Kanten. → {"quad", "method", "frame_ok", "reference", "reference_label"}."""
-    import json
-
     import httpx
 
     row = _catalog_row(db, card_id)
@@ -364,24 +362,14 @@ async def picture_outline(card_id: str, file: UploadFile = File(...), quad: str 
     if len(data) > picture_finder.OUTLINE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Bild zu groß (max. 12 MB)")
     try:
-        q = json.loads(quad) if quad else None
-        q = [[float(x), float(y)] for x, y in q] if q else None
-    except (ValueError, TypeError):
-        q = None
-    if q is not None and (len(q) != 4 or not all(-0.5 <= v <= 1.5 for p in q for v in p)):
+        q = picture_finder.parse_rough_quad(quad)
+    except ValueError:
         raise HTTPException(status_code=422, detail="Ungültige Ecken")
     refs = picture_finder.same_name_refs(db, row)
-    db.commit()     # Lesetransaktion nicht über den Abgleich offen halten
     try:
-        res = await picture_finder.outline(data, q, refs)
+        return await picture_finder.outline_labelled(db, data, q, refs)
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
-    from app.services.catalog_lookup import catalog_row_for
-
-    ref = catalog_row_for(db, res["reference"]) if res.get("reference") else None
-    res["reference_label"] = (" ".join(x for x in (ref.set_code or ref.set_id, ref.local_id) if x)
-                              if ref is not None else None)
-    return res
 
 
 @router.post("/{card_id}/wishlist")
