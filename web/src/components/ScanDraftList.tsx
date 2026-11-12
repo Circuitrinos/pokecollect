@@ -88,10 +88,24 @@ export default function ScanDraftList({ drafts, onResume, busy, detailed, placeN
   );
 }
 
-/** Kompakter Kasten oben auf der Scan-Seite: die neuesten drei, Rest auf /scan/drafts. */
-export function ScanDraftPanel({ drafts, onResume, busy }: { drafts: ScanDraftSummary[]; onResume: (id: number) => void; busy?: boolean }) {
+/**
+ * Kasten oben auf der Scan-Seite: die neuesten drei, Rest auf /scan/drafts.
+ * compact (Serienscan, Kamera an): nur eine Zeile, die Aufnahme bleibt oben.
+ */
+export function ScanDraftPanel({ drafts, onResume, busy, compact }: {
+  drafts: ScanDraftSummary[]; onResume: (id: number) => void; busy?: boolean; compact?: boolean;
+}) {
   const { t } = useI18n();
   if (!drafts.length) return null;
+  if (compact) {
+    return (
+      <Link href="/scan/drafts" data-testid="scan-drafts-compact"
+        className="flex items-center justify-between rounded-lg border border-pokemon-blue/40 bg-pokemon-card px-3 py-2 text-sm text-gray-200 hover:border-pokemon-blue">
+        <span>{t.scan_drafts_title(drafts.length)}</span>
+        <span className="text-xs text-pokemon-blue">{t.scan_drafts_review} →</span>
+      </Link>
+    );
+  }
   return (
     <div className="rounded-lg border border-pokemon-blue/40 bg-pokemon-card p-3" data-testid="scan-drafts">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">

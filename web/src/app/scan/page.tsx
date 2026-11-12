@@ -376,7 +376,13 @@ export default function ScanPage() {
   const serializeRef = useRef(serializeDraft);
   serializeRef.current = serializeDraft;
 
-  const startDraft = async (photo: Blob, list: EditableCandidate[]) => {
+  const draftCreateRef = useRef<Promise<void> | null>(null);   // Anlegen läuft (Später bestätigen wartet darauf)
+  const startDraft = (photo: Blob, list: EditableCandidate[]) => {
+    const p = createDraft(photo, list);
+    draftCreateRef.current = p;
+    return p;
+  };
+  const createDraft = async (photo: Blob, list: EditableCandidate[]) => {
     const session = ++draftSessionRef.current;
     draftRef.current = null;
     setDraftId(null);
@@ -1066,11 +1072,56 @@ export default function ScanPage() {
     window.scrollTo({ top: 0 });
   };
 
+  // „Später bestätigen": diese Prüfung bleibt als offener Scan liegen, gleich das
+  // nächste Foto — viele Karten am Stück scannen, alles später unter „Offene Scans".
+  const [parked, setParked] = useState(0);
+  const confirmLater = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await draftCreateRef.current;                        // Anlegen läuft noch
+      if (draftRef.current == null && sourceBlobRef.current) {
+        await startDraftRef.current(sourceBlobRef.current, candidatesRef.current);   // fehlgeschlagen → noch einmal
+      }
+      const id = draftRef.current;
+      if (id == null) throw new Error("no draft");
+      const st = serializeRef.current(candidatesRef.current);
+      const body = JSON.stringify(st);
+      if (body !== lastSentRef.current) {
+        await scanDraftApi.update(id, st);                 // letzter Stand, bevor die Seite geleert wird
+        lastSentRef.current = body;
+      }
+      // wie „Bestätigen & weiter": das nächste Foto kommt hinter dieses
+      if (target === "collection" && slot != null) {
+        const ps = pageSizeOf(targetCollection?.binder_layout);
+        const n = candidates.filter((c) => c.include && !c.saved).reduce((a, c) => a + c.copies, 0);
+        setSlot(mode === "binder" ? (Math.floor(slot / ps) + 1) * ps : slot + n);
+      }
+      // loslassen, nicht löschen
+      draftSessionRef.current++;
+      draftRef.current = null;
+      setDraftId(null);
+      setDraftStatus(null);
+      lastSentRef.current = "";
+      setEditorIdx(null);
+      setCandidates([]);
+      setStep("setup");
+      setParked((n) => n + 1);
+      window.scrollTo({ top: 0 });
+      refreshScanDrafts();
+      toast.success(t.scan_parked);
+    } catch {
+      toast.error(t.scan_park_error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   const engineActive = status?.active ?? "none";
 
   return (
-    <div className="max-w-3xl mx-auto pb-24">
+    <div className={`max-w-3xl mx-auto ${step === "review" ? "pb-36 sm:pb-24" : "pb-24"}`}>
       <div className="mb-1 flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">{t.scan_title}</h1>
         <Link href={backHref} className="text-gray-500 hover:text-white text-sm">{t.scan_back}</Link>
@@ -1098,7 +1149,7 @@ export default function ScanPage() {
 
       {step === "setup" && (
         <div className="space-y-4">
-          <ScanDraftPanel drafts={drafts} onResume={(id) => void resumeDraft(id)} busy={busy} />
+          <ScanDraftPanel drafts={drafts} onResume={(id) => void resumeDraft(id)} busy={busy} compact={parked > 0 || cameraOn} />
           {/* Modus – kompakt, damit die Aufnahme ohne Scrollen sichtbar ist */}
           <div>
             <div className="grid grid-cols-3 gap-1 rounded-lg bg-gray-800/70 p-1" role="radiogroup" aria-label={t.scan_mode}>
@@ -1281,7 +1332,7 @@ export default function ScanPage() {
                 </p>
               )}
             </div>
-            <button type="button" onClick={backToCapture} className="shrink-0 text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
+            <button type="button" onClick={() => backToCapture()} className="shrink-0 text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
           </div>
           {sourceUrl && mode !== "single" && (
             <button type="button" onClick={() => setAddingMissed(true)} title={t.scan_add_missed_hint}
@@ -1578,13 +1629,21 @@ export default function ScanPage() {
           })}
 
           <div className="fixed bottom-0 inset-x-0 bg-pokemon-dark/95 border-t border-gray-800 p-3">
-            <div className="max-w-3xl mx-auto flex gap-3">
+            <div className="max-w-3xl mx-auto flex flex-wrap sm:flex-nowrap gap-2 sm:gap-3">
               {(() => {
                 // Alles einzeln gespeichert oder verworfen → nur noch weiter bzw. fertig
                 const open = candidates.some((c) => c.include && !c.saved);
                 const blocked = busy || candidates.some((c) => c.rematching || c.saving);
                 return (
                   <>
+                    {candidates.some((c) => !c.saved) && (
+                      // Handy: eigene Zeile über den beiden; breiter: links daneben
+                      <button type="button" onClick={() => void confirmLater()} disabled={blocked}
+                        data-testid="scan-later" title={t.scan_later_hint}
+                        className="w-full sm:w-auto sm:flex-1 rounded border border-pokemon-blue/60 px-3 py-1.5 sm:py-2.5 text-sm text-pokemon-blue hover:bg-pokemon-blue/10 disabled:opacity-50">
+                        {t.scan_later}
+                      </button>
+                    )}
                     <button type="button" onClick={() => void handleSave(false)} disabled={blocked}
                       data-testid="scan-save-stop"
                       className="flex-1 bg-gray-700 text-white px-4 py-2.5 rounded hover:bg-gray-600 disabled:opacity-50">
