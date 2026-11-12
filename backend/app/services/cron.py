@@ -101,6 +101,9 @@ async def _daily_catalog_sync(db: Session):
     # vergleichbarem Katalogumfang analog limit=1000, ein Bild-Download ist
     # aber teurer je Zeile (echter Dateidownload statt JSON-Abruf).
     await schritt("Bild-Cache", run_catalog_image_cache(db, limit=500))
+    # Scan-Entwürfe, die 30 Tage niemand angefasst hat
+    from app.services import scan_drafts
+    await schritt("Scan-Entwürfe", _sync(scan_drafts.prune_all, db))
 
 
 async def _sync(fn, *args):

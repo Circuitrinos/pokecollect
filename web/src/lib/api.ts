@@ -847,6 +847,7 @@ export type ScanCommitItem = {
   muster?: string | null;      // Folierungs-Muster (#63)
   prize_pack?: boolean;        // Play! Pokémon-Stempel (Prize Pack)
   erste_edition?: boolean;     // 1st-Edition-Stempel
+  draft_key?: string;          // Schlüssel der Karte im Scan-Entwurf (draft_id)
   sprache?: string | null;
   zustand?: string | null;
   notizen?: string | null;
@@ -867,6 +868,7 @@ export type ScanCommitRequest = {
   // Gewähltes Fach (0-basiert über alle Seiten); Mappenseiten-Scan: Seitenanfang
   start_position?: number | null;
   items: ScanCommitItem[];
+  draft_id?: number | null;    // aus einem Scan-Entwurf: dort als gespeichert markieren
 };
 
 export type ScanRawRead = {
@@ -1006,6 +1008,49 @@ export const catalogApi = {
 
 export type ScanModelSuggestion = { id: string; name: string };
 export type ScanModelList = { models: ScanModelSuggestion[]; source: "live" | "curated" };
+
+// Scan-Entwürfe: die Prüfseite eines Scans auf dem Server (später / an einem
+// anderen Gerät fortsetzen). state gehört der Scan-Seite; der Server liest nur
+// candidates[].key/saved und die Übersicht.
+export type DraftSaved = { ids: number[]; name: string; name_en?: string | null };
+export type ScanDraftSummary = {
+  id: number;
+  summary: { open?: number; saved?: number; names?: string[]; target?: string | null; mode?: string | null };
+  erstellt_am: string | null;
+  aktualisiert_am: string | null;
+};
+export const scanDraftApi = {
+  list: () => api.get<ScanDraftSummary[]>("/scan/drafts"),
+  get: <S,>(id: number) => api.get<ScanDraftSummary & { state: S }>(`/scan/drafts/${id}`),
+  photo: (id: number) => api.get<Blob>(`/scan/drafts/${id}/photo`, { responseType: "blob" }),
+  thumb: (id: number) => api.get<Blob>(`/scan/drafts/${id}/thumb`, { responseType: "blob" }),
+  create: (photo: Blob, state: unknown) => {
+    const form = new FormData();
+    form.append("photo", photo, "scan.jpg");
+    form.append("state", JSON.stringify(state));
+    return api.post<ScanDraftSummary>("/scan/drafts", form);
+  },
+  update: (id: number, state: unknown) =>
+    api.put<ScanDraftSummary & { saved: Record<string, DraftSaved> }>(`/scan/drafts/${id}`, { state }),
+  remove: (id: number) => api.delete(`/scan/drafts/${id}`),
+  // Beim Verlassen der Seite: kommt auch noch an, wenn der Tab schon zu ist (keepalive ≤ 64 KB)
+  updateOnLeave: (id: number, state: unknown): boolean => {
+    const body = JSON.stringify({ state });
+    if (body.length > 60_000 || typeof fetch === "undefined") return false;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    void fetch(`${api.defaults.baseURL}/scan/drafts/${id}`, {
+      method: "PUT", keepalive: true, body,
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }).catch(() => {});
+    return true;
+  },
+  removeOnLeave: (id: number) => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    void fetch(`${api.defaults.baseURL}/scan/drafts/${id}`, {
+      method: "DELETE", keepalive: true, headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).catch(() => {});
+  },
+};
 
 // Grobe Ecken an die Kartenkanten angelegt (matcher /outline): über das Artwork
 // (reference), einen typischen Kartenrahmen (frame) oder nur die Kanten (edges);

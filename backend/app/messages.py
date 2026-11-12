@@ -81,6 +81,11 @@ EN: dict[str, str] = {
     "Bild zu groß (max. 15 MB)": "Image too large (max. 15 MB)",
     "Ungültige Ecken": "Invalid corners",
     "Kein eigenes Foto zum Markieren": "There is no photo of your own to mark",
+    "Scan-Entwurf nicht gefunden": "Scan draft not found",
+    "Schon gespeichert — vermutlich an einem anderen Gerät": "Already saved — probably on another device",
+    "Entwurf zu groß": "Draft too large",
+    "Entwurf ist kein gültiges JSON": "Draft is not valid JSON",
+    "Entwurf ohne Kartenliste": "Draft without a card list",
     "Zu wenige Stempel zum Lernen — mindestens 3 von Hand markieren":
         "Too few stamps to learn from — mark at least 3 by hand",
     "Karte ohne Katalog-Zuordnung": "The card isn't linked to a catalog card",

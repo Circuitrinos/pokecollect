@@ -109,6 +109,7 @@ class ScanCommitItem(BaseModel):
     muster: Optional[str] = None           # Folierungs-Muster (#63)
     prize_pack: bool = False               # Play! Pokémon-Stempel (Prize Pack), im Scan angehakt
     erste_edition: bool = False            # 1st-Edition-Stempel, im Scan angehakt
+    draft_key: Optional[str] = Field(None, max_length=64)   # Karte im Scan-Entwurf (draft_id)
     sprache: Optional[str] = "DE"
     zustand: Optional[str] = None          # Mint … Played (ZUSTAND_VALUES), leer = nicht angegeben
     notizen: Optional[str] = None
@@ -150,6 +151,9 @@ class ScanCommitRequest(BaseModel):
     # der Zielseite. Ohne: erstes freies Fach bzw. neue Seite am Ende.
     start_position: Optional[PgNichtNegativ] = None
     items: list[ScanCommitItem]
+    # aus einem Scan-Entwurf: die Karten dort als gespeichert markieren (und doppelt
+    # gespeicherte ablehnen); je Item draft_key = der Schlüssel der Karte im Entwurf
+    draft_id: Optional[int] = None
 
 
 class ScanCommitResponse(BaseModel):

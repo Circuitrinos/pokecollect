@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_auth
-from app.api.v1 import auth, cards, catalog, collections, data, decks, friends, prices, scan, scan_quality, sealed, settings, sets, users
+from app.api.v1 import (auth, cards, catalog, collections, data, decks, friends, prices, scan, scan_drafts, scan_quality,
+                        sealed, settings, sets, users)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -22,6 +23,7 @@ for protected in (
     friends.shared_router,
     prices.router,
     scan.router,
+    scan_drafts.router,
     scan_quality.router,   # nur Admins
     sealed.router,
     settings.router,

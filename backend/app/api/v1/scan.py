@@ -504,6 +504,16 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
         if not deck:
             raise HTTPException(status_code=404, detail="Deck nicht gefunden")
 
+    # Scan-Entwurf: gesperrt lesen (zwei Geräte bestätigen gleichzeitig) und Karten,
+    # die dort schon gespeichert sind, nicht noch einmal anlegen.
+    from app.services import scan_drafts as drafts_svc
+
+    draft = drafts_svc.locked(db, payload.draft_id) if payload.draft_id is not None else None
+    draft_state = drafts_svc.load_state(draft) if draft is not None else None
+    if draft_state is not None and drafts_svc.already_saved(
+            draft_state, [i.draft_key for i in payload.items if i.draft_key]):
+        raise HTTPException(status_code=409, detail="Schon gespeichert — vermutlich an einem anderen Gerät")
+
     plan: dict[tuple[int, int], int] = {}
     used: set[int] = set()
     if collection:
@@ -581,6 +591,10 @@ def scan_commit(payload: ScanCommitRequest, background_tasks: BackgroundTasks, d
                 first_ids.append(card.id)
         copy_ids.append(item_ids)
 
+    if draft is not None:
+        drafts_svc.mark_saved(draft, draft_state, {
+            item.draft_key: {"ids": ids, "name": item.kartenname, "name_en": item.englischer_name}
+            for item, ids in zip(payload.items, copy_ids, strict=True) if item.draft_key})
     db.commit()
     next_position = None
     if positions:

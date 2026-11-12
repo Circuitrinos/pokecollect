@@ -146,6 +146,11 @@ def export_csv(
 
 # ── Backup ───────────────────────────────────────────────────────────────────
 
+# Zwischenstände, kein Bestand (Scan-Entwürfe: Prüfseite + Foto als bytea) —
+# nicht im Backup; ein Restore leert sie wie jede Tabelle.
+TRANSIENT_TABLES = {"scan_drafts"}
+
+
 def _dump_all_tables() -> dict[str, list[dict]]:
     """
     ALLE Tabellen generisch dumpen (Base.metadata.sorted_tables = FK-Ordnung).
@@ -155,6 +160,8 @@ def _dump_all_tables() -> dict[str, list[dict]]:
     dump: dict[str, list[dict]] = {}
     with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
+            if table.name in TRANSIENT_TABLES:
+                continue
             result = conn.execute(table.select())
             dump[table.name] = [
                 {k: _jsonify(v) for k, v in row.items()}

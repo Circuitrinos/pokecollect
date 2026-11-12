@@ -6,7 +6,7 @@ import toast from "react-hot-toast";
 import {
   Collection, DeckSummary, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
   cardApi, collectionApi, deckApi, scanApi,
-  ScanAlternative,
+  ScanAlternative, scanDraftApi, ScanDraftSummary, DraftSaved,
 } from "@/lib/api";
 import { useEnums } from "@/lib/useEnums";
 import { useSets } from "@/lib/useSets";
@@ -45,7 +45,7 @@ type EditableCandidate = ScanCandidate & {
   variantOf?: string | null;       // weiteres Exemplar mit eigenen Einstellungen (kein eigenes Foto im Bild)
   added?: boolean;                 // vom Nutzer nachgetragene Karte (die Erkennung hatte sie übersehen)
   saving?: boolean;
-  saved?: { ids: number[]; name: string } | null;   // schon einzeln gespeichert
+  saved?: DraftSaved | null;   // schon einzeln gespeichert
 };
 
 // Katalogbild in der gewählten Bildsprache (TCGdex, westliche Karten)
@@ -87,6 +87,24 @@ async function downscaleImage(blob: Blob, maxDim = 1600): Promise<Blob> {
   }
 }
 
+// Scan-Entwurf: die Prüfseite ohne Laufzeit-Felder (Vorschau-URLs, „läuft gerade")
+type DraftState = {
+  v: 1; mode: ScanMode; target: ScanTarget; collectionId: number | null; deckId: number | null;
+  priority: string; layout: string; setPokedexRep: boolean; slot: number | null;
+  candidates: Partial<EditableCandidate>[];
+};
+const forDraft = (c: EditableCandidate): Partial<EditableCandidate> => {
+  const o: Partial<EditableCandidate> = { ...c };
+  delete o.cropUrl;
+  delete o.saving;
+  delete o.rematching;
+  return o;
+};
+const conflictDetail = (e: unknown): string | null => {
+  const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
+  return r?.status === 409 && typeof r.data?.detail === "string" ? r.data.detail : null;
+};
+
 export default function ScanPage() {
   const { t, lang } = useI18n();
   const router = useRouter();
@@ -122,7 +140,8 @@ export default function ScanPage() {
   const [editorIdx, setEditorIdx] = useState<number | null>(null);
   const sourceBlobRef = useRef<Blob | null>(null);
   const keySeq = useRef(0);
-  const nextKey = () => `c${++keySeq.current}`;
+  const keyPrefix = useRef(Math.random().toString(36).slice(2, 7));   // eindeutig auch nach Fortsetzen
+  const nextKey = () => `${keyPrefix.current}-${++keySeq.current}`;
   // Async-Ergebnisse per Schlüssel zuordnen (der Index kann sich inzwischen verschoben haben)
   const patchCand = (key: string, fn: (c: EditableCandidate) => EditableCandidate) =>
     setCandidates((prev) => prev.map((c) => (c.key === key ? fn(c) : c)));
@@ -335,6 +354,246 @@ export default function ScanPage() {
       canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9);
     });
 
+  // ── Scan-Entwurf ────────────────────────────────────────────────────────
+  // Die Prüfseite liegt als Entwurf auf dem Server: Seite verlassen und später
+  // oder an einem anderen Gerät weitermachen (am Handy scannen, am Rechner
+  // bestätigen). Fertig bestätigt oder alles verworfen → Entwurf gelöscht.
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const draftRef = useRef<number | null>(null);
+  const draftSessionRef = useRef(0);              // ein verspätet angelegter Entwurf einer beendeten Prüfung fliegt
+  const lastSentRef = useRef("");
+  const deletingRef = useRef(new Set<number>());   // Liste neu geladen, bevor das Löschen durch ist → nicht zeigen
+  const [draftStatus, setDraftStatus] = useState<"saving" | "saved" | "error" | null>(null);
+  const [drafts, setDrafts] = useState<ScanDraftSummary[]>([]);
+  const [allDrafts, setAllDrafts] = useState(false);
+  const [draftThumbs, setDraftThumbs] = useState<Record<number, string>>({});
+  const thumbsRef = useRef(draftThumbs);
+  thumbsRef.current = draftThumbs;
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
+
+  const serializeDraft = (list: EditableCandidate[]): DraftState => ({
+    v: 1, mode, target, collectionId, deckId, priority, layout, setPokedexRep, slot,
+    candidates: list.map(forDraft),
+  });
+  const serializeRef = useRef(serializeDraft);
+  serializeRef.current = serializeDraft;
+
+  const startDraft = async (photo: Blob, list: EditableCandidate[]) => {
+    const session = ++draftSessionRef.current;
+    draftRef.current = null;
+    setDraftId(null);
+    lastSentRef.current = "";
+    const st = serializeRef.current(list);
+    setDraftStatus("saving");
+    try {
+      const r = await scanDraftApi.create(photo, st);
+      if (draftSessionRef.current !== session) { void scanDraftApi.remove(r.data.id).catch(() => {}); return; }
+      draftRef.current = r.data.id;
+      lastSentRef.current = JSON.stringify(st);
+      setDraftId(r.data.id);            // ab jetzt gleicht der Effekt unten Änderungen ab
+      setDraftStatus("saved");
+    } catch {
+      if (draftSessionRef.current === session) setDraftStatus("error");
+    }
+  };
+  const startDraftRef = useRef(startDraft);
+  startDraftRef.current = startDraft;
+
+  const syncDraft = async () => {
+    const id = draftRef.current;
+    if (id == null) return;
+    const st = serializeRef.current(candidatesRef.current);
+    const body = JSON.stringify(st);
+    if (body === lastSentRef.current) return;
+    lastSentRef.current = body;
+    setDraftStatus("saving");
+    try {
+      const r = await scanDraftApi.update(id, st);
+      if (draftRef.current !== id) return;
+      setDraftStatus("saved");
+      // an einem anderen Gerät gespeichert → hier auch als gespeichert zeigen
+      const saved = r.data.saved ?? {};
+      if (candidatesRef.current.some((c) => !c.saved && saved[c.key])) {
+        setCandidates((prev) => prev.map((c) => (!c.saved && saved[c.key] ? { ...c, saved: saved[c.key] } : c)));
+      }
+    } catch (e) {
+      if (draftRef.current !== id) return;
+      if ((e as { response?: { status?: number } })?.response?.status === 404) {
+        draftGoneRef.current();
+      } else {
+        lastSentRef.current = "";
+        setDraftStatus("error");
+      }
+    }
+  };
+  const syncRef = useRef(syncDraft);
+  syncRef.current = syncDraft;
+
+  // Entwurf an einem anderen Gerät fertig bestätigt oder verworfen: diese Prüfung
+  // ist überholt — zurück zur Aufnahme, damit nichts doppelt gespeichert wird.
+  const draftGone = () => {
+    draftSessionRef.current++;
+    draftRef.current = null;
+    setDraftId(null);
+    setDraftStatus(null);
+    lastSentRef.current = "";
+    setEditorIdx(null);
+    setCandidates([]);
+    setStep("setup");
+    toast(t.scan_draft_gone, { icon: "ℹ️" });
+  };
+  const draftGoneRef = useRef(draftGone);
+  draftGoneRef.current = draftGone;
+
+  // Zurück in diesem Tab: hat ein anderes Gerät weitergemacht, dessen Stand übernehmen
+  // (nur ohne eigene, noch nicht gesicherte Änderungen).
+  const refreshDraft = async () => {
+    const id = draftRef.current;
+    if (id == null || busyRef.current) return;
+    const mine = JSON.stringify(serializeRef.current(candidatesRef.current));
+    if (mine !== lastSentRef.current) return;      // eigene Änderung unterwegs → die gewinnt
+    try {
+      const r = await scanDraftApi.get<DraftState>(id);
+      if (draftRef.current !== id || JSON.stringify(serializeRef.current(candidatesRef.current)) !== mine) return;
+      if (JSON.stringify(r.data.state) !== mine) void resumeRef.current(id);
+    } catch (e) {
+      if (draftRef.current === id && (e as { response?: { status?: number } })?.response?.status === 404) draftGoneRef.current();
+    }
+  };
+  const refreshRef = useRef(refreshDraft);
+  refreshRef.current = refreshDraft;
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  useEffect(() => {
+    if (step !== "review" || draftId == null) return;
+    const h = window.setTimeout(() => void syncRef.current(), draftStatus === "error" ? 5000 : 800);
+    return () => window.clearTimeout(h);
+  }, [candidates, target, collectionId, deckId, priority, slot, step, draftId, draftStatus]);
+
+  // Tab im Hintergrund / Seite verlassen: letzten Stand noch schicken. Ist nichts
+  // mehr offen (alles gespeichert oder verworfen), braucht es den Entwurf nicht mehr.
+  const flushDraft = (leaving: boolean) => {
+    const id = draftRef.current;
+    if (id == null) return;
+    const list = candidatesRef.current;
+    if (leaving && !list.some((c) => !c.saved)) {
+      scanDraftApi.removeOnLeave(id);
+      draftRef.current = null;
+      return;
+    }
+    const st = serializeRef.current(list);
+    const body = JSON.stringify(st);
+    if (body !== lastSentRef.current && scanDraftApi.updateOnLeave(id, st)) lastSentRef.current = body;
+  };
+  const flushRef = useRef(flushDraft);
+  flushRef.current = flushDraft;
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "hidden") flushRef.current(false);
+      else if (stepRef.current === "review") void refreshRef.current();
+      else if (stepRef.current === "setup") loadDraftsRef.current();
+    };
+    const onHide = () => flushRef.current(true);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      flushRef.current(true);                 // Navigation innerhalb der App
+      Object.values(thumbsRef.current).forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, []);
+
+  // Prüfung beendet (bestätigt / alles verworfen): Entwurf löschen
+  const closeDraft = () => {
+    draftSessionRef.current++;
+    const id = draftRef.current;
+    draftRef.current = null;
+    setDraftId(null);
+    setDraftStatus(null);
+    lastSentRef.current = "";
+    if (id != null) {
+      deletingRef.current.add(id);
+      setDrafts((ds) => ds.filter((d) => d.id !== id));
+      void scanDraftApi.remove(id).catch(() => {}).finally(() => deletingRef.current.delete(id));
+    }
+  };
+
+  const loadDrafts = useCallback(() => {
+    scanDraftApi.list().then((r) => setDrafts(r.data.filter((d) => !deletingRef.current.has(d.id)))).catch(() => {});
+  }, []);
+  const loadDraftsRef = useRef(loadDrafts);
+  useEffect(() => { if (step === "setup") loadDrafts(); }, [step, loadDrafts]);
+  // Vorschaubilder brauchen die Anmeldung → als Blob laden
+  useEffect(() => {
+    drafts.forEach((d) => {
+      if (thumbsRef.current[d.id]) return;
+      scanDraftApi.thumb(d.id)
+        .then((r) => setDraftThumbs((m) => (m[d.id] ? m : { ...m, [d.id]: URL.createObjectURL(r.data) })))
+        .catch(() => {});
+    });
+  }, [drafts]);
+
+  const resumeDraft = async (id: number) => {
+    setBusy(true);
+    try {
+      const [d, p] = await Promise.all([scanDraftApi.get<DraftState>(id), scanDraftApi.photo(id)]);
+      const st = d.data.state;
+      draftSessionRef.current++;
+      sourceBlobRef.current = p.data;
+      setSourceUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(p.data);
+      });
+      if (st.mode) setMode(st.mode);
+      if (st.target) setTarget(st.target);
+      setCollectionId(st.collectionId ?? null);
+      setDeckId(st.deckId ?? null);
+      setPriority(st.priority ?? "");
+      if (st.layout) setLayout(st.layout);
+      setSetPokedexRep(!!st.setPokedexRep);
+      setSlot(st.slot ?? null);
+      const list = (st.candidates ?? []).map((c) => ({ ...c, cropUrl: null, saving: false, rematching: false }) as EditableCandidate);
+      setCandidates(list);
+      draftRef.current = id;
+      lastSentRef.current = JSON.stringify(st);
+      setDraftId(id);
+      setDraftStatus("saved");
+      setEditorIdx(null);
+      setStep("review");
+      window.scrollTo({ top: 0 });
+      list.forEach(async (c) => {
+        if (!c.editedQuad && !c.raw?.bbox && !c.raw?.quad) return;
+        try {
+          const f = await cropToCardPhoto(p.data, cropOptsFor(c));
+          const u = URL.createObjectURL(f);
+          patchCand(c.key, (cc) => ({ ...cc, cropUrl: u }));
+        } catch { /* Vorschau optional */ }
+      });
+    } catch {
+      toast.error(t.scan_draft_load_error);
+      loadDrafts();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resumeRef = useRef(resumeDraft);
+  resumeRef.current = resumeDraft;
+
+  const discardDraft = async (id: number) => {
+    if (!confirm(t.scan_draft_discard_confirm)) return;
+    await scanDraftApi.remove(id).catch(() => {});
+    setDrafts((ds) => ds.filter((d) => d.id !== id));
+  };
+
+  // Schon gespeichert (anderes Gerät): Hinweis und den aktuellen Stand des Entwurfs laden
+  const onConflict = (detail: string) => {
+    toast.error(detail);
+    if (draftRef.current != null) void resumeDraft(draftRef.current);
+  };
+
   const runScan = useCallback(async (rawBlob: Blob) => {
     setBusy(true);
     try {
@@ -389,6 +648,7 @@ export default function ScanPage() {
       }
       setCandidates(list);
       setStep("review");
+      void startDraftRef.current(blob, list);
       // Foto-Zuschnitte je Karte (aus der bbox) für Vorschau erzeugen
       list.forEach(async (c) => {
         const blob = sourceBlobRef.current;
@@ -699,6 +959,7 @@ export default function ScanPage() {
         im_pokedex: target !== "wishlist" && c.imPokedex,
         prioritaet: target === "wishlist" ? (priority || null) : null,
         copies: target === "wishlist" ? 1 : c.copies,
+        draft_key: c.key,
       };
     });
     const ps = pageSizeOf(targetCollection?.binder_layout);
@@ -709,6 +970,7 @@ export default function ScanPage() {
       start_position: target === "collection" && slot != null
         ? (mode === "binder" ? Math.floor(slot / ps) * ps : slot) : null,
       items,
+      draft_id: draftRef.current,
     });
     // Aufnahme je Karte zuschneiden und hochladen: mit „eigenes Foto" als
     // Kartenbild (Anzeige-Vorrang), sonst nur als Scan-Foto für den Bild-
@@ -751,6 +1013,7 @@ export default function ScanPage() {
     if (next) {
       backToCapture();
     } else {
+      closeDraft();
       stopCamera();
       router.push(backHref);
     }
@@ -774,8 +1037,10 @@ export default function ScanPage() {
       }
       toast.success(t.scan_saved(data.created));
       finishReview(next);
-    } catch {
-      toast.error(t.scan_save_error);
+    } catch (e) {
+      const conflict = conflictDetail(e);
+      if (conflict) onConflict(conflict);
+      else toast.error(t.scan_save_error);
     } finally {
       setBusy(false);
     }
@@ -801,14 +1066,17 @@ export default function ScanPage() {
       const name = String((lang === "EN" ? s.englischer_name : null) ?? s.kartenname ?? c.raw.name ?? "?");
       patchCand(c.key, (cc) => ({ ...cc, saving: false, saved: { ids: data.all_card_ids?.length ? data.all_card_ids : data.card_ids, name } }));
       toast.success(t.scan_saved(data.created));
-    } catch {
+    } catch (e) {
       patchCand(c.key, (cc) => ({ ...cc, saving: false }));
-      toast.error(t.scan_save_error);
+      const conflict = conflictDetail(e);
+      if (conflict) onConflict(conflict);
+      else toast.error(t.scan_save_error);
     }
   };
 
   // Zurück zur Aufnahme (Kamera ist noch an, falls sie lief) – oben, ohne Scrollen.
   const backToCapture = () => {
+    closeDraft();
     setCandidates([]);
     setStep("setup");
     window.scrollTo({ top: 0 });
@@ -846,6 +1114,44 @@ export default function ScanPage() {
 
       {step === "setup" && (
         <div className="space-y-4">
+          {drafts.length > 0 && (
+            <div className="rounded-lg border border-pokemon-blue/40 bg-pokemon-card p-3" data-testid="scan-drafts">
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">
+                <h2 className="text-sm font-medium text-white">{t.scan_drafts_title(drafts.length)}</h2>
+                <span className="text-[11px] text-gray-500">{t.scan_drafts_hint}</span>
+              </div>
+              <ul className="space-y-2">
+                {(allDrafts ? drafts : drafts.slice(0, 3)).map((d) => (
+                  <li key={d.id} className="flex items-center gap-3" data-testid="scan-draft">
+                    {draftThumbs[d.id]
+                      // eslint-disable-next-line @next/next/no-img-element
+                      ? <img src={draftThumbs[d.id]} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+                      : <div className="h-12 w-12 shrink-0 rounded bg-gray-800" />}
+                    <div className="min-w-0 flex-1 text-xs">
+                      <div className="truncate text-gray-200">{(d.summary.names ?? []).join(", ") || "—"}</div>
+                      <div className="text-gray-500">
+                        {t.scan_draft_meta(d.summary.open ?? 0, d.summary.saved ?? 0,
+                          d.aktualisiert_am ? new Date(d.aktualisiert_am).toLocaleString(lang === "EN" ? "en-US" : "de-DE",
+                            { dateStyle: "short", timeStyle: "short" }) : "")}
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => void resumeDraft(d.id)} disabled={busy} data-testid="scan-draft-resume"
+                      className="shrink-0 rounded bg-pokemon-blue px-3 py-1.5 text-xs text-white hover:opacity-90 disabled:opacity-50">
+                      {t.scan_draft_resume}
+                    </button>
+                    <button type="button" onClick={() => void discardDraft(d.id)} aria-label={t.scan_draft_discard}
+                      title={t.scan_draft_discard} data-testid="scan-draft-discard"
+                      className="shrink-0 px-1 text-gray-500 hover:text-red-400">✕</button>
+                  </li>
+                ))}
+              </ul>
+              {drafts.length > 3 && (
+                <button type="button" onClick={() => setAllDrafts((v) => !v)} className="mt-2 text-xs text-gray-400 hover:text-white">
+                  {allDrafts ? t.scan_drafts_less : t.scan_drafts_more(drafts.length - 3)}
+                </button>
+              )}
+            </div>
+          )}
           {/* Modus – kompakt, damit die Aufnahme ohne Scrollen sichtbar ist */}
           <div>
             <div className="grid grid-cols-3 gap-1 rounded-lg bg-gray-800/70 p-1" role="radiogroup" aria-label={t.scan_mode}>
@@ -1019,9 +1325,16 @@ export default function ScanPage() {
 
       {step === "review" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-white font-medium">{t.scan_results_title(candidates.length)}</h2>
-            <button type="button" onClick={backToCapture} className="text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="text-white font-medium">{t.scan_results_title(candidates.length)}</h2>
+              {draftStatus && (
+                <p className={`text-[11px] ${draftStatus === "error" ? "text-amber-400" : "text-gray-500"}`} data-testid="scan-draft-status">
+                  {draftStatus === "saving" ? t.scan_draft_saving : draftStatus === "saved" ? t.scan_draft_saved : t.scan_draft_error}
+                </p>
+              )}
+            </div>
+            <button type="button" onClick={backToCapture} className="shrink-0 text-gray-500 hover:text-white text-sm">{t.scan_discard_all}</button>
           </div>
           {sourceUrl && mode !== "single" && (
             <button type="button" onClick={() => setAddingMissed(true)} title={t.scan_add_missed_hint}
@@ -1042,7 +1355,7 @@ export default function ScanPage() {
               return (
                 <div key={c.key} data-testid="scan-card-saved"
                   className="flex items-center justify-between gap-2 rounded-lg border border-green-800 bg-green-900/20 px-3 py-2 text-sm">
-                  <span className="text-green-300 truncate">✓ {t.scan_card_saved(c.saved.name, c.saved.ids.length)}</span>
+                  <span className="text-green-300 truncate">✓ {t.scan_card_saved((lang === "EN" && c.saved.name_en) || c.saved.name, c.saved.ids.length)}</span>
                   <Link href={`/cards/${c.saved.ids[0]}`} className="shrink-0 text-xs text-pokemon-blue hover:underline">{t.scan_open_card}</Link>
                 </div>
               );
