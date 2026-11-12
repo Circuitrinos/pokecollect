@@ -395,6 +395,10 @@ Ball pattern shows its repeated motif, a holo only the art. Photos of the
 same card with different foiling (pairs by card_id) work the same way.
 matcher/tools/holo_diff.py does the alignment and writes the difference
 images plus a CSV per card to start training a pattern classifier.
+
+Enough to train? matcher/tools/dataset_report.py <this zip> counts what the
+detector, the stamp detector and a foil classifier can use and how far each
+is from a useful size.
 """
 
 
