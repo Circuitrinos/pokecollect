@@ -40,7 +40,8 @@ export default function FoilModel() {
         {info?.exists
           ? t.foil_model_status(Math.round((info.precision ?? 0) * 100), Math.round((info.recall ?? 0) * 100),
               info.trained_on?.["Reverse Holo"] ?? 0, info.trained_on?.["Normal"] ?? 0)
-            + (info.features?.includes("code_corr") ? ` · ${t.foil_model_uses_code}` : ` · ${t.foil_model_no_code}`)
+            + ` · ${info.features?.includes("box_corr") ? t.foil_model_uses_code
+              : info.features?.includes("code_corr") ? t.foil_model_old_code : t.foil_model_no_code}`
           : t.foil_model_none}
         <span className="block text-[11px] text-gray-500">{t.foil_model_hint}</span>
       </span>

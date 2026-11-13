@@ -63,10 +63,17 @@ def load(path: Path) -> list[dict]:
             continue
         r["art"], r["frame"] = art, frame
         r["ratio"] = frame / art if art > 0 else np.nan
-        try:   # set code box vs catalog (newer holo_diff): ≈ +1 same print, negative = inverted
-            r["code"] = float(r["code_corr"]) if r.get("code_corr") not in (None, "") else None
+        def num(key):
+            try:
+                return float(r[key]) if r.get(key) not in (None, "") else None
+            except ValueError:
+                return None
+        r["code"] = num("code_corr")     # anything odd in the set code corner (foil texture, but also halos)
+        r["boxc"] = num("box_corr")      # the set code box itself vs catalog: ≈ +1 same print, negative = inverted
+        try:
+            r["box_px"] = [int(v) for v in (r.get("box") or "").split()] or None
         except ValueError:
-            r["code"] = None
+            r["box_px"] = None
         r["inl"] = float(r.get("inliers") or 0)
         out.append(r)
     return out
@@ -76,18 +83,18 @@ try:   # the scan computes the same numbers (app/foil.py); standalone copy other
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from app.foil import FEATURES, feature_values  # noqa: E402
 except ImportError:
-    FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr"]
+    FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr", "box_corr"]
 
-    def feature_values(art: float, frame: float, code: float | None = None) -> dict[str, float]:
+    def feature_values(art: float, frame: float, code: float | None = None, box: float | None = None) -> dict[str, float]:
         a, f = max(float(art), 0.1), max(float(frame), 0.1)
         return {"log_art": float(np.log(a)), "log_frame": float(np.log(f)), "log_frame_art": float(np.log(f / a)),
-                "code_corr": 1.0 if code is None else float(code)}
+                "code_corr": 1.0 if code is None else float(code), "box_corr": 1.0 if box is None else float(box)}
 
-USE = list(FEATURES)     # main() drops code_corr for an index.csv from an older holo_diff
+USE = list(FEATURES)     # main() drops what an index.csv from an older holo_diff lacks
 
 
 def features(r: dict) -> list[float]:
-    v = feature_values(r["art"], r["frame"], r.get("code"))
+    v = feature_values(r["art"], r["frame"], r.get("code"), r.get("boxc"))
     return [v[n] for n in USE]
 
 
@@ -208,9 +215,11 @@ def can_be_reverse(r: dict) -> bool:
 
 def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
     """
-    Cards whose foiling label disagrees with the photo, strongest first:
-      Normal       → Reverse Holo?  set code inverted, or out-of-fold score above the hint cut
-      Reverse Holo → Normal?        set code the same as the plain print (in a set whose reverse
+    Cards whose foiling label disagrees with the photo, strongest first. The set code box
+    (box_corr) is the evidence; the shine (out-of-fold score) only speaks where the box can't:
+      Normal       → Reverse Holo?  set code box inverted (a foil print: "Holo?" for cards that
+                                    never come as reverse holo), or score above the hint cut
+      Reverse Holo → Normal?        set code box the same as the plain print (in a set whose reverse
                                     holos invert it) or a score as low as a typical plain card
       Holo         → Reverse Holo?  only "maybe": holo and reverse holo both invert the box, so an
                                     inverted box on a holo usually means the catalog image shows
@@ -219,32 +228,36 @@ def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
     """
     sets: dict[str, list[float]] = defaultdict(list)
     for r in cat:
-        if r["foiling"] == "Reverse Holo" and r.get("code") is not None:
-            sets[(r["card_id"] or "?").rsplit("-", 1)[0]].append(r["code"])
+        if r["foiling"] == "Reverse Holo" and r.get("boxc") is not None:
+            sets[(r["card_id"] or "?").rsplit("-", 1)[0]].append(r["boxc"])
     inverts = {sid: float(np.median(v)) <= CODE_INVERTED for sid, v in sets.items() if len(v) >= 2}
+    every = [c for v in sets.values() for c in v]       # sets without reverse holos to go by: all of them
+    usual = len(every) >= 5 and float(np.median(every)) <= CODE_INVERTED
     normal_oof = [r["oof"] for r in cat if r["foiling"] == "Normal" and np.isfinite(r.get("oof", np.nan))]
     plain_like = float(np.median(normal_oof)) if normal_oof else None
     out = []
     for r in cat:
-        code, oof = r.get("code"), r.get("oof", np.nan)
+        code, oof = r.get("boxc"), r.get("oof", np.nan)     # the set code box itself (None: not to be seen)
         sid = (r["card_id"] or "?").rsplit("-", 1)[0]
         why, strength = None, 0.0
         # the set code decides where it can (it doesn't depend on the light); the shine
         # only speaks for cards whose set code says nothing (older sets, no print there)
-        code_says = code is not None and inverts.get(sid) is not False and (code <= CODE_INVERTED or code >= CODE_SAME)
+        inv = inverts.get(sid, usual)                     # this set's reverse holos invert the box
+        code_says = code is not None and inv and (code <= CODE_INVERTED or code >= CODE_SAME)
         if r["foiling"] == "Normal":
+            suggest = "Reverse Holo"
             if code is not None and code <= -CODE_SURE:
-                why, strength = "sure: set code inverted", -code + 1
+                why, strength = "sure: set code box inverted (a foil print)", -code + 1
+                suggest = "Reverse Holo" if can_be_reverse(r) else "Holo"
             elif code is not None and code <= CODE_INVERTED:
-                why, strength = "maybe: set code partly inverted (glare?)", -code
+                why, strength = "maybe: set code box partly inverted", -code
             elif not code_says and hint_cut is not None and np.isfinite(oof) and oof >= hint_cut:
                 why, strength = "maybe: shines like a reverse holo", min(1.0, (oof - hint_cut) / 4)
-            suggest = "Reverse Holo"
         elif r["foiling"] == "Reverse Holo":
-            if code is not None and code >= CODE_SURE and inverts.get(sid, True):
-                why, strength = "sure: set code like the plain print", code + 1
-            elif code is not None and code >= CODE_SAME and inverts.get(sid, True):
-                why, strength = "maybe: set code more like the plain print", code
+            if code is not None and code >= CODE_SURE and inv:
+                why, strength = "sure: set code box like the plain print", code + 1
+            elif code is not None and code >= CODE_SAME and inv:
+                why, strength = "maybe: set code box more like the plain print", code
             elif not code_says and plain_like is not None and np.isfinite(oof) and oof <= plain_like:
                 why, strength = "maybe: no foil to see", min(1.0, (plain_like - oof) / 4)
             suggest = "Normal"
@@ -274,13 +287,17 @@ def draw_sheet(found: list[dict], base: Path, path: Path) -> int:
             continue
         w = img.shape[1] // 3
         h = img.shape[0]
-        photo, ref = img[:, :w], img[:, w:2 * w]
+        photo, ref = img[:, :w].copy(), img[:, w:2 * w].copy()
+        if r.get("box_px"):                      # the set code box that was compared
+            x0, y0, x1, y1 = r["box_px"]
+            for im in (photo, ref):
+                cv2.rectangle(im, (x0, y0), (x1, y1), (0, 0, 255), 2)
         corner = lambda im: im[int(0.86 * h):int(0.995 * h), 0:int(0.5 * w)]   # noqa: E731
         codes = np.vstack([corner(photo), corner(ref)])
         thumb = cv2.resize(photo, (int(w * codes.shape[0] / h), codes.shape[0]))
         tile = np.hstack([thumb, codes])
         bar = np.full((34, tile.shape[1], 3), 30, np.uint8)
-        txt = f"{r['id']}  {r['foiling']} -> {r['suggest']}?  code {r['code'] if r.get('code') is not None else '-'}"
+        txt = f"{r['id']}  {r['foiling']} -> {r['suggest']}?  box {r['boxc'] if r.get('boxc') is not None else '-'}"
         cv2.putText(bar, txt[:60], (6, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
         tiles.append(np.vstack([bar, tile]))
     if not tiles:
@@ -342,9 +359,11 @@ def main() -> None:
     ap.add_argument("--app-url", help="your PokéCollect address, for links to the cards (e.g. https://tcg.example.com)")
     args = ap.parse_args()
     rows = load(Path(args.holo_diff))
-    if not any(r.get("code") is not None for r in rows):
-        USE.remove("code_corr")
-        print("(no set-code column — run the new holo_diff.py again to use the inverted set code box)")
+    for col, feat in (("code", "code_corr"), ("boxc", "box_corr")):
+        if not any(r.get(col) is not None for r in rows):
+            USE.remove(feat)
+    if "box_corr" not in USE:
+        print("(no set code box column — run the new holo_diff.py again)")
     cat = [r for r in rows if r["kind"] == "vs_catalog"]
     counts = defaultdict(int)
     for r in cat:
@@ -368,20 +387,25 @@ def main() -> None:
               f"(medians {np.median(pa):.2f} vs {np.median(pb):.2f})")
         if (a, b, key) == ("Reverse Holo", "Normal", "ratio"):
             verdict_rule = bacc
-    # set code box: inverted (negative) on foil prints of newer sets — lower = foil
-    pa = np.array([-r["code"] for r in cat if r["foiling"] == "Reverse Holo" and r.get("code") is not None])
-    pb = np.array([-r["code"] for r in cat if r["foiling"] == "Normal" and r.get("code") is not None])
-    if len(pa) >= 5 and len(pb) >= 5:
-        t, bacc = best_threshold(pa, pb)
-        print(f"   {'Reverse Holo':>12} vs {'Normal':<7} by set code  AUC {auc(pa, pb):.2f}   below {-t:.2f}: {bacc:.0%}   "
-              f"(medians {-np.median(pa):.2f} vs {-np.median(pb):.2f}; ≈ −1 = box inverted)")
+    # set code corner: lower = foil. "corner" = lowest window anywhere there (foil texture,
+    # but also halos), "box" = the set code box itself (inverted on foil prints of some sets)
+    for key, label in (("code", "corner"), ("boxc", "set code box")):
+        pa = np.array([-r[key] for r in cat if r["foiling"] == "Reverse Holo" and r.get(key) is not None])
+        pb = np.array([-r[key] for r in cat if r["foiling"] == "Normal" and r.get(key) is not None])
+        if len(pa) >= 5 and len(pb) >= 5:
+            t, bacc = best_threshold(pa, pb)
+            print(f"   {'Reverse Holo':>12} vs {'Normal':<7} by {label:<12} AUC {auc(pa, pb):.2f}   below {-t:.2f}: {bacc:.0%}   "
+                  f"(medians {-np.median(pa):.2f} vs {-np.median(pb):.2f})")
+    key = "boxc" if any(r.get("boxc") is not None for r in cat) else "code"
+    if any(r.get(key) is not None for r in cat):
         sets: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
         for r in cat:
-            if r.get("code") is not None and r["foiling"] in ("Normal", "Holo", "Reverse Holo"):
-                sets[(r["card_id"] or "?").rsplit("-", 1)[0]][r["foiling"]].append(r["code"])
+            if r.get(key) is not None and r["foiling"] in ("Normal", "Holo", "Reverse Holo"):
+                sets[(r["card_id"] or "?").rsplit("-", 1)[0]][r["foiling"]].append(r[key])
         inv = [(sid, v) for sid, v in sets.items() if len(v.get("Reverse Holo", [])) >= 2 and len(v.get("Normal", [])) >= 2]
         if inv:
-            print("   set code by set (median; foil prints of sets that invert the box go negative):")
+            print(f"   {'set code box' if key == 'boxc' else 'set code corner'} by set (median; ≈ +1 same as the catalog "
+                  "image, negative = inverted):")
             for sid, v in sorted(inv, key=lambda kv: np.median(kv[1]["Reverse Holo"])):
                 cells = "  ".join(f"{f} {np.median(v[f]):+.2f} (n={len(v[f])})" for f in ("Normal", "Holo", "Reverse Holo") if v.get(f))
                 print(f"     {sid:<10} {cells}")
@@ -449,22 +473,23 @@ def main() -> None:
     else:
         url = (args.app_url or "").rstrip("/")
         for r in found[:40]:
-            code = f"{r['code']:+.2f}" if r.get("code") is not None else "  –  "
+            code = f"{r['boxc']:+.2f}" if r.get("boxc") is not None else "  –  "
             sc = f"{r['oof']:+.1f}" if np.isfinite(r.get("oof", np.nan)) else "  – "
-            print(f"   {str(r['id']):>7}  {r['foiling']:<12} → {r['suggest']:<12}? set code {code}  score {sc}  "
+            print(f"   {str(r['id']):>7}  {r['foiling']:<12} → {r['suggest']:<12}? set code box {code}  score {sc}  "
                   f"{(r.get('name') or r['card_id'] or '')[:28]:<28} {url}/cards/{r['id']}  ({r['why']})")
         if len(found) > 40:
             print(f"   … {len(found) - 40} more in labels_to_check.csv")
         with open(base / "labels_to_check.csv", "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["id", "card_id", "name", "set", "number", "label", "suggest", "why", "code_corr", "score"])
+            w.writerow(["id", "card_id", "name", "set", "number", "label", "suggest", "why", "box_corr", "score"])
             for r in found:
                 w.writerow([r["id"], r["card_id"], r.get("name"), r.get("set"), r.get("number"), r["foiling"],
-                            r["suggest"], r["why"], r.get("code"), round(r["oof"], 2) if np.isfinite(r.get("oof", np.nan)) else ""])
+                            r["suggest"], r["why"], r.get("boxc"), round(r["oof"], 2) if np.isfinite(r.get("oof", np.nan)) else ""])
         print(f"   {len(found)} in {base / 'labels_to_check.csv'}")
         if args.sheet:
             n = draw_sheet(found[:60], base, args.sheet)
-            print(f"   {n} pictures in {args.sheet} (top: your photo's set code corner, below: the catalog image's)")
+            print(f"   {n} pictures in {args.sheet} (top: your photo's set code corner, below: the catalog image's; "
+                  "red: the box compared)")
     if args.save:
         save_model(cat, args.save, args.precision)
 

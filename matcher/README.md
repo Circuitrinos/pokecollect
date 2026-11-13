@@ -177,15 +177,21 @@ alarm check) and suggests values for the two variables.
 
 `app/foil.py` aligns a scanned card to its plain catalog image and keeps the
 difference — mostly foil: a reverse holo lights up the frame, a holo the art.
-Newer sets (Mega Evolution era, e.g. Chaos Rising) also print the set code box
-inverted on foil cards; `code_corr` compares that corner with the catalog image
-(≈ +1 same print, negative = inverted), independent of the light.
+Newer sets (e.g. Chaos Rising) also print the set code box ("SCR EN")
+inverted on foil cards. `box_corr` finds that box in the catalog image (a
+box-sized patch on the set code row, mostly one tone with letters in it) and
+compares just its inside with the photo: ≈ +1 same print, ≈ −1 inverted, empty
+when the photo is too blurred or washed out there — independent of the light.
+`code_corr`, the lowest correlation of any small window in that corner, also
+reacts to foil texture there but just as much to sharpening halos and smeared
+edges, so it is only a model feature, never the proof for a label.
 `holo_diff.py` runs it over the scan dataset; `foil_eval.py <holo_diff output>`
 tests how well those numbers tell Normal / Holo / Reverse Holo apart on cards
 they were not fitted on (folds by card) and how many "reverse holo?" hints would
 be right, and lists the labels to check — cards whose foiling label disagrees
-with the photo (set code inverted on a "Normal", plain on a "Reverse Holo"), in
-`labels_to_check.csv` and, with `--sheet`, as pictures; `--save foil_model.json` writes the model (asking only where 80 % of
+with the photo (set code box inverted on a "Normal", plain on a "Reverse Holo"
+in a set whose reverse holos invert it), in `labels_to_check.csv` and, with
+`--sheet`, as pictures with the compared box marked; `--save foil_model.json` writes the model (asking only where 80 % of
 the asks were right, `--precision`). Uploaded in the app (Admin → Reverse holo
 detection, → `PUT /foil/model`), the scan review checks each plain card whose
 print exists as reverse holo (`POST /foil`: crop + catalog image → score, hint)

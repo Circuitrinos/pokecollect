@@ -42,7 +42,7 @@ import numpy as np
 
 # the image work is shared with the scan's reverse-holo check (app/foil.py)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.foil import W, H, align, code_corr, decode, difference, match_light, regions  # noqa: E402,F401
+from app.foil import W, H, align, box_corr, code_corr, decode, difference, match_light, regions  # noqa: E402,F401
 
 
 class Dataset:
@@ -99,7 +99,8 @@ def main() -> int:
         if warped is None:
             skipped["no_alignment"] += 1
             return
-        code = code_corr(warped, ref)          # set code box inverted = foil print (newer sets)
+        code = code_corr(warped, ref)          # foil texture / anything odd in the set code corner
+        box, box_px = box_corr(warped, ref)    # the set code box itself: inverted = foil print (some sets)
         warped = match_light(warped, ref)
         diff = difference(warped, ref)
         art, frame = regions(diff)
@@ -113,7 +114,8 @@ def main() -> int:
                      "foiling": lab.get("foiling"), "pattern": lab.get("pattern"), "rarity": lab.get("rarity"),
                      "check": (lab.get("check") or {}).get("status"), "inliers": inl,
                      "art_diff": round(art, 2), "frame_diff": round(frame, 2),
-                     "frame_art_ratio": round(frame / art, 3) if art else None, "code_corr": code})
+                     "frame_art_ratio": round(frame / art, 3) if art else None, "code_corr": code,
+                     "box_corr": box, "box": " ".join(str(v) for v in box_px) if box_px else None})
 
     for lab in labels:
         if (lab.get("check") or {}).get("status") == "low":
@@ -152,7 +154,8 @@ def main() -> int:
 
     with open(args.out / "index.csv", "w", newline="", encoding="utf-8") as f:
         fields = ["kind", "id", "against", "card_id", "name", "set", "number", "foiling", "pattern", "rarity",
-                  "check", "inliers", "art_diff", "frame_diff", "frame_art_ratio", "code_corr", "sheet"]
+                  "check", "inliers", "art_diff", "frame_diff", "frame_art_ratio", "code_corr", "box_corr", "box",
+                  "sheet"]
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(rows)

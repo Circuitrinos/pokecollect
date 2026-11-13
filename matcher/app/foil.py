@@ -4,11 +4,13 @@ even out the lighting and subtract — what is left is mostly foil. A reverse
 holo lights up the frame around the art box, a holo the art, a plain card
 neither (if the photo caught the light).
 
-Newer sets (Mega Evolution era, e.g. Chaos Rising) also print the set code box
-inverted on foil cards (holo and reverse holo): dark letters on a light box
-instead of light on dark. That doesn't depend on the light at all — code_corr
-compares the set-code corner of the photo with the catalog image: ≈ +1 the
-same print, ≈ −1 the negative of it.
+Some newer sets (e.g. Chaos Rising) print the set code box inverted on foil
+cards: dark letters on a light box instead of light on dark. box_corr finds
+that box in the catalog image and compares just it with the photo: ≈ +1 the
+same print, ≈ −1 the negative of it, None when the photo's corner is too
+blurred, dark or washed out to see it. (code_corr, the lowest correlation of
+any small window in that corner, reacts to foil texture there too — but also to
+sharpening halos and smeared edges, so it is only a model feature, never proof.)
 
 tools/holo_diff.py runs this over the scan dataset, tools/foil_eval.py tests
 how well the numbers separate Normal from Reverse Holo on unseen cards and
@@ -29,12 +31,18 @@ MODEL_PATH = DATA_DIR / "foil_model.json"
 W, H = 630, 880
 # Art box of a modern card (fractions of the card) — rough, era-dependent
 ART = (0.08, 0.11, 0.92, 0.55)
-FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr"]   # all a model may use
+FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr", "box_corr"]   # all a model may use
 # set code box: bottom left (regulation mark, set code, number) — searched with
 # windows about the size of the box, where the catalog image has print
 CODE_BAND = (0.02, 0.88, 0.48, 0.99)          # x0, y0, x1, y1 (card fractions)
 CODE_WIN = (60, 30)                           # window (px at W×H)
 CODE_STEP = 6
+# the set code box itself (e.g. "SCR EN"), found in the catalog image on the set code row
+BOX_BAND = (0.03, 0.90, 0.40, 0.99)
+BOX_W, BOX_H = range(30, 57, 2), range(16, 31, 2)   # px at W×H (the box is ≈ 42×25)
+BOX_RING = 4                                  # what is around it, px
+BOX_SHIFT = 3                                 # alignment slack, px
+BOX_SEEN = 0.35                               # the photo's box needs this much of the catalog's contrast
 
 _orb = cv2.ORB_create(nfeatures=3000)
 _bf = cv2.BFMatcher(cv2.NORM_HAMMING)
@@ -139,24 +147,102 @@ def code_corr(photo: np.ndarray, ref: np.ndarray) -> float | None:
     return None if best is None else round(best, 3)
 
 
+def _rect(ii: np.ndarray, xa, ya, xb, yb):
+    return ii[yb, xb] - ii[ya, xb] - ii[yb, xa] + ii[ya, xa]
+
+
+def find_box(ref: np.ndarray) -> tuple[int, int, int, int] | None:
+    """
+    The set code box in a catalog image (W×H): a box-sized rectangle on the set
+    code row that is mostly one tone (dark, or light) with letters in it, while
+    what is around it isn't. → (x0, y0, x1, y1) px, or None (older cards have none).
+    """
+    g = cv2.GaussianBlur(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY), (0, 0), 0.8)
+    x0, y0, x1, y1 = (int(BOX_BAND[0] * W), int(BOX_BAND[1] * H), int(BOX_BAND[2] * W), int(BOX_BAND[3] * H))
+    t, _ = cv2.threshold(g[y0:y1, x0:x1], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    gf = g.astype(np.float64)
+    gi = cv2.integral(gf)
+    r = BOX_RING
+    ys, xs = np.mgrid[y0 + r:y1 - r, x0 + r:x1 - r]
+    best: tuple[float, tuple[int, int, int, int] | None] = (0.0, None)
+    for tone in (g < t, g > t):
+        tf = tone.astype(np.float64)
+        ti, tgi = cv2.integral(tf), cv2.integral(tf * gf)
+        for h in BOX_H:
+            for w in BOX_W:
+                ok = (ys + h + r <= y1) & (xs + w + r <= x1)
+                ya, xa = ys[ok], xs[ok]
+                if ya.size == 0:
+                    continue
+                xo, yo, xe, ye = xa - r, ya - r, xa + w + r, ya + h + r
+                n_in, n_ring = w * h, (w + 2 * r) * (h + 2 * r) - w * h
+                f_in = _rect(ti, xa, ya, xa + w, ya + h)
+                frac, frac_ring = f_in / n_in, (_rect(ti, xo, yo, xe, ye) - f_in) / n_ring
+                g_in = _rect(gi, xa, ya, xa + w, ya + h)
+                ring_mean = (_rect(gi, xo, yo, xe, ye) - g_in) / n_ring
+                tone_mean = _rect(tgi, xa, ya, xa + w, ya + h) / np.maximum(f_in, 1)
+                good = (frac >= 0.5) & (frac <= 0.85) & (np.abs(tone_mean - ring_mean) >= 50)
+                score = np.where(good, frac - frac_ring, 0)
+                k = int(np.argmax(score))
+                if score[k] > best[0]:
+                    best = (float(score[k]), (int(xa[k]), int(ya[k]), int(xa[k]) + w, int(ya[k]) + h))
+    return best[1] if best[0] >= 0.45 else None
+
+
+def box_corr(photo: np.ndarray, ref: np.ndarray) -> tuple[float | None, tuple[int, int, int, int] | None]:
+    """
+    The set code box of the photo (aligned, W×H) against the catalog image's:
+    ≈ +1 the same print, ≈ −1 the negative of it. → (correlation, box px) —
+    correlation None when there is no box or the photo is too blurred, dark or
+    washed out there to tell.
+    """
+    b = find_box(ref)
+    if b is None:
+        return None, None
+    s, r = BOX_SHIFT, BOX_RING - 1
+    x0, y0, x1, y1 = b[0] - r, b[1] - r, b[2] + r, b[3] + r
+    if x0 - s < 0 or y0 - s < 0 or x1 + s > W or y1 + s > H:
+        return None, b
+    gp = cv2.GaussianBlur(cv2.cvtColor(photo, cv2.COLOR_BGR2GRAY), (0, 0), 1.2).astype(np.float32)
+    gr = cv2.GaussianBlur(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY), (0, 0), 1.2).astype(np.float32)
+    tpl, area = gr[y0:y1, x0:x1], gp[y0 - s:y1 + s, x0 - s:x1 + s]
+    if float(area[s:-s, s:-s].std()) < BOX_SEEN * float(tpl.std()):
+        return None, b
+
+    def edges(im: np.ndarray) -> np.ndarray:
+        return cv2.magnitude(cv2.Sobel(im, cv2.CV_32F, 1, 0), cv2.Sobel(im, cv2.CV_32F, 0, 1))
+
+    # where the photo's box sits (edges look the same whichever way it is printed), then which way it is
+    at = cv2.matchTemplate(edges(area), edges(tpl), cv2.TM_CCOEFF_NORMED)
+    dy, dx = np.unravel_index(int(np.argmax(at)), at.shape)
+    i = r + 2                                  # just the inside: letters on the box, whatever the card around it
+    a = area[dy + i:dy + tpl.shape[0] - i, dx + i:dx + tpl.shape[1] - i]
+    c = tpl[i:-i, i:-i]
+    if float(a.std()) < 1e-3 or float(c.std()) < 1e-3:
+        return None, b
+    return round(float(np.corrcoef(a.ravel(), c.ravel())[0, 1]), 3), b
+
+
 def measure(photo: np.ndarray, ref: np.ndarray) -> dict | None:
-    """Photo vs catalog image (both W×H) → {"art", "frame", "code_corr", "inliers"} or None if they don't align."""
+    """Photo vs catalog image (both W×H) → {"art", "frame", "code_corr", "box_corr", "inliers"} or None if they don't align."""
     warped, inl = align(photo, ref)
     if warped is None:
         return None
     art, frame = regions(difference(match_light(warped, ref), ref))
-    return {"art": round(art, 2), "frame": round(frame, 2), "code_corr": code_corr(warped, ref), "inliers": inl}
+    return {"art": round(art, 2), "frame": round(frame, 2), "code_corr": code_corr(warped, ref),
+            "box_corr": box_corr(warped, ref)[0], "inliers": inl}
 
 
-def feature_values(art: float, frame: float, code: float | None = None) -> dict[str, float]:
-    """What a model may see (tools/foil_eval.py uses the same). No set code to compare = same print."""
+def feature_values(art: float, frame: float, code: float | None = None, box: float | None = None) -> dict[str, float]:
+    """What a model may see (tools/foil_eval.py uses the same). Nothing to compare = same print."""
     a, f = max(float(art), 0.1), max(float(frame), 0.1)
     return {"log_art": float(np.log(a)), "log_frame": float(np.log(f)), "log_frame_art": float(np.log(f / a)),
-            "code_corr": 1.0 if code is None else float(code)}
+            "code_corr": 1.0 if code is None else float(code), "box_corr": 1.0 if box is None else float(box)}
 
 
-def features(art: float, frame: float, code: float | None = None, names: list[str] | None = None) -> list[float]:
-    v = feature_values(art, frame, code)
+def features(art: float, frame: float, code: float | None = None, names: list[str] | None = None,
+             box: float | None = None) -> list[float]:
+    v = feature_values(art, frame, code, box)
     return [v[n] for n in (names or FEATURES)]
 
 
@@ -204,9 +290,9 @@ def save_model(m: dict, path: Path = MODEL_PATH) -> None:
     _cache.pop(str(path), None)
 
 
-def judge(m: dict, art: float, frame: float, code: float | None = None) -> dict:
+def judge(m: dict, art: float, frame: float, code: float | None = None, box: float | None = None) -> dict:
     """Reverse-holo score (logit, Reverse Holo vs Normal) and whether it is sure enough to ask."""
-    x = (np.array(features(art, frame, code, m["features"])) - np.array(m["mu"])) / np.array(m["sd"])
+    x = (np.array(features(art, frame, code, m["features"], box)) - np.array(m["mu"])) / np.array(m["sd"])
     z = np.append(x, 1.0) @ np.array(m["w"])
     score = float(z[1] - z[0])
     return {"score": round(score, 3), "hint": score >= float(m["threshold"])}
