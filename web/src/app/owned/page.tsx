@@ -90,6 +90,8 @@ export default function AllOwnedPage() {
           sets={sets}
           open={filtersOpen}
           onOpenChange={setFiltersOpen}
+          searchWarnings={data?.search_warnings}
+          searchSort={data?.search_sort}
         />
       </ListPageHeader>
 

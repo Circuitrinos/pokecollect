@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Enums, PokemonSet, catalogApi } from "@/lib/api";
+import { Collection, Enums, PokemonSet, SearchWarning, catalogApi, collectionApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { rarityOptionLabel } from "@/components/RarityBadge";
 import SearchableSelect, { SelectOption } from "@/components/SearchableSelect";
 import SortDirectionButton from "@/components/SortDirectionButton";
 import SortThenLine from "@/components/SortThenLine";
+import { SearchSyntaxHelp, SearchWarnings, appendTerm } from "@/components/SearchSyntax";
 import { useMe } from "@/lib/useMe";
 import { decodeThen, encodeThen, nextThen } from "@/lib/sortChain";
 import { useIsDesktop } from "@/lib/useIsDesktop";
@@ -27,6 +28,8 @@ export type Filters = {
   bild_status?: string;
   standard?: "legal" | "not_legal" | "unknown";
   regulation_mark?: string;
+  collection?: string;   // "any" | "none" | Sammlungs-ID
+  deck?: "in" | "none";
 };
 
 type Props = {
@@ -38,14 +41,17 @@ type Props = {
   // Props verwaltet die Komponente das Auf-/Zuklappen selbst und zeigt einen Toggle.
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  // Antwort der Kartenliste: nicht angewandte Suchbegriffe, Sortierung aus der Suche
+  searchWarnings?: SearchWarning[] | null;
+  searchSort?: string | null;
 };
 
 const GENERATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-const CARD_SORTS = ["pokedex_nr", "set", "wert", "regulation", "hinzugefuegt_am"] as const;
+const CARD_SORTS = ["pokedex_nr", "set", "wert", "regulation", "hinzugefuegt_am", "collection"] as const;
 // Regulation Marks gibt es seit Schwert & Schild (D); neueste zuerst
 const REG_FILTER_MARKS = ["L", "K", "J", "I", "H", "G", "F", "E", "D"];
 
-export default function FilterSidebar({ filters, onChange, enums, sets, open, onOpenChange }: Props) {
+export default function FilterSidebar({ filters, onChange, enums, sets, open, onOpenChange, searchWarnings, searchSort }: Props) {
   const { t } = useI18n();
   const controlled = open !== undefined;
   const [internalOpen, setInternalOpen] = useState(false);
@@ -60,6 +66,10 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
   useEffect(() => {
     catalogApi.illustrators().then((r) => setIllustrators(r.data)).catch(() => {});
   }, []);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  useEffect(() => {
+    collectionApi.list().then((r) => setCollections(r.data)).catch(() => {});
+  }, []);
   const isAdmin = useMe()?.is_admin ?? false;
   const update = (key: keyof Filters, value: unknown) =>
     onChange({ ...filters, [key]: value === "" ? undefined : value });
@@ -72,9 +82,9 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
     onChange({ ...filters, sort: next, reverse: false, then: encodeThen(then) || undefined });
   };
   const sortLabel = (k: string) => ({ pokedex_nr: t.filter_sort_pokedex, set: t.filter_sort_set, wert: t.filter_sort_value,
-    regulation: t.filter_sort_regulation, hinzugefuegt_am: t.filter_sort_added } as Record<string, string>)[k] ?? k;
+    regulation: t.filter_sort_regulation, hinzugefuegt_am: t.filter_sort_added, collection: t.filter_sort_collection } as Record<string, string>)[k] ?? k;
 
-  const activeCount = (["besessen", "erste_edition", "prize_pack", "generation", "set", "seltenheit", "sprache", "illustrator", "search", "bild_status", "standard", "regulation_mark"] as const)
+  const activeCount = (["besessen", "erste_edition", "prize_pack", "generation", "set", "seltenheit", "sprache", "illustrator", "search", "bild_status", "standard", "regulation_mark", "collection", "deck"] as const)
     .filter((k) => filters[k] !== undefined && filters[k] !== "").length;
 
   const illuOptions: SelectOption[] = useMemo(
@@ -96,15 +106,20 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
       )}
 
       <div className={`${actualOpen ? "grid" : "hidden"} grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 ${controlled ? "" : "mt-3"} items-end`}>
-      <div>
-        <label className="block text-gray-400 mb-1">{t.filter_search}</label>
+      <div className="col-span-2 md:col-span-1 lg:col-span-2">
+        <label className="flex items-center gap-1.5 text-gray-400 mb-1">
+          {t.filter_search}
+          <SearchSyntaxHelp onPick={(ex) => update("search", appendTerm(filters.search, ex))} />
+        </label>
         <input
           type="text"
           value={filters.search ?? ""}
           onChange={(e) => update("search", e.target.value)}
           placeholder={t.filter_search_placeholder}
+          data-testid="filter-search"
           className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white placeholder-gray-500"
         />
+        <SearchWarnings warnings={searchWarnings} />
       </div>
 
       <div>
@@ -117,6 +132,37 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
           <option value="">{t.filter_all_cards}</option>
           <option value="true">{t.filter_owned}</option>
           <option value="false">{t.filter_not_owned}</option>
+        </select>
+      </div>
+
+      <div>
+        <label htmlFor="filter_collection" className="block text-gray-400 mb-1">{t.filter_collection}</label>
+        <select
+          id="filter_collection"
+          value={filters.collection ?? ""}
+          onChange={(e) => update("collection", e.target.value)}
+          data-testid="filter-collection"
+          className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
+        >
+          <option value="">{t.filter_all}</option>
+          <option value="any">{t.filter_collection_any}</option>
+          <option value="none">{t.filter_collection_none}</option>
+          {collections.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label htmlFor="filter_deck" className="block text-gray-400 mb-1">{t.filter_deck}</label>
+        <select
+          id="filter_deck"
+          value={filters.deck ?? ""}
+          onChange={(e) => update("deck", e.target.value)}
+          data-testid="filter-deck"
+          className="w-full bg-pokemon-card border border-gray-700 rounded px-2 py-1.5 text-white"
+        >
+          <option value="">{t.filter_all}</option>
+          <option value="in">{t.filter_deck_in}</option>
+          <option value="none">{t.filter_deck_none}</option>
         </select>
       </div>
 
@@ -266,11 +312,13 @@ export default function FilterSidebar({ filters, onChange, enums, sets, open, on
           <option value="wert">{t.filter_sort_value}</option>
           <option value="regulation">{t.filter_sort_regulation}</option>
           <option value="hinzugefuegt_am">{t.filter_sort_added}</option>
+          <option value="collection">{t.filter_sort_collection}</option>
         </select>
         <SortDirectionButton sort={currentSort} reverse={Boolean(filters.reverse)}
           onChange={(r) => onChange({ ...filters, reverse: r })} />
         </div>
         <SortThenLine steps={thenSteps} label={sortLabel} onClear={() => onChange({ ...filters, then: undefined })} className="mt-1" />
+        {searchSort && <p className="mt-1 text-[11px] text-blue-300" data-testid="search-sort">↕ {t.filter_sort_from_search}: {sortLabel(searchSort)}</p>}
       </div>
 
       <button type="button"

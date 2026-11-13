@@ -163,6 +163,19 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
                   <RarityBadge rarity={card.seltenheit} language={card.sprache} size="sm" />
                 </div>
 
+                {/* Wo die Karte steckt: Sammlungen und Deck (nur in Kartenlisten mitgeliefert) */}
+                {Array.isArray(card.sammlungen) && (card.sammlungen.length > 0 || card.deck_name || card.besessen) && (
+                  <div className="flex items-center gap-1 text-[10px] leading-tight min-w-0" data-testid="card-where"
+                    title={[...card.sammlungen.map((c) => `📁 ${c.name}`), card.deck_name ? `🃏 ${card.deck_name}` : ""].filter(Boolean).join("\n") || t.card_no_collection}>
+                    {card.sammlungen.length > 0 ? (
+                      <span className="truncate text-sky-300/90">📁 {card.sammlungen.map((c) => c.name).join(", ")}</span>
+                    ) : card.besessen ? (
+                      <span className="truncate italic text-amber-400/80">{t.card_no_collection}</span>
+                    ) : null}
+                    {card.deck_name && <span className="truncate text-pink-300/90 shrink-0 max-w-[55%] ml-auto">🃏 {card.deck_name}</span>}
+                  </div>
+                )}
+
                 {/* Zeile 3: Preis (links) | Sprache (mitte) | Status-Punkte (rechts) */}
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-yellow-400">

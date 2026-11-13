@@ -230,6 +230,8 @@ class CardResponse(CardBase):
     # Deck, in dem die Karte steckt (höchstens eines)
     deck_id: Optional[int] = None
     deck_name: Optional[str] = None
+    # Sammlungen der Karte (nur in Kartenlisten befüllt; None = nicht abgefragt)
+    sammlungen: Optional[list["CollectionRef"]] = None
     # TCGdex-Anreicherung
     tcgdex_card_id: Optional[str] = None
     set_id: Optional[str] = None
@@ -281,12 +283,24 @@ class PreisHistorieResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CollectionRef(BaseModel):
+    id: int
+    name: str
+
+
+class SearchWarning(BaseModel):
+    term: str
+    reason: str          # "unsupported" (Limitless-Feld ohne Daten hier) | "unknown" | "value" | "types"
+
+
 class CardListResponse(BaseModel):
     items: list[CardResponse]
     total: int
     page: int
     limit: int
     pages: int
+    search_warnings: list[SearchWarning] = []    # Suchbegriffe, die nicht angewandt wurden
+    search_sort: Optional[str] = None            # Sortierung aus der Suche (sort:…)
 
 
 class StatsResponse(BaseModel):
@@ -370,3 +384,6 @@ class RematchApply(BaseModel):
     tcgdex_card_id: str = Field(..., min_length=1, max_length=64)
     fields: Optional[list[str]] = Field(None, max_length=20)   # nur diese Felder (None = alle vorgeschlagenen)
     folierung: Optional[str] = Field(None, max_length=40)
+
+
+CardResponse.model_rebuild()

@@ -272,3 +272,36 @@ def test_card_number_from_two_fields_is_stored_together(client):
     card = client.post(f"{API}/cards", json={"kartenname": "Rm split", "karten_nr": "117 /132"}).json()
     assert card["karten_nr"] == "117/132"
     assert client.put(f"{API}/cards/{card['id']}", json={"karten_nr": "/132"}).json()["karten_nr"] is None
+
+
+def test_copies_share_the_scan_photo_and_placeholders_are_no_gaps(client, catalog, monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+
+    from app.services import card_photos
+
+    monkeypatch.setattr(settings, "images_dir", str(tmp_path / "images"))
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "first.jpg").write_bytes(b"\xff\xd8 photo")
+    now = datetime.utcnow()
+    base = dict(tcgdex_card_id=f"{P}1-117", set_id=f"{P}1", karten_nr="117/132", illustrator="Test Artist",
+                seltenheit="Uncommon", set_edition="Test Forest (TRA)", folierung="Normal",
+                bild_karte_url="https://assets.tcgdex.net/x.webp", hinzugefuegt_am=now)
+    first = _card(kartenname="Forest of Testing", bild_scan_pfad="images/first.jpg", bild_original_pfad="images/orig.jpg", **base)
+    second = _card(kartenname="Forest of Testing", **base)
+    later = _card(kartenname="Forest of Testing", **{**base, "hinzugefuegt_am": now + timedelta(days=3)})   # andere Speicherung
+    placeholder = _card(kartenname="Rm placeholder", englischer_name="Dreepy", besessen=False, pokedex_nr=885, sprache="DE")
+
+    items = {i["card_id"]: i for i in client.get(f"{API}/card-gaps", params={"limit": 2000}).json()["items"]}
+    assert items[second]["gaps"] == ["photo"] and first not in items and later not in items
+    assert placeholder not in items                                   # Pokédex-Platzhalter sind keine Lücke
+    assert client.post(f"{API}/card-gaps/copy-photos").json()["shared"] >= 1
+    got = _get(second)
+    assert got.bild_scan_pfad == f"images/card_{second}_scan.jpg" and got.bild_original_pfad is None
+    assert (tmp_path / "images" / f"card_{second}_scan.jpg").read_bytes() == b"\xff\xd8 photo"
+    assert _get(later).bild_scan_pfad is None
+
+    # beim Speichern: die Scan-Seite gibt das Foto gleich weiter
+    third = _card(kartenname="Forest of Testing", **base)
+    assert client.post(f"{API}/cards/{first}/share-photo", json={"card_ids": [third, second]}).json() == {"shared": 1}
+    assert _get(third).bild_scan_pfad == f"images/card_{third}_scan.jpg"
+    assert card_photos.photoless_copies(SessionLocal()).get(third) is None

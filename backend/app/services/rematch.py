@@ -41,7 +41,7 @@ _ONLY_FILL = {"pokedex_nr", "dex_id"}
 # Lücken fürs Admin-Werkzeug: Feld → Lücke
 _GAP_OF = {"karten_nr": "number", "illustrator": "illustrator", "seltenheit": "rarity",
            "set_edition": "set", "englischer_name": "english_name", "bild": "image"}
-GAPS = ("print", "number", "illustrator", "rarity", "set", "english_name", "foiling", "image", "differs")
+GAPS = ("print", "number", "illustrator", "rarity", "set", "english_name", "foiling", "image", "photo", "differs")
 FOILS = ("Normal", "Holo", "Reverse Holo")
 
 
@@ -356,9 +356,16 @@ def card_gaps(db: Session, card: PokemonCard, row: Optional[TcgdexCatalog], sets
 
 
 def scan_gaps(db: Session) -> list[tuple[PokemonCard, list[str]]]:
-    """Alle Karten aller Konten mit mindestens einer Lücke (Admin-Werkzeug)."""
-    cards = db.scalars(select(PokemonCard).order_by(PokemonCard.id.desc())
+    """Alle eigenen und gewünschten Karten aller Konten mit mindestens einer Lücke
+    (Admin-Werkzeug). Pokédex-Platzhalter (weder besessen noch gewünscht) zählen nicht.
+    „photo": ein Exemplar derselben Speicherung hat ein Foto, dieses nicht."""
+    from app.services import card_photos
+
+    cards = db.scalars(select(PokemonCard)
+                       .where(PokemonCard.besessen.is_(True) | PokemonCard.wunschliste.is_(True))
+                       .order_by(PokemonCard.id.desc())
                        .execution_options(all_users=True)).all()
+    photoless = card_photos.photoless_copies(db, [c for c in cards if c.besessen])
     ids = {c.tcgdex_card_id for c in cards if c.tcgdex_card_id}
     rows = {r.card_id.upper(): r for r in db.scalars(select(TcgdexCatalog).where(TcgdexCatalog.card_id.in_(ids))).all()} if ids else {}
     if ids:
@@ -371,6 +378,8 @@ def scan_gaps(db: Session) -> list[tuple[PokemonCard, list[str]]]:
     out = []
     for c in cards:
         gaps = card_gaps(db, c, rows.get((c.tcgdex_card_id or "").upper()), sets)
+        if c.id in photoless:
+            gaps = [g for g in GAPS if g in gaps or g == "photo"]
         if gaps:
             out.append((c, gaps))
     return out

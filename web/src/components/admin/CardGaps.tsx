@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import toast from "react-hot-toast";
 import { API_BASE, CardGap, CardGapItem, CardGapOverview, cardApi, cardGapsApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { imageUrl, spiegelUrl } from "@/lib/utils";
@@ -61,6 +62,20 @@ export default function CardGaps() {
     load();
   };
 
+  const [copying, setCopying] = useState(false);
+  const copyPhotos = async () => {
+    setCopying(true);
+    try {
+      const r = await cardGapsApi.copyPhotos();
+      toast.success(t.gaps_photos_done(r.data.shared));
+      load();
+    } catch {
+      toast.error(t.form_save_error);
+    } finally {
+      setCopying(false);
+    }
+  };
+
   const counts = data?.counts;
   const chips = (Object.keys(counts ?? {}) as CardGap[]).filter((g) => (counts?.[g] ?? 0) > 0);
 
@@ -100,6 +115,13 @@ export default function CardGaps() {
           ) : (
             <button type="button" onClick={() => void runAll()} data-testid="gaps-run-all"
               className="rounded bg-pokemon-blue px-2 py-1 text-white hover:opacity-90">↻ {t.gaps_run_all}</button>
+          )}
+          {(counts?.photo ?? 0) > 0 && !run && (
+            <button type="button" onClick={() => void copyPhotos()} disabled={copying} data-testid="gaps-copy-photos"
+              title={t.gaps_photos_hint}
+              className="rounded bg-gray-800 px-2 py-1 text-gray-200 hover:text-white disabled:opacity-40">
+              📷 {t.gaps_photos(counts?.photo ?? 0)}
+            </button>
           )}
         </div>
       )}

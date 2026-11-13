@@ -100,6 +100,8 @@ export type Card = {
     first_edition: boolean | null; patterns: string[] } | null;
   deck_id?: number | null;            // Deck, in dem die Karte steckt (höchstens eines)
   deck_name?: string | null;
+  // Sammlungen der Karte (nur in Kartenlisten; undefined = nicht abgefragt)
+  sammlungen?: { id: number; name: string }[] | null;
   // TCGdex-Anreicherung (v0.7.0)
   tcgdex_card_id: string | null;
   set_id: string | null;
@@ -123,12 +125,15 @@ export type Card = {
   daten_quelle?: string | null;
 };
 
+export type SearchWarning = { term: string; reason: "unsupported" | "unknown" | "value" | "types" };
 export type CardListResponse = {
   items: Card[];
   total: number;
   page: number;
   limit: number;
   pages: number;
+  search_warnings?: SearchWarning[];   // Suchbegriffe, die nicht angewandt wurden
+  search_sort?: string | null;         // Sortierung aus der Suche (sort:…)
 };
 
 export type StatsResponse = {
@@ -304,6 +309,8 @@ export const cardApi = {
   },
 
   // Scan-Foto nur für die Bilderkennung – die Karte zeigt weiter das Katalogbild
+  // Die übrigen Exemplare einer Aufnahme bekommen das Scan-Foto dieser Karte
+  sharePhoto: (id: number, cardIds: number[]) => api.post<{ shared: number }>(`/cards/${id}/share-photo`, { card_ids: cardIds }),
   uploadScanPhoto: (id: number, file: File, original: File, quad?: number[][] | null) => {
     const form = new FormData();
     form.append("file", file);
@@ -687,7 +694,7 @@ export type RematchProposal = {
   foil: { current: string | null; options: string[]; suggested: string | null; why: "only" | "photo" | null; photo_hint: boolean | null };
   alternatives: RematchPrint[];
 };
-export type CardGap = "print" | "number" | "illustrator" | "rarity" | "set" | "english_name" | "foiling" | "image" | "differs";
+export type CardGap = "print" | "number" | "illustrator" | "rarity" | "set" | "english_name" | "foiling" | "image" | "photo" | "differs";
 export type CardGapItem = {
   card_id: number;
   own: boolean;
@@ -709,6 +716,7 @@ export type CardGapOverview = { total: number; counts: Record<CardGap, number>; 
 export const cardGapsApi = {
   overview: (gap: CardGap | null, owner: "all" | "mine" | "others" = "all") =>
     api.get<CardGapOverview>("/card-gaps", { params: { ...(gap ? { gap } : {}), owner } }),
+  copyPhotos: () => api.post<{ shared: number }>("/card-gaps/copy-photos"),
 };
 
 export const scanQualityApi = {

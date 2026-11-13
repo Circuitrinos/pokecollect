@@ -1133,10 +1133,14 @@ export default function ScanPage() {
           ?? (b && b.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null);
         if (c.usePhoto) await cardApi.uploadImage(ids[k], file, original, quad);
         else await cardApi.uploadScanPhoto(ids[k], file, original, quad);  // nur zum Lernen
+        const extras = (copyIds[k] ?? []).filter((id) => id !== ids[k]);
         if (c.usePhoto) {
-          for (const extra of (copyIds[k] ?? []).filter((id) => id !== ids[k])) {
+          for (const extra of extras) {
             await cardApi.uploadImage(extra, file).catch(() => {});
           }
+        } else if (extras.length) {
+          // weitere Exemplare bekommen das Scan-Foto auch (sonst gelten sie als ohne Foto)
+          await cardApi.sharePhoto(ids[k], extras).catch(() => {});
         }
       } catch { /* Foto-Upload optional */ }
     }));

@@ -4,7 +4,7 @@ import math
 from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from sqlalchemy import func, select, update, or_, and_, cast, false, String
+from sqlalchemy import func, select, update, or_, and_, false
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -26,10 +26,8 @@ from app.services.card_images import (
     store_scan_photo,
 )
 from app.services.stats import collect_stats
-from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
-from app.models.pokemon_set import PokemonSet
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.services.catalog_lookup import catalog_row_for
 from app.services import card_bulk, image_fallback, pokemon_com, regulation, scan_export, sorting
@@ -39,7 +37,7 @@ from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
 from app.schemas.card import (
     CardCreate, CardListResponse, CardResponse, CardUpdate,
-    EnumsResponse, RematchApply, RematchChange, RematchFoil, RematchPrint, RematchProposal,
+    CollectionRef, EnumsResponse, RematchApply, RematchChange, RematchFoil, RematchPrint, RematchProposal,
     StampUpdate, StatsResponse,
     SELTENHEIT_VALUES, KARTENVERSION_VALUES, FOLIERUNG_VALUES, MUSTER_VALUES,
     SPRACHE_VALUES, ZUSTAND_VALUES, PRIORITAET_VALUES,
@@ -57,8 +55,18 @@ _CARD_SORT_KEYS = {
     "wert": [(PokemonCard.wert_eur, False)],
     "hinzugefuegt_am": [(PokemonCard.hinzugefuegt_am, False)],
     "regulation": [(PokemonCard.regulation_mark, True)],   # neuestes Zeichen zuerst
+    # Sammlung (alphabetisch erste), darin der Binder-Platz; Karten ohne Sammlung am Ende
+    "collection": [(select(Collection.name).select_from(collection_cards.join(Collection, Collection.id == collection_cards.c.collection_id))
+                    .where(collection_cards.c.card_id == PokemonCard.id)
+                    .order_by(Collection.name, collection_cards.c.position).limit(1)
+                    .correlate(PokemonCard).scalar_subquery(), False),
+                   (select(collection_cards.c.position).select_from(collection_cards.join(Collection, Collection.id == collection_cards.c.collection_id))
+                    .where(collection_cards.c.card_id == PokemonCard.id)
+                    .order_by(Collection.name, collection_cards.c.position).limit(1)
+                    .correlate(PokemonCard).scalar_subquery(), False)],
 }
-_CARD_SORT_THEN = {"regulation": ["set"]}   # gleiches Zeichen → Set & Nummer
+_CARD_SORT_THEN = {"regulation": ["set"], "collection": ["set"]}   # gleicher Rang → Set & Nummer
+_SORT_NAMES = ("pokedex_nr", "wert", "hinzugefuegt_am", "set", "regulation", "collection")
 
 
 def _card_or_404(card_id: int, db: Session) -> PokemonCard:
@@ -111,10 +119,13 @@ def list_cards(
     search: Optional[str] = None,
     pokedex_nr: Optional[int] = None,
     bild_status: Optional[str] = Query(None, pattern="^(eigenes_foto|externe_url|platzhalter|kein_export)$"),
-    sort: str = Query("pokedex_nr", pattern="^(pokedex_nr|wert|hinzugefuegt_am|set|regulation)$"),
+    # in einem Deck / in keinem; in irgendeiner Sammlung / in keiner / in dieser (ID)
+    deck: Optional[str] = Query(None, pattern="^(in|none)$"),
+    collection: Optional[str] = Query(None, pattern=r"^(any|none|\d{1,9})$"),
+    sort: str = Query("pokedex_nr", pattern="^(" + "|".join(_SORT_NAMES) + ")$"),
     reverse: bool = False,   # Reihenfolge umkehren; fehlende Werte bleiben am Ende
     # Untersortierungen: zuvor gewählte Sortierungen, z.B. "set,-wert"
-    then: str = Query("", max_length=60, pattern=sorting.then_pattern(("pokedex_nr", "wert", "hinzugefuegt_am", "set", "regulation"))),
+    then: str = Query("", max_length=60, pattern=sorting.then_pattern(_SORT_NAMES)),
     # #117: ohne Obergrenze sprengte (page-1)*limit den OFFSET (bigint) → 500
     page: int = Query(1, ge=1, le=PG_INTEGER_MAX),
     limit: int = Query(50, ge=1, le=5000),  # Binder-Ansicht lädt den ganzen Pokédex auf einmal
@@ -195,30 +206,29 @@ def list_cards(
         q = q.where(PokemonCard.illustrator.ilike(f"%{illustrator}%"))
     if pokedex_nr is not None:
         q = q.where(PokemonCard.pokedex_nr == pokedex_nr)
+    search_warnings: list = []
+    search_sort = None
     if search:
-        # Kurzcode „PFL 001" → Set-Kürzel + Kartennummer, aber nur wenn das
-        # Kürzel ein bekanntes Set ist (sonst kapert es die Namenssuche).
-        kc = parse_kurzcode(search)
-        kc_hit = False
-        if kc:
-            is_set = db.scalar(select(PokemonSet.code).where(PokemonSet.code == kc.code))
-            if is_set:
-                q = q.where(
-                    or_(
-                        PokemonCard.set_edition.ilike(f"%({kc.code})%"),
-                        PokemonCard.set_edition.ilike(kc.code),
-                    ),
-                    func.ltrim(func.split_part(PokemonCard.karten_nr, "/", 1), "0") == kc.nr,
-                )
-                kc_hit = True
-        if not kc_hit:
-            term = f"%{search}%"
-            # Suche nach Name UND partieller Pokédex-Nr. (z.B. "2" findet #2, #23, #253 …)
-            q = q.where(
-                PokemonCard.kartenname.ilike(term)
-                | PokemonCard.englischer_name.ilike(term)
-                | cast(PokemonCard.pokedex_nr, String).ilike(term)
-            )
+        # Suchsyntax wie bei Limitless TCG (services/card_search.py); „PFL 001" bleibt
+        # Set-Kürzel + Kartennummer, reiner Text sucht im Namen und in der Pokédex-Nr.
+        from app.services import card_search
+
+        conds, parsed = card_search.conditions(db, search)
+        q = q.where(*conds) if conds else q
+        search_warnings, search_sort = parsed.warnings, parsed.sort
+        if search_sort:
+            sort, reverse, then = search_sort, False, ""
+    if deck == "in":
+        q = q.where(PokemonCard.deck_id.isnot(None))
+    elif deck == "none":
+        q = q.where(PokemonCard.deck_id.is_(None))
+    if collection == "any":
+        q = q.where(PokemonCard.id.in_(select(collection_cards.c.card_id)))
+    elif collection == "none":
+        q = q.where(~PokemonCard.id.in_(select(collection_cards.c.card_id)))
+    elif collection:
+        q = q.where(PokemonCard.id.in_(select(collection_cards.c.card_id)
+                                       .where(collection_cards.c.collection_id == int(collection))))
     if bild_status == "eigenes_foto":
         q = q.where(PokemonCard.bild_karte_pfad.isnot(None))
     elif bild_status == "externe_url":
@@ -240,12 +250,31 @@ def list_cards(
     items = db.scalars(q.offset((page - 1) * limit).limit(limit)).all()
 
     return CardListResponse(
-        items=items,
+        items=_with_collections(db, items),
         total=total,
         page=page,
         limit=limit,
         pages=math.ceil(total / limit) if total else 1,
+        search_warnings=search_warnings,
+        search_sort=search_sort,
     )
+
+
+def _with_collections(db: Session, cards) -> list[CardResponse]:
+    """Kartenliste mit den Sammlungen jeder Karte (eine Abfrage für die ganze Seite)."""
+    out = [CardResponse.model_validate(c) for c in cards]
+    ids = [c.id for c in cards]
+    by_card: dict[int, list] = {i: [] for i in ids}
+    if ids:
+        rows = db.execute(select(collection_cards.c.card_id, Collection.id, Collection.name)
+                          .join(Collection, Collection.id == collection_cards.c.collection_id)
+                          .where(collection_cards.c.card_id.in_(ids))
+                          .order_by(Collection.name)).all()
+        for card_id, cid, name in rows:
+            by_card[card_id].append(CollectionRef(id=cid, name=name))
+    for r in out:
+        r.sammlungen = by_card.get(r.id, [])
+    return out
 
 
 def catalog_variants(row: TcgdexCatalog) -> dict:
@@ -841,6 +870,25 @@ def scan_check(card_id: int, db: Session = Depends(get_db)):
         "suggested_quad": json.loads(row.suggested_quad) if row.suggested_quad else None,
         "checked_at": row.checked_at.isoformat() if row.checked_at else None,
     }
+
+
+class SharePhotoRequest(BaseModel):
+    card_ids: list[int] = Field(..., min_length=1, max_length=60)   # die anderen Exemplare
+
+
+@router.post("/{card_id}/share-photo")
+def share_photo(card_id: int, req: SharePhotoRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Die übrigen Exemplare einer Aufnahme bekommen das Scan-Foto dieser Karte (nur die
+    ohne eigenes Foto; das Originalfoto bleibt hier). → {"shared": Anzahl}."""
+    from app.services import card_photos
+
+    card = _card_or_404(card_id, db)
+    targets = db.scalars(select(PokemonCard).where(PokemonCard.id.in_(req.card_ids))).all()
+    n = card_photos.share(db, card, targets)
+    db.commit()
+    if n and card.tcgdex_card_id:
+        background_tasks.add_task(local_match.poke_learn, settings.matcher_url)
+    return {"shared": n}
 
 
 @router.post("/{card_id}/scan-photo", response_model=CardResponse)

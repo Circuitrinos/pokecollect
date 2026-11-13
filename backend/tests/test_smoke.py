@@ -118,7 +118,7 @@ def test_list_pagination_shape(client):
     r = client.get("/api/v1/cards", params={"page": 1, "limit": 5})
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"items", "total", "page", "limit", "pages"}
+    assert set(body) == {"items", "total", "page", "limit", "pages", "search_warnings", "search_sort"}
     assert body["limit"] == 5
 
 

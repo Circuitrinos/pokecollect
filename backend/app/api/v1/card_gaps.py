@@ -1,10 +1,12 @@
 """Admin: Karten mit Lücken finden (alle Konten), um sie neu abzugleichen.
 
-GET /card-gaps            Zähler je Lücke und die Karten (gap=…: nur diese Lücke)
+GET  /card-gaps               Zähler je Lücke und die Karten (gap=…: nur diese Lücke)
+POST /card-gaps/copy-photos   Exemplare ohne Foto bekommen das ihrer Speicherung (Lücke „photo")
 
 Lücken (services/rematch.py): print (kein Katalog-Druck), number (fehlt / ohne
 Nenner), illustrator, rarity, set, english_name, foiling (eigene Karte ohne
-Foliierung), image (kein Bild), differs (steht anders da als im verknüpften Druck).
+Foliierung), image (kein Bild), photo (Exemplar ohne das Foto seiner Speicherung),
+differs (steht anders da als im verknüpften Druck). Pokédex-Platzhalter zählen nicht.
 Neu abgeglichen wird je Karte über GET/POST /cards/{id}/rematch.
 """
 from collections import Counter
@@ -17,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_admin
 from app.auth_user import AuthUser
 from app.database import get_db
+from app.models.card import PokemonCard
 from app.models.user import User
 from app.services import rematch
 from app.services.bild_spiegel import spiegel_pfad
@@ -53,3 +56,16 @@ def overview(
         })
     return {"total": len(found), "counts": {g: counts.get(g, 0) for g in rematch.GAPS},
             "shown": len(items), "matching": len(picked), "items": items}
+
+
+@router.post("/copy-photos")
+def copy_photos(db: Session = Depends(get_db)):
+    """Allen Exemplaren ohne Foto das Scan-Foto ihres Exemplars aus derselben Speicherung geben."""
+    from app.services import card_photos
+
+    pairs = card_photos.photoless_copies(db)
+    cards = {c.id: c for c in db.scalars(select(PokemonCard).where(PokemonCard.id.in_(list(pairs)))
+                                        .execution_options(all_users=True)).all()} if pairs else {}
+    n = sum(card_photos.share(db, src, [cards[cid]]) for cid, src in pairs.items() if cid in cards)
+    db.commit()
+    return {"shared": n}
