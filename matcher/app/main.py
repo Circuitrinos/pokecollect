@@ -678,7 +678,7 @@ def _foil_request(photo: bytes, reference: bytes) -> dict:
         m = foil.measure(img, ref)
     if m is None:
         return {"model": True, "aligned": False}
-    return {"model": True, "aligned": True, **m, **foil.judge(model, m["art"], m["frame"])}
+    return {"model": True, "aligned": True, **m, **foil.judge(model, m["art"], m["frame"], m.get("code_corr"))}
 
 
 @app.get("/foil/model")
@@ -686,7 +686,8 @@ def foil_model() -> dict:
     m = foil.load_model()
     if m is None:
         return {"exists": False}
-    return {"exists": True, **{k: m.get(k) for k in ("precision", "recall", "threshold", "trained_on", "saved_at")}}
+    return {"exists": True, **{k: m.get(k) for k in ("precision", "recall", "threshold", "trained_on", "saved_at",
+                                                     "features")}}
 
 
 @app.put("/foil/model")

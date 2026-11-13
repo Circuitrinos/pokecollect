@@ -4,6 +4,12 @@ even out the lighting and subtract — what is left is mostly foil. A reverse
 holo lights up the frame around the art box, a holo the art, a plain card
 neither (if the photo caught the light).
 
+Newer sets (Mega Evolution era, e.g. Chaos Rising) also print the set code box
+inverted on foil cards (holo and reverse holo): dark letters on a light box
+instead of light on dark. That doesn't depend on the light at all — code_corr
+compares the set-code corner of the photo with the catalog image: ≈ +1 the
+same print, ≈ −1 the negative of it.
+
 tools/holo_diff.py runs this over the scan dataset, tools/foil_eval.py tests
 how well the numbers separate Normal from Reverse Holo on unseen cards and
 saves a small model (foil_model.json, in the data volume); with a model the
@@ -23,7 +29,12 @@ MODEL_PATH = DATA_DIR / "foil_model.json"
 W, H = 630, 880
 # Art box of a modern card (fractions of the card) — rough, era-dependent
 ART = (0.08, 0.11, 0.92, 0.55)
-FEATURES = ["log_art", "log_frame", "log_frame_art"]
+FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr"]   # all a model may use
+# set code box: bottom left (regulation mark, set code, number) — searched with
+# windows about the size of the box, where the catalog image has print
+CODE_BAND = (0.02, 0.88, 0.48, 0.99)          # x0, y0, x1, y1 (card fractions)
+CODE_WIN = (60, 30)                           # window (px at W×H)
+CODE_STEP = 6
 
 _orb = cv2.ORB_create(nfeatures=3000)
 _bf = cv2.BFMatcher(cv2.NORM_HAMMING)
@@ -102,19 +113,51 @@ def regions(diff: np.ndarray) -> tuple[float, float]:
     return float(art.mean()), float(frame_sum / max(1, frame_n))
 
 
+def code_corr(photo: np.ndarray, ref: np.ndarray) -> float | None:
+    """
+    Set code box of the aligned photo against the catalog image: the lowest
+    correlation of the windows in the set-code corner where the catalog image
+    has print. ≈ +1 same print, clearly negative = inverted (foil print of a
+    newer set). None when the corner has no print to compare.
+    """
+    gp = cv2.GaussianBlur(cv2.cvtColor(photo, cv2.COLOR_BGR2GRAY), (0, 0), 1.0).astype(np.float32)
+    gr = cv2.GaussianBlur(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY), (0, 0), 1.0).astype(np.float32)
+    x0, y0, x1, y1 = (int(CODE_BAND[0] * W), int(CODE_BAND[1] * H), int(CODE_BAND[2] * W), int(CODE_BAND[3] * H))
+    ww, wh = CODE_WIN
+    best = None
+    for y in range(y0, y1 - wh + 1, CODE_STEP):
+        for x in range(x0, x1 - ww + 1, CODE_STEP):
+            r = gr[y:y + wh, x:x + ww]
+            if r.std() < 22:                      # no print here in the catalog image
+                continue
+            p = gp[y:y + wh, x:x + ww]
+            if p.std() < 3:                       # flat in the photo (glare): no evidence either way
+                continue
+            c = float(np.corrcoef(r.ravel(), p.ravel())[0, 1])
+            if best is None or c < best:
+                best = c
+    return None if best is None else round(best, 3)
+
+
 def measure(photo: np.ndarray, ref: np.ndarray) -> dict | None:
-    """Photo vs catalog image (both W×H) → {"art", "frame", "inliers"} or None if they don't align."""
+    """Photo vs catalog image (both W×H) → {"art", "frame", "code_corr", "inliers"} or None if they don't align."""
     warped, inl = align(photo, ref)
     if warped is None:
         return None
     art, frame = regions(difference(match_light(warped, ref), ref))
-    return {"art": round(art, 2), "frame": round(frame, 2), "inliers": inl}
+    return {"art": round(art, 2), "frame": round(frame, 2), "code_corr": code_corr(warped, ref), "inliers": inl}
 
 
-def features(art: float, frame: float) -> list[float]:
-    """What the model sees (tools/foil_eval.py uses the same)."""
+def feature_values(art: float, frame: float, code: float | None = None) -> dict[str, float]:
+    """What a model may see (tools/foil_eval.py uses the same). No set code to compare = same print."""
     a, f = max(float(art), 0.1), max(float(frame), 0.1)
-    return [float(np.log(a)), float(np.log(f)), float(np.log(f / a))]
+    return {"log_art": float(np.log(a)), "log_frame": float(np.log(f)), "log_frame_art": float(np.log(f / a)),
+            "code_corr": 1.0 if code is None else float(code)}
+
+
+def features(art: float, frame: float, code: float | None = None, names: list[str] | None = None) -> list[float]:
+    v = feature_values(art, frame, code)
+    return [v[n] for n in (names or FEATURES)]
 
 
 # ── model (tools/foil_eval.py --save) ───────────────────────────────────────
@@ -123,12 +166,14 @@ _cache: dict[str, tuple[float, dict]] = {}
 
 
 def valid_model(m) -> bool:
+    """A model from foil_eval.py --save: any subset of FEATURES (older models lack code_corr)."""
     try:
-        n = len(FEATURES)
-        return (isinstance(m, dict) and m.get("features") == FEATURES and len(m["mu"]) == n
+        names = m.get("features")
+        n = len(names)
+        return (isinstance(m, dict) and n > 0 and all(f in FEATURES for f in names) and len(m["mu"]) == n
                 and len(m["sd"]) == n and len(m["w"]) == n + 1 and all(len(r) == 2 for r in m["w"])
                 and isinstance(m["threshold"], (int, float)))
-    except (KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError):
         return False
 
 
@@ -159,9 +204,9 @@ def save_model(m: dict, path: Path = MODEL_PATH) -> None:
     _cache.pop(str(path), None)
 
 
-def judge(m: dict, art: float, frame: float) -> dict:
+def judge(m: dict, art: float, frame: float, code: float | None = None) -> dict:
     """Reverse-holo score (logit, Reverse Holo vs Normal) and whether it is sure enough to ask."""
-    x = (np.array(features(art, frame)) - np.array(m["mu"])) / np.array(m["sd"])
+    x = (np.array(features(art, frame, code, m["features"])) - np.array(m["mu"])) / np.array(m["sd"])
     z = np.append(x, 1.0) @ np.array(m["w"])
     score = float(z[1] - z[0])
     return {"score": round(score, 3), "hint": score >= float(m["threshold"])}

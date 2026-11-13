@@ -177,6 +177,9 @@ alarm check) and suggests values for the two variables.
 
 `app/foil.py` aligns a scanned card to its plain catalog image and keeps the
 difference — mostly foil: a reverse holo lights up the frame, a holo the art.
+Newer sets (Mega Evolution era, e.g. Chaos Rising) also print the set code box
+inverted on foil cards; `code_corr` compares that corner with the catalog image
+(≈ +1 same print, negative = inverted), independent of the light.
 `holo_diff.py` runs it over the scan dataset; `foil_eval.py <holo_diff output>`
 tests how well those numbers tell Normal / Holo / Reverse Holo apart on cards
 they were not fitted on (folds by card) and how many "reverse holo?" hints would

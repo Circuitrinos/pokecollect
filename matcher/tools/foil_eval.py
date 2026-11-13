@@ -56,6 +56,10 @@ def load(path: Path) -> list[dict]:
             continue
         r["art"], r["frame"] = art, frame
         r["ratio"] = frame / art if art > 0 else np.nan
+        try:   # set code box vs catalog (newer holo_diff): ≈ +1 same print, negative = inverted
+            r["code"] = float(r["code_corr"]) if r.get("code_corr") not in (None, "") else None
+        except ValueError:
+            r["code"] = None
         r["inl"] = float(r.get("inliers") or 0)
         out.append(r)
     return out
@@ -63,17 +67,21 @@ def load(path: Path) -> list[dict]:
 
 try:   # the scan computes the same numbers (app/foil.py); standalone copy otherwise
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app.foil import FEATURES, features as _features  # noqa: E402
+    from app.foil import FEATURES, feature_values  # noqa: E402
 except ImportError:
-    FEATURES = ["log_art", "log_frame", "log_frame_art"]
+    FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr"]
 
-    def _features(art: float, frame: float) -> list[float]:
+    def feature_values(art: float, frame: float, code: float | None = None) -> dict[str, float]:
         a, f = max(float(art), 0.1), max(float(frame), 0.1)
-        return [float(np.log(a)), float(np.log(f)), float(np.log(f / a))]
+        return {"log_art": float(np.log(a)), "log_frame": float(np.log(f)), "log_frame_art": float(np.log(f / a)),
+                "code_corr": 1.0 if code is None else float(code)}
+
+USE = list(FEATURES)     # main() drops code_corr for an index.csv from an older holo_diff
 
 
 def features(r: dict) -> list[float]:
-    return _features(r["art"], r["frame"])
+    v = feature_values(r["art"], r["frame"], r.get("code"))
+    return [v[n] for n in USE]
 
 
 def auc(pos: np.ndarray, neg: np.ndarray) -> float:
@@ -205,7 +213,7 @@ def save_model(cat: list[dict], path: Path, precision: float) -> None:
     if not len(ok):
         sys.exit(f"no threshold reaches {precision:.0%} precision — nothing saved")
     i = ok.max()
-    model = {"version": 1, "kind": "reverse_holo_vs_normal", "features": FEATURES,
+    model = {"version": 1, "kind": "reverse_holo_vs_normal", "features": USE,
              "mu": mu.round(5).tolist(), "sd": sd.round(5).tolist(), "w": w.round(5).tolist(),
              "threshold": round(float(score[order[i]]), 4), "precision": round(float(hits[i] / (i + 1)), 3),
              "recall": round(float(hits[i] / is_pos.sum()), 3),
@@ -222,6 +230,9 @@ def main() -> None:
     ap.add_argument("--precision", type=float, default=0.8, help="share of right asks the model aims for")
     args = ap.parse_args()
     rows = load(Path(args.holo_diff))
+    if not any(r.get("code") is not None for r in rows):
+        USE.remove("code_corr")
+        print("(no set-code column — run the new holo_diff.py again to use the inverted set code box)")
     cat = [r for r in rows if r["kind"] == "vs_catalog"]
     counts = defaultdict(int)
     for r in cat:
@@ -245,6 +256,23 @@ def main() -> None:
               f"(medians {np.median(pa):.2f} vs {np.median(pb):.2f})")
         if (a, b, key) == ("Reverse Holo", "Normal", "ratio"):
             verdict_rule = bacc
+    # set code box: inverted (negative) on foil prints of newer sets — lower = foil
+    pa = np.array([-r["code"] for r in cat if r["foiling"] == "Reverse Holo" and r.get("code") is not None])
+    pb = np.array([-r["code"] for r in cat if r["foiling"] == "Normal" and r.get("code") is not None])
+    if len(pa) >= 5 and len(pb) >= 5:
+        t, bacc = best_threshold(pa, pb)
+        print(f"   {'Reverse Holo':>12} vs {'Normal':<7} by set code  AUC {auc(pa, pb):.2f}   below {-t:.2f}: {bacc:.0%}   "
+              f"(medians {-np.median(pa):.2f} vs {-np.median(pb):.2f}; ≈ −1 = box inverted)")
+        sets: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+        for r in cat:
+            if r.get("code") is not None and r["foiling"] in ("Normal", "Holo", "Reverse Holo"):
+                sets[(r["card_id"] or "?").rsplit("-", 1)[0]][r["foiling"]].append(r["code"])
+        inv = [(sid, v) for sid, v in sets.items() if len(v.get("Reverse Holo", [])) >= 2 and len(v.get("Normal", [])) >= 2]
+        if inv:
+            print("   set code by set (median; foil prints of sets that invert the box go negative):")
+            for sid, v in sorted(inv, key=lambda kv: np.median(kv[1]["Reverse Holo"])):
+                cells = "  ".join(f"{f} {np.median(v[f]):+.2f} (n={len(v[f])})" for f in ("Normal", "Holo", "Reverse Holo") if v.get(f))
+                print(f"     {sid:<10} {cells}")
 
     print("\n2. Small model on all numbers, tested on unseen cards")
     two = cross_validate(cat, ["Normal", "Reverse Holo"])

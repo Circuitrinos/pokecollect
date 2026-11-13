@@ -630,7 +630,7 @@ export interface StampTemplate { exists: boolean; samples?: number; marked?: num
 // Reverse-Holo-Modell im Bild-Abgleich (matcher/tools/foil_eval.py --save)
 export interface FoilModel {
   exists: boolean; supported?: boolean; precision?: number; recall?: number; threshold?: number;
-  trained_on?: Record<string, number>; saved_at?: string | null;
+  trained_on?: Record<string, number>; saved_at?: string | null; features?: string[];
 }
 // Ergebnis der Folien-Prüfung eines Scan-Zuschnitts
 export type FoilCheck = { model: boolean; reference?: boolean; aligned?: boolean; hint?: boolean; score?: number };
