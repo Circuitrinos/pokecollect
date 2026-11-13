@@ -213,58 +213,65 @@ def can_be_reverse(r: dict) -> bool:
     return not (re.search(r"\b(V|VMAX|VSTAR|ex|EX|GX)$", name) or NO_REVERSE.search(rarity))
 
 
+def _set_rule(cat: list[dict], foiling: str, test) -> tuple[dict[str, bool], bool]:
+    """Per set: does test(median set code box of its `foiling` cards) hold? Plus the answer for sets without any."""
+    sets: dict[str, list[float]] = defaultdict(list)
+    for r in cat:
+        if r["foiling"] == foiling and r.get("boxc") is not None:
+            sets[(r["card_id"] or "?").rsplit("-", 1)[0]].append(r["boxc"])
+    every = [c for v in sets.values() for c in v]
+    return ({sid: test(float(np.median(v))) for sid, v in sets.items() if len(v) >= 2},
+            len(every) >= 5 and test(float(np.median(every))))
+
+
 def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
     """
     Cards whose foiling label disagrees with the photo, strongest first. The set code box
-    (box_corr) is the evidence; the shine (out-of-fold score) only speaks where the box can't:
-      Normal       → Reverse Holo?  set code box inverted (a foil print: "Holo?" for cards that
-                                    never come as reverse holo), or score above the hint cut
-      Reverse Holo → Normal?        set code box the same as the plain print (in a set whose reverse
-                                    holos invert it) or a score as low as a typical plain card
-      Holo         → Reverse Holo?  only "maybe": holo and reverse holo both invert the box, so an
-                                    inverted box on a holo usually means the catalog image shows
-                                    the plain print; skipped for cards that never come as reverse
-                                    holo (V, ex, ultra rares, …)
+    (box_corr) is the evidence where it is learned per set from your own labels: in sets
+    whose reverse holos invert it (and whose holos keep it like the catalog image) an
+    inverted box means Reverse Holo, a plain one means not. The shine (out-of-fold score)
+    only speaks where the box can't.
+      Normal       → Reverse Holo?  box inverted, or score above the hint cut
+      Holo         → Reverse Holo?  box inverted ("maybe" where this set's holos invert it too)
+      Reverse Holo → Normal / Holo? box like the plain print, or score as low as a typical plain card
+    Cards that never come as reverse holo (V, ex, ultra rares, …) are only ever a "maybe".
     """
-    sets: dict[str, list[float]] = defaultdict(list)
-    for r in cat:
-        if r["foiling"] == "Reverse Holo" and r.get("boxc") is not None:
-            sets[(r["card_id"] or "?").rsplit("-", 1)[0]].append(r["boxc"])
-    inverts = {sid: float(np.median(v)) <= CODE_INVERTED for sid, v in sets.items() if len(v) >= 2}
-    every = [c for v in sets.values() for c in v]       # sets without reverse holos to go by: all of them
-    usual = len(every) >= 5 and float(np.median(every)) <= CODE_INVERTED
+    rh_inv, rh_usual = _set_rule(cat, "Reverse Holo", lambda m: m <= CODE_INVERTED)
+    holo_same, holo_usual = _set_rule(cat, "Holo", lambda m: m >= CODE_SAME)
     normal_oof = [r["oof"] for r in cat if r["foiling"] == "Normal" and np.isfinite(r.get("oof", np.nan))]
     plain_like = float(np.median(normal_oof)) if normal_oof else None
     out = []
     for r in cat:
         code, oof = r.get("boxc"), r.get("oof", np.nan)     # the set code box itself (None: not to be seen)
         sid = (r["card_id"] or "?").rsplit("-", 1)[0]
-        why, strength = None, 0.0
-        # the set code decides where it can (it doesn't depend on the light); the shine
-        # only speaks for cards whose set code says nothing (older sets, no print there)
-        inv = inverts.get(sid, usual)                     # this set's reverse holos invert the box
+        inv = rh_inv.get(sid, rh_usual)                      # this set's reverse holos invert the box
+        reverse_ok = can_be_reverse(r)
+        why, strength, suggest = None, 0.0, None
         code_says = code is not None and inv and (code <= CODE_INVERTED or code >= CODE_SAME)
         if r["foiling"] == "Normal":
             suggest = "Reverse Holo"
-            if code is not None and code <= -CODE_SURE:
-                why, strength = "sure: set code box inverted (a foil print)", -code + 1
-                suggest = "Reverse Holo" if can_be_reverse(r) else "Holo"
+            if code is not None and code <= -CODE_SURE and inv and reverse_ok:
+                why, strength = "sure: set code box inverted, like this set's reverse holos", -code + 1
             elif code is not None and code <= CODE_INVERTED:
-                why, strength = "maybe: set code box partly inverted", -code
+                why, strength = "maybe: set code box (partly) inverted", -code
             elif not code_says and hint_cut is not None and np.isfinite(oof) and oof >= hint_cut:
                 why, strength = "maybe: shines like a reverse holo", min(1.0, (oof - hint_cut) / 4)
+        elif r["foiling"] == "Holo":
+            suggest = "Reverse Holo"
+            if code is not None and code <= -CODE_SURE:
+                if inv and holo_same.get(sid, holo_usual) and reverse_ok:
+                    why, strength = "sure: set code box inverted — this set's holos keep it, its reverse holos don't", -code + 1
+                elif reverse_ok:
+                    why, strength = "maybe: set code box differs from the catalog image", -code * 0.6
         elif r["foiling"] == "Reverse Holo":
+            rarity = (r.get("rarity") or "").strip().lower()
+            suggest = "Holo" if rarity == "rare" else "Normal"
             if code is not None and code >= CODE_SURE and inv:
                 why, strength = "sure: set code box like the plain print", code + 1
             elif code is not None and code >= CODE_SAME and inv:
                 why, strength = "maybe: set code box more like the plain print", code
             elif not code_says and plain_like is not None and np.isfinite(oof) and oof <= plain_like:
                 why, strength = "maybe: no foil to see", min(1.0, (plain_like - oof) / 4)
-            suggest = "Normal"
-        elif r["foiling"] == "Holo":
-            if code is not None and code <= -CODE_SURE and can_be_reverse(r):
-                why, strength = "maybe: box differs from the catalog image — reverse holo, or the catalog shows the plain print", -code * 0.6
-            suggest = "Reverse Holo"
         if why:
             out.append({**r, "suggest": suggest, "why": why, "strength": strength})
     return sorted(out, key=lambda x: -x["strength"])
@@ -388,7 +395,7 @@ def main() -> None:
         if (a, b, key) == ("Reverse Holo", "Normal", "ratio"):
             verdict_rule = bacc
     # set code corner: lower = foil. "corner" = lowest window anywhere there (foil texture,
-    # but also halos), "box" = the set code box itself (inverted on foil prints of some sets)
+    # but also halos), "box" = the set code box itself (inverted on reverse holos of newer sets)
     for key, label in (("code", "corner"), ("boxc", "set code box")):
         pa = np.array([-r[key] for r in cat if r["foiling"] == "Reverse Holo" and r.get(key) is not None])
         pb = np.array([-r[key] for r in cat if r["foiling"] == "Normal" and r.get(key) is not None])
@@ -409,6 +416,19 @@ def main() -> None:
             for sid, v in sorted(inv, key=lambda kv: np.median(kv[1]["Reverse Holo"])):
                 cells = "  ".join(f"{f} {np.median(v[f]):+.2f} (n={len(v[f])})" for f in ("Normal", "Holo", "Reverse Holo") if v.get(f))
                 print(f"     {sid:<10} {cells}")
+            every = [c for v in sets.values() for c in v.get("Reverse Holo", [])]
+            if key == "boxc" and len(every) >= 5 and np.median(every) <= CODE_INVERTED:
+                # most reverse holos invert the box: the ones that don't, in a set where that isn't
+                # settled (few of them) or is the rule — a set printed differently, or labels to look at
+                def unsettled(sid: str) -> bool:
+                    rh = sets[sid].get("Reverse Holo", [])
+                    return len(rh) < 5 or np.median(rh) <= CODE_INVERTED
+                odd = [r for r in cat if r["foiling"] == "Reverse Holo" and r.get("boxc") is not None
+                       and r["boxc"] > CODE_INVERTED and unsettled((r["card_id"] or "?").rsplit("-", 1)[0])]
+                if odd:
+                    print("   reverse holos whose box is not inverted (most reverse holos invert it):")
+                    for r in sorted(odd, key=lambda x: -x["boxc"])[:15]:
+                        print(f"     {str(r['id']):>7}  {(r['card_id'] or '?'):<14} {r['boxc']:+.2f}  {r.get('name') or ''}")
 
     print("\n2. Small model on all numbers, tested on unseen cards")
     two = cross_validate(cat, ["Normal", "Reverse Holo"])

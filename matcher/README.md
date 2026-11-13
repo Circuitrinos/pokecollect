@@ -177,8 +177,10 @@ alarm check) and suggests values for the two variables.
 
 `app/foil.py` aligns a scanned card to its plain catalog image and keeps the
 difference — mostly foil: a reverse holo lights up the frame, a holo the art.
-Newer sets (e.g. Chaos Rising) also print the set code box ("SCR EN")
-inverted on foil cards. `box_corr` finds that box in the catalog image (a
+Scarlet & Violet and Mega Evolution sets also print the set code box
+("SCR EN") inverted on reverse holos; holos keep it like the catalog image
+(860 scans: reverse holos −0.69…−0.94 in 11 of 12 sets, Normal and Holo ≈ +0.9;
+me05 is the exception so far). `box_corr` finds that box in the catalog image (a
 box-sized patch on the set code row, mostly one tone with letters in it) and
 compares just its inside with the photo: ≈ +1 same print, ≈ −1 inverted, empty
 when the photo is too blurred or washed out there — independent of the light.
@@ -189,15 +191,16 @@ edges, so it is only a model feature, never the proof for a label.
 tests how well those numbers tell Normal / Holo / Reverse Holo apart on cards
 they were not fitted on (folds by card) and how many "reverse holo?" hints would
 be right, and lists the labels to check — cards whose foiling label disagrees
-with the photo (set code box inverted on a "Normal", plain on a "Reverse Holo"
-in a set whose reverse holos invert it), in `labels_to_check.csv` and, with
+with the photo (set code box inverted on a "Normal" or "Holo", plain on a
+"Reverse Holo" — only in sets whose own labels show the pattern; others follow
+the majority), in `labels_to_check.csv` and, with
 `--sheet`, as pictures with the compared box marked; `--save foil_model.json` writes the model (asking only where 80 % of
 the asks were right, `--precision`). Uploaded in the app (Admin → Reverse holo
 detection, → `PUT /foil/model`), the scan review checks each plain card whose
 print exists as reverse holo (`POST /foil`: crop + catalog image → score, hint)
-and offers "Reverse holo? — tap to set". On 382 Normal / 85 Reverse Holo scans:
-85 % balanced accuracy on unseen cards; at 4 in 5 asks right it asks about half
-of the reverse holos.
+and offers "Reverse holo? — tap to set". On 382 Normal / 85 Reverse Holo scans
+with the set code box: 98 % balanced accuracy on unseen cards; at 9 in 10 asks
+right it asks about 98 % of the reverse holos (the box alone: AUC 0.99).
 
 ### Learning from scans
 

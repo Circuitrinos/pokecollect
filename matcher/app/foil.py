@@ -4,8 +4,9 @@ even out the lighting and subtract — what is left is mostly foil. A reverse
 holo lights up the frame around the art box, a holo the art, a plain card
 neither (if the photo caught the light).
 
-Some newer sets (e.g. Chaos Rising) print the set code box inverted on foil
-cards: dark letters on a light box instead of light on dark. box_corr finds
+Scarlet & Violet and Mega Evolution sets print the set code box inverted on
+reverse holos: dark letters on a light box instead of light on dark (holos keep
+it like the catalog image; on 860 scans, 11 of 12 sets). box_corr finds
 that box in the catalog image and compares just it with the photo: ≈ +1 the
 same print, ≈ −1 the negative of it, None when the photo's corner is too
 blurred, dark or washed out to see it. (code_corr, the lowest correlation of
