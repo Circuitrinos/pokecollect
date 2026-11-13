@@ -328,3 +328,46 @@ def test_decks_are_private(client, catalog, eve):
     # Auffüllen nimmt nur eigene Karten
     eve.post(f"{API}/decks/{theirs['id']}/import", json={"text": "1 Testmon ex TDA 62"})
     assert eve.post(f"{API}/decks/{theirs['id']}/fill").json()["added"] == 0
+
+
+# ── Diagnose-Werkzeug ────────────────────────────────────────────────────────
+
+def test_deck_diag_explains_reprints_and_unmatched_lines(client, catalog, capsys):
+    """app/tools/deck_diag: zeigt, warum ein Trainer „nicht legal" ist (Drucke, Zeichen,
+    Text-Fingerabdruck) und was eine Zeile ohne Katalog-Druck beim neuen Abgleich fände."""
+    from app.tools import deck_diag
+
+    db = SessionLocal()
+    db.add_all([
+        _row(f"{P}9-132", f"{P}9", "132", "Boss's Orders", "Trainer", mark="F", trainer_type="Supporter"),
+    ])
+    db.commit()
+    for cid, key in ((f"{P}9-132", "switch in 1 of your opponents benched pokemon"),
+                     (f"{P}1-114", "switch in 1 of your opponents benched pokemon to the active spot")):
+        db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == cid).update({"effect_key": key})
+    db.commit()
+    deck = client.post(f"{API}/decks", json={"name": "Test-Diag", "text": "Trainer: 1\n1 Boss's Orders ZZ9 132\n"}).json()["deck"]
+    d = db.get(Deck, deck["id"])
+    from app.models.deck import DeckSlot
+    slot = db.scalars(select(DeckSlot).where(DeckSlot.deck_id == d.id)).one()
+    slot.tcgdex_card_id, slot.set_code = f"{P}9-132", None
+    db.commit()
+    card = PokemonCard(kartenname="Deckscan Testmon ex", englischer_name="Testmon ex", karten_nr="062/193",
+                       besessen=True, tcgdex_card_id=None)
+    db.add(card)
+    db.flush()
+    svc.assign(db, d, card)          # wie ein Scan ohne Katalog-Treffer: Zeile nur mit Namen
+    db.commit()
+
+    deck_diag.main([str(d.id)])
+    out = capsys.readouterr().out
+    assert "not_legal" in out and "Boss's Orders" in out
+    assert f"{P}1-114" in out and "differs" in out               # der I-Druck hat einen anderen Text
+    assert f"{P}2-090" in out and "OTHER" in out                  # „(Ghetsis)": für die Reprint-Regel ein anderer Name
+    assert "newest mark, any text: I; with the same text: F" in out
+    assert f"{P}1-062 (set, pokemon)" in out                     # Zeile ohne Druck: fände ihn jetzt
+    assert "Testmon ex" in out and "—" in out
+    db.execute(delete(PokemonCard).where(PokemonCard.id == card.id).execution_options(all_users=True))
+    db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id == f"{P}9-132"))
+    db.commit()
+    db.close()
