@@ -2,11 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
-import { API_BASE, Card, ScanCheck, cardApi } from "@/lib/api";
+import { API_BASE, Card, RematchProposal, ScanCheck, cardApi, rematchSuggests } from "@/lib/api";
 import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 import { settleCrop } from "@/lib/settleCrop";
 import CardFinder from "@/components/carddetail/CardFinder";
 import RematchDialog from "@/components/carddetail/RematchDialog";
+import CameraCapture, { cameraAvailable } from "@/components/CameraCapture";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { imageUrl, cardImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -111,11 +112,15 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    await openNewPhoto(file);
+  };
+  // Neues Foto (hochgeladen oder mit der Kamera aufgenommen) → Eck-Editor
+  const openNewPhoto = async (file: File, quad?: number[][]) => {
     // EXIF einbacken → Editor-Anzeige == gespeicherter Zuschnitt
     const norm = await normalizeOrientation(file);
     editorBlobRef.current = norm;
     editorOriginalRef.current = norm;   // neues Foto → Original mitspeichern
-    setEditorInitQuad([[0.06, 0.05], [0.94, 0.05], [0.94, 0.95], [0.06, 0.95]]);
+    setEditorInitQuad(quad ?? [[0.06, 0.05], [0.94, 0.05], [0.94, 0.95], [0.06, 0.95]]);
     setEditorUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(norm);
@@ -223,6 +228,12 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       onCardUpdated(r.data);
       toast.success(t.detail_photo_saved);
       closePhotoEditor();
+      // neues Foto → gleich neu abgleichen: Druck, Reverse Holo, Play!-Stempel; schlägt
+      // es etwas vor, geht der Abgleich auf (mit dem Vorschlag angehakt)
+      cardApi.rematch(card.id).then((res) => {
+        if (rematchSuggests(res.data)) { setRematchInitial(res.data); setRematchOpen(true); }
+        else toast(t.rematch_photo_checked, { icon: "✓" });
+      }).catch(() => {});
     } catch {
       toast.error(t.detail_upload_error);
     } finally {
@@ -265,6 +276,8 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const [switching, setSwitching] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
   const [rematchOpen, setRematchOpen] = useState(false);
+  const [rematchInitial, setRematchInitial] = useState<RematchProposal | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);   // Kamera im Browser („Foto aufnehmen")
   const [langBusy, setLangBusy] = useState(false);
   const changeImageLang = async (lang: string) => {
     setLangBusy(true);
@@ -392,8 +405,8 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       </button>
       {rematchOpen && (
         <RematchDialog cardId={card.id} title={card.englischer_name || card.kartenname}
-          photoUrl={imageUrl(stampPhoto, API_BASE, card.aktualisiert_am)}
-          onClose={() => setRematchOpen(false)} onApplied={(c) => onCardSaved(c)} />
+          photoUrl={imageUrl(card.bild_karte_pfad ?? stampPhoto, API_BASE, card.aktualisiert_am)} initial={rematchInitial}
+          onClose={() => { setRematchOpen(false); setRematchInitial(null); }} onApplied={(c) => onCardSaved(c)} />
       )}
       {isAdmin && card.tcgdex_card_id && (
         <button type="button" onClick={() => setPictureOpen(true)} data-testid="card-find-picture"
@@ -417,9 +430,13 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       )}
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
+      {cameraOpen && (
+        <CameraCapture onClose={() => setCameraOpen(false)}
+          onCapture={(file, quad) => { setCameraOpen(false); void openNewPhoto(file, quad); }} />
+      )}
       <div className="mt-2 grid grid-cols-2 gap-1">
-        <button type="button"
-          onClick={() => cameraRef.current?.click()}
+        <button type="button" data-testid="card-take-photo"
+          onClick={() => (cameraAvailable() ? setCameraOpen(true) : cameraRef.current?.click())}
           className="text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5"
         >
           {t.detail_take_photo}

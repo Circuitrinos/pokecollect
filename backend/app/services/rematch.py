@@ -154,12 +154,14 @@ class Found:
     photo: str                          # "used" | "no_photo" | "off" | "down" | "nothing"
     candidates: list[TcgdexCatalog] = field(default_factory=list)   # vom Bild-Abgleich, beste zuerst
     crop: Optional[bytes] = None
+    stamp: Optional[dict] = None        # Play!-Stempel laut Foto: {"score", "ok", "sure"} (None = nicht geprüft)
 
 
 def _photo_path(card: PokemonCard):
     from app.services.card_images import safe_media_path
 
-    p = safe_media_path(card.bild_scan_pfad or card.bild_karte_pfad)
+    # das angezeigte eigene Foto zuerst (gerade neu aufgenommen), sonst das Scan-Foto
+    p = safe_media_path(card.bild_karte_pfad or card.bild_scan_pfad)
     return p if p is not None and p.is_file() else None
 
 
@@ -203,6 +205,7 @@ async def find(db: Session, card: PokemonCard, use_photo: bool = True) -> Found:
     cands: list[TcgdexCatalog] = []
     auto = False
     crop = None
+    stamp = None
     if photo == "used":
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -215,6 +218,9 @@ async def find(db: Session, card: PokemonCard, use_photo: bool = True) -> Found:
         else:
             crop = path.read_bytes()
             auto = bool(found.get("auto"))
+            raw_stamp = found.get("stamp")
+            stamp = ({"score": raw_stamp.get("score"), "ok": bool(raw_stamp.get("ok")), "sure": bool(raw_stamp.get("sure"))}
+                     if isinstance(raw_stamp, dict) else None)
             for c in found.get("candidates") or []:
                 row = catalog_row_for(db, c.get("card_id"))
                 if row is not None and all(r.card_id != row.card_id for r in cands):
@@ -224,12 +230,12 @@ async def find(db: Session, card: PokemonCard, use_photo: bool = True) -> Found:
     if cands:
         top = cands[0]
         if auto:
-            return Found(top, "photo", True, photo, cands, crop)
+            return Found(top, "photo", True, photo, cands, crop, stamp)
         key = lambda r: decks.rule_name(r.name_en or r.name or "")  # noqa: E731
         if linked is not None and (any(r.card_id == linked.card_id for r in cands) or key(top) == key(linked)):
             # derselbe Druck unter den Kandidaten, oder nur ein anderer Druck derselben Karte
             # (gleiches Bild in mehreren Sets) — die Verknüpfung bleibt
-            return Found(linked, "link", True, photo, cands, crop)
+            return Found(linked, "link", True, photo, cands, crop, stamp)
         from app.services.catalog import card_number
 
         name = card.englischer_name or card.kartenname or ""
@@ -239,16 +245,16 @@ async def find(db: Session, card: PokemonCard, use_photo: bool = True) -> Found:
                      and _number_change(card.karten_nr, card_number(db, r, sets)) in (None, "fill")
                      and (not name or key(r) == decks.rule_name(name))]
         if len(by_number) == 1:
-            return Found(by_number[0], "photo", True, photo, cands, crop)
-        return Found(top, "photo", False, photo, cands, crop)
+            return Found(by_number[0], "photo", True, photo, cands, crop, stamp)
+        return Found(top, "photo", False, photo, cands, crop, stamp)
     if linked is not None:
-        return Found(linked, "link", True, photo, [], crop)
+        return Found(linked, "link", True, photo, [], crop, stamp)
     row, how = _by_card_data(db, card)
     if row is not None:
         name = card.englischer_name or card.kartenname or ""
         sure = how == "number" and decks.rule_name(row.name_en or row.name or "") == decks.rule_name(name)
-        return Found(row, how, sure, photo, [], crop)
-    return Found(None, None, False, photo, [], crop)
+        return Found(row, how, sure, photo, [], crop, stamp)
+    return Found(None, None, False, photo, [], crop, stamp)
 
 
 async def photo_foil_hint(card_id: str, crop: Optional[bytes]) -> Optional[bool]:
@@ -271,7 +277,7 @@ async def photo_foil_hint(card_id: str, crop: Optional[bytes]) -> Optional[bool]
 
 async def apply(db: Session, card: PokemonCard, row: TcgdexCatalog, only: Optional[set[str]] = None,
                 folierung: Optional[str] = None, image_url: Optional[str] = None,
-                show_image: bool = False) -> list[Change]:
+                show_image: bool = False, prize_pack: Optional[bool] = None) -> list[Change]:
     """Karte auf den Druck stellen und aus dem Katalog füllen. only: nur diese Felder (None = alle
     vorgeschlagenen). Neuer Druck (oder show_image, „Richtige Karte finden") → dessen Bild;
     derselbe Druck → das Bild bleibt, nur ein fehlendes wird ergänzt. Committet nicht.
@@ -306,6 +312,8 @@ async def apply(db: Session, card: PokemonCard, row: TcgdexCatalog, only: Option
         card.bild_karte_url = fields["bild_karte_url"]
     if folierung in FOILS:
         card.folierung = folierung
+    if prize_pack is not None:
+        card.prize_pack = prize_pack
     regulation.apply_to_card(db, card)
     return done
 

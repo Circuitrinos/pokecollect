@@ -6,6 +6,7 @@ import Navbar from "@/components/Navbar";
 import BottomNav from "@/components/BottomNav";
 import PWARegister from "@/components/PWARegister";
 import WhatsNewModal from "@/components/WhatsNewModal";
+import ClientErrorReporter from "@/components/ClientErrorReporter";
 
 export const metadata: Metadata = {
   title: "PokéCollect",
@@ -49,6 +50,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <WhatsNewModal />
           </AuthGuard>
           <PWARegister />
+          <ClientErrorReporter />
         </I18nProvider>
       </body>
     </html>

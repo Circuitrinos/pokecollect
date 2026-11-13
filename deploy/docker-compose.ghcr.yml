@@ -10,7 +10,7 @@
 #   CHANGE_DB_PASSWORD   (3 places, must match)
 #   CHANGE_JWT_SECRET    (long random string, e.g. `openssl rand -hex 32`)
 #   CHANGE_BCRYPT_HASH   (password hash for APP_USERNAME, see .env.example)
-#   /path/to/pokecollect (a folder owned by uid/gid 3010)
+#   /path/to/pokecollect (a folder owned by uid/gid 3010, incl. its logs/ subfolder)
 #
 # The web image is built for USD and relative /api calls; keep CURRENCY at USD.
 # Compose needs to support inline `configs: content` (Docker Compose 2.23+).
@@ -38,6 +38,8 @@ services:
       # PASSWORD_LOGIN: 'false'
     volumes:
       - /path/to/pokecollect/images:/app/images
+      # log files for troubleshooting (api.log, api-errors.log, api-access.log; rotated)
+      - /path/to/pokecollect/logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -63,6 +65,8 @@ services:
       DATABASE_URL: 'postgresql://pokecollect:CHANGE_DB_PASSWORD@db:5432/pokecollect'
     volumes:
       - /path/to/pokecollect/matcher:/data
+      # same folder as the api (matcher.log, matcher-errors.log)
+      - /path/to/pokecollect/logs:/app/logs
     depends_on:
       db:
         condition: service_healthy

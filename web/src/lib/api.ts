@@ -353,7 +353,7 @@ export const cardApi = {
   // Neu abgleichen: Druck (Foto → Verknüpfung → Set + Nummer) und fehlende Daten aus dem Katalog
   rematch: (id: number, print?: string) =>
     api.get<RematchProposal>(`/cards/${id}/rematch`, { params: print ? { print } : {} }),
-  applyRematch: (id: number, body: { tcgdex_card_id: string; fields?: string[] | null; folierung?: string | null }) =>
+  applyRematch: (id: number, body: { tcgdex_card_id: string; fields?: string[] | null; folierung?: string | null; prize_pack?: boolean | null }) =>
     api.post<Card>(`/cards/${id}/rematch`, body),
 
   stats: () => api.get<StatsResponse>("/cards/meta/stats"),
@@ -692,8 +692,19 @@ export type RematchProposal = {
   photo: "used" | "no_photo" | "off" | "down" | "nothing";
   changes: RematchChange[];
   foil: { current: string | null; options: string[]; suggested: string | null; why: "only" | "photo" | null; photo_hint: boolean | null };
+  stamp?: { current: boolean; ok: boolean; sure: boolean; score: number | null } | null;   // nur mit geprüftem Foto
   alternatives: RematchPrint[];
 };
+/** Lohnt sich der Abgleich-Dialog? (anderer Druck, Lücken, Folierung oder Play!-Stempel laut Foto) */
+export function rematchSuggests(p: RematchProposal): boolean {
+  if (!p.found) return false;
+  if (!p.found.current || p.changes.length > 0) return true;
+  const f = p.foil;
+  if (!f.current && f.suggested) return true;
+  if (f.photo_hint && f.current !== "Reverse Holo" && f.options.includes("Reverse Holo")) return true;
+  return !!p.stamp && p.stamp.ok && !p.stamp.current;
+}
+
 export type CardGap = "print" | "number" | "illustrator" | "rarity" | "set" | "english_name" | "foiling" | "image" | "photo" | "differs";
 export type CardGapItem = {
   card_id: number;

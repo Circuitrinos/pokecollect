@@ -248,10 +248,13 @@ def delete_slot(deck_id: int, slot_id: int, request: Request, db: Session = Depe
 @router.get("/{deck_id}/slots/{slot_id}/candidates", response_model=list[DeckCandidate])
 def slot_candidates(deck_id: int, slot_id: int, db: Session = Depends(get_db)):
     """Eigene Karten in keinem Deck, die auf diesen Platz passen."""
+    from app.services.card_collections import with_collections
+
     deck = _deck(db, deck_id)
     slot = _slot(db, deck, slot_id)
-    return [DeckCandidate(match=how, card=CardResponse.model_validate(c))
-            for c, how in svc.FreeCards(db).for_slot(db, slot, loose_pokemon=True)[:60]]
+    found = svc.FreeCards(db).for_slot(db, slot, loose_pokemon=True)[:60]
+    cards = with_collections(db, [c for c, _how in found])        # mit ihren Sammlungen
+    return [DeckCandidate(match=how, card=card) for (_c, how), card in zip(found, cards)]
 
 
 @router.post("/{deck_id}/cards", response_model=DeckDetail)

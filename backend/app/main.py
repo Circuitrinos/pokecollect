@@ -1,6 +1,9 @@
 import logging
 import mimetypes
 import os
+import re
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from urllib.parse import unquote_plus
@@ -26,7 +29,10 @@ from app.services.cron import start_scheduler
 from app.schemas._validators import _CONTROL_CHARS
 from app.messages import localize
 
-logging.basicConfig(level=logging.INFO)
+# Konsole + Logdateien in /app/logs, wenn eingehängt (app/logsetup.py)
+from app import logsetup  # noqa: E402
+
+logsetup.setup("api")
 
 # Set-Stammdaten (code, name, max_card_nr)
 # max_card_nr = reguläre Kartennummer-Obergrenze (ohne Secret Rares)
@@ -541,6 +547,54 @@ app.add_middleware(
     # per CORS freigegeben ist.
     expose_headers=["Content-Disposition"],
 )
+
+# Anfragen protokollieren (außen um alles): unbehandelte Fehler mit Traceback, Antworten
+# ab 500 und sehr langsame Anfragen landen in api-errors.log — mit Pfad (Geheimnisse in
+# der Query ausgeblendet), Benutzer und Anfrage-ID (auch im Antwort-Header X-Request-ID).
+_req_log = logging.getLogger("app.request")
+_SLOW_MS = int(os.environ.get("LOG_SLOW_MS", "15000"))
+_SECRET_PARAM = re.compile(r"((?:token|password|passwort|secret|key|code|state)=)[^&]*", re.I)
+
+
+def _what(request: Request) -> str:
+    q = _SECRET_PARAM.sub(r"\1…", request.url.query)
+    return f"{request.method} {request.url.path}" + (f"?{q}" if q else "")
+
+
+def _who(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return "-"
+    try:
+        import jwt
+
+        payload = jwt.decode(auth[7:], settings.jwt_secret, algorithms=[settings.jwt_algorithm],
+                             options={"verify_exp": False})
+        return str(payload.get("sub") or "-")
+    except Exception:  # noqa: BLE001 — nur fürs Protokoll
+        return "?"
+
+
+@app.middleware("http")
+async def anfragen_protokollieren(request: Request, call_next):
+    rid = (request.headers.get("x-request-id") or uuid.uuid4().hex[:10])[:40]
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        exc._pokecollect_logged = True    # uvicorn schreibt es dann nicht noch einmal (logsetup._NotTwice)
+        _req_log.exception("Fehler bei %s (Benutzer %s, Anfrage %s)", _what(request), _who(request), rid)
+        raise
+    ms = round((time.perf_counter() - t0) * 1000)
+    if response.status_code >= 500:
+        _req_log.error("%s → %s nach %d ms (Benutzer %s, Anfrage %s)", _what(request), response.status_code, ms,
+                       _who(request), rid)
+    elif ms >= _SLOW_MS:
+        _req_log.warning("Langsam: %s → %s nach %d ms (Benutzer %s, Anfrage %s)", _what(request),
+                         response.status_code, ms, _who(request), rid)
+    response.headers["X-Request-ID"] = rid
+    return response
+
 
 app.include_router(v1_router)
 # #120: auth-frei wie der /images-Mount (der Bild-Optimizer schickt keine

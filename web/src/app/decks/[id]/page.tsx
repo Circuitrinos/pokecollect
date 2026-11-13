@@ -496,6 +496,14 @@ export default function DeckPage() {
                         {[card.set_edition, card.karten_nr, card.sprache, card.folierung ? valueLabel(card.folierung, lang) : null].filter(Boolean).join(" · ")}
                       </span>
                       <PickTags card={card} />
+                      {Array.isArray(card.sammlungen) && (
+                        <span className="block text-[11px] truncate" data-testid="deck-pick-where"
+                          title={card.sammlungen.map((c) => c.name).join("\n")}>
+                          {card.sammlungen.length > 0
+                            ? <span className="text-sky-300/90">📁 {card.sammlungen.map((c) => c.name).join(", ")}</span>
+                            : <span className="italic text-amber-400/80">{t.card_no_collection}</span>}
+                        </span>
+                      )}
                       {match !== "exact" && (
                         <span className={`text-[10px] ${match === "other_print" ? "text-yellow-300" : "text-gray-400"}`}>{t.deck_match(match)}</span>
                       )}

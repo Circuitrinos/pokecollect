@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { X } from "lucide-react";
 import { Card, RematchPrint, RematchProposal, cardApi } from "@/lib/api";
@@ -10,12 +10,13 @@ import { valueLabel } from "@/lib/enumLabels";
 // Bild-Abgleich, sonst die Verknüpfung, sonst Set + Nummer) und zeigen, was der Katalog
 // ergänzt oder richtigstellt — jede Änderung abwählbar, fehlende Foliierung wählbar,
 // ein anderer Druck antippbar. Kartenseite und Admin-Werkzeug „Karten mit Lücken".
-export default function RematchDialog({ cardId, title, photoUrl, onClose, onApplied }: {
+export default function RematchDialog({ cardId, title, photoUrl, onClose, onApplied, initial }: {
   cardId: number;
   title: string;
   photoUrl?: string | null;
   onClose: () => void;
   onApplied: (card: Card) => void;
+  initial?: RematchProposal | null;        // schon geladen (nach einem neuen Foto)
 }) {
   const { t, lang } = useI18n();
   const [print, setPrint] = useState<string | undefined>(undefined);
@@ -25,25 +26,37 @@ export default function RematchDialog({ cardId, title, photoUrl, onClose, onAppl
   const [foil, setFoil] = useState<string | null>(null);
   const [others, setOthers] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [stamp, setStamp] = useState(false);
 
+  const take = useCallback((data: RematchProposal) => {
+    setP(data);
+    setOff(new Set());
+    // Foto sieht nach Reverse Holo aus → vorgeschlagen; sicherer Play!-Stempel → angehakt
+    const f = data.foil;
+    setFoil(f.current && !(f.photo_hint && f.current !== "Reverse Holo" && f.options.includes("Reverse Holo"))
+      ? f.current : (f.photo_hint && f.options.includes("Reverse Holo") ? "Reverse Holo" : f.current ?? f.suggested ?? null));
+    setStamp(Boolean(data.stamp?.current || data.stamp?.sure));
+  }, []);
   const load = useCallback((which?: string) => {
     setP(null);
     setFailed(false);
     cardApi.rematch(cardId, which)
-      .then((r) => {
-        setP(r.data);
-        setOff(new Set());
-        setFoil(r.data.foil.current ?? r.data.foil.suggested ?? null);
-      })
+      .then((r) => take(r.data))
       .catch(() => setFailed(true));
-  }, [cardId]);
-  useEffect(() => { load(print); }, [load, print]);
+  }, [cardId, take]);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current && initial && !print) { first.current = false; take(initial); return; }
+    first.current = false;
+    load(print);
+  }, [load, print, initial, take]);
 
   const found = p?.found ?? null;
   const relink = !!found && !found.current;
   const chosen = (p?.changes ?? []).filter((c) => !off.has(c.field));
   const foilChange = !!p && foil !== null && foil !== (p.foil.current ?? null);
-  const anything = relink || chosen.length > 0 || foilChange;
+  const stampChange = !!p?.stamp && stamp !== p.stamp.current;
+  const anything = relink || chosen.length > 0 || foilChange || stampChange;
 
   const apply = async () => {
     if (!found) return;
@@ -53,6 +66,7 @@ export default function RematchDialog({ cardId, title, photoUrl, onClose, onAppl
         tcgdex_card_id: found.tcgdex_card_id,
         fields: chosen.map((c) => c.field),
         folierung: foilChange ? foil : null,
+        prize_pack: stampChange ? stamp : null,
       });
       toast.success(t.rematch_done);
       onApplied(r.data);
@@ -143,10 +157,23 @@ export default function RematchDialog({ cardId, title, photoUrl, onClose, onAppl
                     {p.foil.suggested ? t.rematch_foil_why(p.foil.why) : t.rematch_foil_pick}
                   </p>
                 )}
-                {p.foil.current && p.foil.photo_hint && p.foil.current !== "Reverse Holo" && p.foil.options.includes("Reverse Holo") && (
-                  <p className="text-[11px] text-purple-300">✨ {t.rematch_foil_hint}</p>
+                {p.foil.photo_hint && p.foil.current !== "Reverse Holo" && p.foil.options.includes("Reverse Holo") && (
+                  <p className="text-[11px] text-purple-300" data-testid="rematch-foil-hint">✨ {t.rematch_foil_hint}</p>
                 )}
               </div>
+
+              {p.stamp && (
+                <div className="space-y-1" data-testid="rematch-stamp">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <span className="w-28 text-gray-400 text-xs">{t.rematch_stamp_label}</span>
+                    <input type="checkbox" checked={stamp} onChange={(e) => setStamp(e.target.checked)} data-testid="rematch-stamp-box" />
+                    <span className="text-xs text-white">{t.tag_play}</span>
+                  </label>
+                  <p className={`text-[11px] ${p.stamp.ok ? "text-red-300" : "text-gray-500"}`}>
+                    {p.stamp.sure ? t.rematch_stamp_sure : p.stamp.ok ? t.rematch_stamp_maybe : t.rematch_stamp_none}
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -175,7 +202,7 @@ export default function RematchDialog({ cardId, title, photoUrl, onClose, onAppl
         </div>
 
         <div className="flex items-center gap-2 border-t border-gray-800 p-3">
-          <span className="flex-1 text-xs text-gray-400">{p && found ? t.rematch_summary(chosen.length + (foilChange ? 1 : 0), relink) : ""}</span>
+          <span className="flex-1 text-xs text-gray-400">{p && found ? t.rematch_summary(chosen.length + (foilChange ? 1 : 0) + (stampChange ? 1 : 0), relink) : ""}</span>
           <button type="button" onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-300 hover:text-white">{t.form_cancel}</button>
           <button type="button" onClick={() => void apply()} disabled={!found || !anything || saving} data-testid="rematch-apply"
             className="rounded bg-green-600 px-3 py-1.5 text-sm text-white hover:bg-green-700 disabled:opacity-40">

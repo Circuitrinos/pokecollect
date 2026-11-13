@@ -369,6 +369,13 @@ class RematchFoil(BaseModel):
     photo_hint: Optional[bool] = None   # Foto sieht nach Reverse Holo aus (None = weiß nicht)
 
 
+class RematchStamp(BaseModel):
+    current: bool = False        # Karte ist als Play!-Stempel markiert
+    ok: bool = False             # Foto sieht nach Stempel aus (Hinweis)
+    sure: bool = False           # sicher genug zum Vorab-Anhaken
+    score: Optional[float] = None
+
+
 class RematchProposal(BaseModel):
     found: Optional[RematchPrint] = None
     how: Optional[str] = None    # "photo" | "link" | "number" | "name" | "picked"
@@ -377,6 +384,7 @@ class RematchProposal(BaseModel):
     photo: str = "no_photo"      # "used" | "no_photo" | "off" | "down" | "nothing"
     changes: list[RematchChange] = []
     foil: RematchFoil = RematchFoil()
+    stamp: Optional[RematchStamp] = None   # nur, wenn das Foto geprüft wurde
     alternatives: list[RematchPrint] = []
 
 
@@ -384,6 +392,7 @@ class RematchApply(BaseModel):
     tcgdex_card_id: str = Field(..., min_length=1, max_length=64)
     fields: Optional[list[str]] = Field(None, max_length=20)   # nur diese Felder (None = alle vorgeschlagenen)
     folierung: Optional[str] = Field(None, max_length=40)
+    prize_pack: Optional[bool] = None      # Play!-Stempel setzen/entfernen (None = lassen)
 
 
 CardResponse.model_rebuild()

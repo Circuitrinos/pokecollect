@@ -37,7 +37,7 @@ from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
 from app.schemas.card import (
     CardCreate, CardListResponse, CardResponse, CardUpdate,
-    CollectionRef, EnumsResponse, RematchApply, RematchChange, RematchFoil, RematchPrint, RematchProposal,
+    EnumsResponse, RematchApply, RematchChange, RematchFoil, RematchPrint, RematchProposal, RematchStamp,
     StampUpdate, StatsResponse,
     SELTENHEIT_VALUES, KARTENVERSION_VALUES, FOLIERUNG_VALUES, MUSTER_VALUES,
     SPRACHE_VALUES, ZUSTAND_VALUES, PRIORITAET_VALUES,
@@ -261,20 +261,9 @@ def list_cards(
 
 
 def _with_collections(db: Session, cards) -> list[CardResponse]:
-    """Kartenliste mit den Sammlungen jeder Karte (eine Abfrage für die ganze Seite)."""
-    out = [CardResponse.model_validate(c) for c in cards]
-    ids = [c.id for c in cards]
-    by_card: dict[int, list] = {i: [] for i in ids}
-    if ids:
-        rows = db.execute(select(collection_cards.c.card_id, Collection.id, Collection.name)
-                          .join(Collection, Collection.id == collection_cards.c.collection_id)
-                          .where(collection_cards.c.card_id.in_(ids))
-                          .order_by(Collection.name)).all()
-        for card_id, cid, name in rows:
-            by_card[card_id].append(CollectionRef(id=cid, name=name))
-    for r in out:
-        r.sammlungen = by_card.get(r.id, [])
-    return out
+    from app.services.card_collections import with_collections
+
+    return with_collections(db, cards)
 
 
 def catalog_variants(row: TcgdexCatalog) -> dict:
@@ -724,6 +713,8 @@ async def rematch_proposal(
         hint = await rematch.photo_foil_hint(row.card_id, found.crop)
         suggested, why = rematch.foil_suggestion(card.folierung, options, hint)
         out.foil = RematchFoil(current=card.folierung, options=options, suggested=suggested, why=why, photo_hint=hint)
+    if found.stamp is not None:
+        out.stamp = RematchStamp(current=bool(card.prize_pack), **found.stamp)
     name = (row.name_en or row.name) if row is not None else (card.englischer_name or card.kartenname or "")
     seen: set[str] = set()
     alts = []
@@ -750,9 +741,10 @@ async def rematch_apply(card_id: int, req: RematchApply, db: Session = Depends(g
     if req.folierung is not None and req.folierung not in rematch.FOILS:
         raise HTTPException(status_code=422, detail="Unbekannte Folierung")
     done = await rematch.apply(db, card, row, only=set(req.fields) if req.fields is not None else None,
-                               folierung=req.folierung)
-    log.info("Re-match Karte %s → %s: %s%s", card.id, row.card_id, [c.field for c in done],
-             f", Folierung {req.folierung}" if req.folierung else "")
+                               folierung=req.folierung, prize_pack=req.prize_pack)
+    log.info("Re-match Karte %s → %s: %s%s%s", card.id, row.card_id, [c.field for c in done],
+             f", Folierung {req.folierung}" if req.folierung else "",
+             f", Play!-Stempel {req.prize_pack}" if req.prize_pack is not None else "")
     db.commit()
     db.refresh(card)
     return _card_response(db, card)

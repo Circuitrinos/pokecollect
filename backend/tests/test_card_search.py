@@ -160,3 +160,12 @@ def test_warnings_sort_and_collections_in_the_list(client, cards):
     rev = [c["kartenname"] for c in client.get(f"{API}/cards", params={"search": "qs", "sort": "collection", "reverse": True,
                                                                      "limit": 100}).json()["items"]]
     assert rev[-1] == "Qs Energy" and rev[0] in ("Qsmon ex", "Qsmon")    # umgekehrt; ohne Sammlung bleibt am Ende
+
+
+def test_deck_line_picker_shows_the_collections(client, cards):
+    deck = client.post(f"{API}/decks", json={"name": "Test-Qs picker", "text": "Pokémon: 1\n1 Qsmon ex TQS 1\n"}).json()["deck"]
+    slot = next(s for sec in ("pokemon", "trainer", "energy") for s in deck["slots"] if s["section"] == sec)
+    got = client.get(f"{API}/decks/{deck['id']}/slots/{slot['id']}/candidates").json()
+    by = {c["card"]["kartenname"]: c["card"] for c in got}
+    assert by["Qsmon ex"]["sammlungen"] == [{"id": cards["binder"], "name": "Qs Binder A"}]
+    client.delete(f"{API}/decks/{deck['id']}")

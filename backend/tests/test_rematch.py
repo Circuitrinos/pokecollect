@@ -162,8 +162,9 @@ def matcher(monkeypatch, tmp_path):
             return httpx.Response(200, json={"model": True, "aligned": True, "hint": True, "score": 3.0})
         body = request.content.decode("latin-1")
         who = next(k for k in answers if k in body)
-        cands, sure = answers[who]
-        return httpx.Response(200, json={"cards": [{"auto": sure, "candidates": [
+        cands, sure = answers[who][:2]
+        stamp = answers[who][2] if len(answers[who]) > 2 else None
+        return httpx.Response(200, json={"cards": [{"auto": sure, "stamp": stamp, "candidates": [
             {"card_id": c, "name": "x", "local_id": c.rsplit("-", 1)[1]} for c in cands]}]})
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
@@ -176,9 +177,9 @@ def matcher(monkeypatch, tmp_path):
     monkeypatch.setattr(foil_check, "reference", ref)
     (tmp_path / "images").mkdir()
 
-    def photo(name, cands, sure):
+    def photo(name, cands, sure, stamp=None):
         (tmp_path / "images" / f"{name}.jpg").write_bytes(b"\xff\xd8 " + name.encode())
-        answers[name] = (cands, sure)
+        answers[name] = (cands, sure, stamp)
         return f"images/{name}.jpg"
     return photo
 
@@ -304,4 +305,23 @@ def test_copies_share_the_scan_photo_and_placeholders_are_no_gaps(client, catalo
     third = _card(kartenname="Forest of Testing", **base)
     assert client.post(f"{API}/cards/{first}/share-photo", json={"card_ids": [third, second]}).json() == {"shared": 1}
     assert _get(third).bild_scan_pfad == f"images/card_{third}_scan.jpg"
-    assert card_photos.photoless_copies(SessionLocal()).get(third) is None
+    with SessionLocal() as s:
+        assert card_photos.photoless_copies(s).get(third) is None
+
+
+def test_new_photo_checks_the_play_stamp_and_its_own_photo_first(client, catalog, matcher):
+    """Nach einem neuen Foto: der Stempel-Befund kommt mit, und das angezeigte Foto zählt
+    vor einem älteren Scan-Foto."""
+    stamp = {"score": 0.81, "ok": True, "sure": True, "quad": [[0.6, 0.7], [0.7, 0.7], [0.7, 0.8], [0.6, 0.8]]}
+    cid = _card(tcgdex_card_id=f"{P}1-117", set_id=f"{P}1", karten_nr="117/132", illustrator="Test Artist",
+                seltenheit="Uncommon", set_edition="Test Forest (TRA)", kartenname="Forest of Testing", folierung="Normal",
+                bild_scan_pfad=matcher("rm_old_scan", [f"{P}1-062"], True),
+                bild_karte_pfad=matcher("rm_new_photo", [f"{P}1-117"], True, stamp))
+    p = client.get(f"{API}/cards/{cid}/rematch").json()
+    assert p["found"]["tcgdex_card_id"] == f"{P}1-117" and p["found"]["current"]      # das neue Foto, nicht das alte
+    assert p["stamp"] == {"current": False, "ok": True, "sure": True, "score": 0.81}
+    card = client.post(f"{API}/cards/{cid}/rematch", json={"tcgdex_card_id": f"{P}1-117", "fields": [],
+                                                          "prize_pack": True}).json()
+    assert card["prize_pack"] is True
+    plain = _card(kartenname="Rm plain", tcgdex_card_id=f"{P}1-117", set_id=f"{P}1")
+    assert client.get(f"{API}/cards/{plain}/rematch").json()["stamp"] is None        # ohne Foto nicht geprüft

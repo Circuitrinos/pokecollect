@@ -17,7 +17,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 import json
@@ -28,7 +28,11 @@ from .convert import convert
 from .extend import Extender
 from .store import Store, load_segment
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+from . import logsetup  # noqa: E402
+
+# Konsole + Logdateien in /app/logs, wenn eingehängt (matcher.log, matcher-errors.log);
+# kein Zugriffsprotokoll — die Kamera-Vorschau fragt /detect mehrmals je Sekunde
+logsetup.setup("matcher", access=False)
 log = logging.getLogger("matcher")
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
@@ -47,6 +51,28 @@ MAX_BYTES = 12 * 1024 * 1024
 
 _T0 = time.monotonic()
 app = FastAPI(title="PokéCollect matcher")
+
+
+@app.middleware("http")
+async def fehler_protokollieren(request: Request, call_next):
+    """Unbehandelte Fehler mit Traceback und Pfad, Antworten ab 500 und sehr langsame
+    Anfragen nach matcher-errors.log (503 „nicht bereit" während des Aufbaus nicht)."""
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        exc._pokecollect_logged = True
+        log.exception("Fehler bei %s %s", request.method, request.url.path)
+        raise
+    ms = round((time.perf_counter() - t0) * 1000)
+    if response.status_code >= 500 and response.status_code != 503:
+        log.error("%s %s → %s nach %d ms", request.method, request.url.path, response.status_code, ms)
+    elif ms >= _SLOW_MS:
+        log.warning("Langsam: %s %s → %s nach %d ms", request.method, request.url.path, response.status_code, ms)
+    return response
+
+
+_SLOW_MS = int(os.environ.get("LOG_SLOW_MS", "30000"))
 store = Store()
 state: dict = {"status": "loading", "phase": "starting", "error": None, "mapping": None,
                "ready_after_s": None, "warmup_ms": None, "matches": 0}
