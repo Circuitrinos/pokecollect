@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 import zlib
 from collections import defaultdict
@@ -192,7 +193,17 @@ def recall_at_precision(score: np.ndarray, is_pos: np.ndarray, want: float) -> t
     return float(hits[i] / max(1, is_pos.sum())), int(flagged[i])
 
 
-CODE_INVERTED, CODE_SAME = -0.3, 0.3    # set code vs catalog: clearly the negative / clearly the same
+CODE_INVERTED, CODE_SAME = -0.3, 0.3    # set code vs catalog: the negative / the same
+CODE_SURE = 0.5                         # this far from 0 a label that disagrees is almost certainly wrong
+# cards that never come as reverse holo (V, ex, GX, …; ultra/illustration/… rarities)
+NO_REVERSE = re.compile(r"(\b(V|VMAX|VSTAR|V-UNION|ex|EX|GX|BREAK|LV\.X|Prism Star)$)|"
+                        r"(Double|Ultra|Illustration|Special|Hyper|Secret|Shiny|ACE|Radiant|Amazing|Rainbow|Gold)",
+                        re.IGNORECASE)
+
+
+def can_be_reverse(r: dict) -> bool:
+    name, rarity = (r.get("name") or "").strip(), r.get("rarity") or ""
+    return not (re.search(r"\b(V|VMAX|VSTAR|ex|EX|GX)$", name) or NO_REVERSE.search(rarity))
 
 
 def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
@@ -201,7 +212,10 @@ def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
       Normal       → Reverse Holo?  set code inverted, or out-of-fold score above the hint cut
       Reverse Holo → Normal?        set code the same as the plain print (in a set whose reverse
                                     holos invert it) or a score as low as a typical plain card
-      Holo         → Reverse Holo?  set code inverted (a holo matches its holo catalog image)
+      Holo         → Reverse Holo?  only "maybe": holo and reverse holo both invert the box, so an
+                                    inverted box on a holo usually means the catalog image shows
+                                    the plain print; skipped for cards that never come as reverse
+                                    holo (V, ex, ultra rares, …)
     """
     sets: dict[str, list[float]] = defaultdict(list)
     for r in cat:
@@ -219,20 +233,24 @@ def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
         # only speaks for cards whose set code says nothing (older sets, no print there)
         code_says = code is not None and inverts.get(sid) is not False and (code <= CODE_INVERTED or code >= CODE_SAME)
         if r["foiling"] == "Normal":
-            if code is not None and code <= CODE_INVERTED:
+            if code is not None and code <= -CODE_SURE:
                 why, strength = "sure: set code inverted", -code + 1
+            elif code is not None and code <= CODE_INVERTED:
+                why, strength = "maybe: set code partly inverted (glare?)", -code
             elif not code_says and hint_cut is not None and np.isfinite(oof) and oof >= hint_cut:
                 why, strength = "maybe: shines like a reverse holo", min(1.0, (oof - hint_cut) / 4)
             suggest = "Reverse Holo"
         elif r["foiling"] == "Reverse Holo":
-            if code is not None and code >= CODE_SAME and inverts.get(sid, True):
+            if code is not None and code >= CODE_SURE and inverts.get(sid, True):
                 why, strength = "sure: set code like the plain print", code + 1
+            elif code is not None and code >= CODE_SAME and inverts.get(sid, True):
+                why, strength = "maybe: set code more like the plain print", code
             elif not code_says and plain_like is not None and np.isfinite(oof) and oof <= plain_like:
                 why, strength = "maybe: no foil to see", min(1.0, (plain_like - oof) / 4)
             suggest = "Normal"
         elif r["foiling"] == "Holo":
-            if code is not None and code <= CODE_INVERTED:
-                why, strength = "sure: set code inverted (a holo matches its catalog image)", -code + 1
+            if code is not None and code <= -CODE_SURE and can_be_reverse(r):
+                why, strength = "maybe: box differs from the catalog image — reverse holo, or the catalog shows the plain print", -code * 0.6
             suggest = "Reverse Holo"
         if why:
             out.append({**r, "suggest": suggest, "why": why, "strength": strength})
