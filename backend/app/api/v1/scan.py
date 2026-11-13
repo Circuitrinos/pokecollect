@@ -241,6 +241,23 @@ def scan_usage(db: Session = Depends(get_db)):
     }
 
 
+def _only_the_print_is_open(alts: list) -> bool:
+    """
+    Unsicher nur beim Druck? Alle starken Treffer (mind. halb so viele Grafik-
+    Übereinstimmungen wie der beste) tragen denselben Namen — typisch Trainer,
+    deren Nachdrucke dieselbe Grafik haben (Ultra Ball, Bug Catching Set …).
+    Dann ist die Karte klar, nur der Druck nicht: nicht sperren, sondern den
+    besten vorwählen (vorher endete das oft mit „Keine davon" → Karte ohne Druck).
+    """
+    from app.services.decks import rule_name
+
+    if len(alts) < 2 or not alts[0].name:
+        return False
+    best = max(1, alts[0].art_inliers)
+    strong = [a for a in alts if a.art_inliers * 2 >= best]
+    return len({rule_name(a.name or "") for a in strong}) == 1
+
+
 def _page_corners(page: str) -> str | None:
     """Ecken der schräg fotografierten Mappenseite (App) prüfen → JSON für den Bild-Abgleich, sonst None."""
     if not page or len(page) > 400:
@@ -400,6 +417,8 @@ async def scan(
             c.stamp = extra.stamp
             if extra.needs_choice:  # kein eindeutiger Treffer → ehrliche, niedrige Sicherheit
                 c.confidence = min(c.confidence, extra.confidence)
+                if c.match is not None and _only_the_print_is_open(extra.alternatives):
+                    c.needs_choice, c.print_choice = False, True
     return ScanResponse(
         engine=engine, mode=mode, candidates=candidates,
         limit_erreicht=limit_erreicht, hinweis=hinweis, hinweis_art=hinweis_art,

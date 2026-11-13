@@ -83,6 +83,10 @@ class ScanCandidate(BaseModel):
     # (kein eindeutiger Treffer). Leer/False bei allen anderen Engines.
     alternatives: list[ScanAlternative] = []
     needs_choice: bool = False
+    # Bild-Abgleich unsicher nur, WELCHER Druck es ist (alle starken Treffer heißen
+    # gleich, z. B. Trainer-Nachdrucke mit derselben Grafik): der beste ist gewählt,
+    # die anderen Drucke stehen zur Wahl, Speichern ist nicht gesperrt.
+    print_choice: bool = False
     stamp: Optional[ScanStamp] = None     # nur Bild-Abgleich mit gelernter Stempel-Vorlage
 
 

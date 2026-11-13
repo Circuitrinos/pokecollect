@@ -484,6 +484,17 @@ export type DeckSlot = {
   available: number;
   available_other: number;
 };
+export type DeckPrint = {
+  tcgdex_card_id: string;
+  name: string;
+  set_code: string | null;
+  set_name: string | null;
+  local_id: string | null;
+  rarity: string | null;
+  regulation_mark: string | null;
+  image_url: string | null;
+  current: boolean;
+};
 export type DeckSummary = {
   id: number;
   name: string;
@@ -521,8 +532,10 @@ export const deckApi = {
   refresh: (id: number) => api.post<DeckDetail>(`/decks/${id}/refresh`),
   addSlot: (id: number, tcgdexCardId: string, count = 1) =>
     api.post<DeckDetail>(`/decks/${id}/slots`, { tcgdex_card_id: tcgdexCardId, count }),
-  updateSlot: (id: number, slotId: number, data: { count?: number; section?: DeckSection }) =>
+  updateSlot: (id: number, slotId: number,
+    data: { count?: number; section?: DeckSection; tcgdex_card_id?: string; link_cards?: boolean }) =>
     api.put<DeckDetail>(`/decks/${id}/slots/${slotId}`, data),
+  prints: (id: number, slotId: number) => api.get<DeckPrint[]>(`/decks/${id}/slots/${slotId}/prints`),
   removeSlot: (id: number, slotId: number) => api.delete<DeckDetail>(`/decks/${id}/slots/${slotId}`),
   candidates: (id: number, slotId: number) =>
     api.get<{ match: DeckMatch; card: Card }[]>(`/decks/${id}/slots/${slotId}/candidates`),
@@ -816,6 +829,7 @@ export type ScanCandidate = {
   // Bild-Abgleich („local"): weitere Treffer + „bitte wählen" (kein eindeutiger Treffer)
   alternatives?: ScanAlternative[];
   needs_choice?: boolean;
+  print_choice?: boolean;   // unsicher nur beim Druck (gleichnamige Treffer): bester vorgewählt
   // Play!-Stempel (Prize Pack) auf der erkannten Karte: ok = Hinweis, sure = vorab angehakt
   stamp?: { score: number; quad: number[][]; ok: boolean; sure: boolean } | null;
 };

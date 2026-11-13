@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import {
-  API_BASE, Card, CatalogItem, DeckDetail, DeckFormat, DeckImportResult, DeckMatch, DeckSection, DeckSlot,
+  API_BASE, Card, CatalogItem, DeckDetail, DeckFormat, DeckImportResult, DeckMatch, DeckPrint, DeckSection, DeckSlot,
   catalogApi, deckApi,
 } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
@@ -82,6 +82,9 @@ export default function DeckPage() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [query, lang]);
+
+  // Druck einer Zeile von Hand wählen (z. B. nur über den Namen gefunden, falsches Bild)
+  const [printFor, setPrintFor] = useState<DeckSlot | null>(null);
 
   const run = async (fn: () => Promise<{ data: DeckDetail }>, ok?: string) => {
     setBusy(true);
@@ -351,7 +354,15 @@ export default function DeckPage() {
                             title={t.deck_slot_reprint_text(s.legal_mark)}>{t.deck_slot_status(s.status, s.legal_mark)}</span>
                         )}
                         {s.match === "name" && (
-                          <span className="text-[10px] rounded px-1 bg-yellow-900/50 text-yellow-300">{t.deck_slot_by_name}</span>
+                          <button type="button" onClick={() => setPrintFor(s)} data-testid="slot-by-name"
+                            title={t.deck_print_title}
+                            className="text-[10px] rounded px-1 bg-yellow-900/50 text-yellow-300 hover:bg-yellow-800/60 underline decoration-dotted">
+                            {t.deck_slot_by_name}</button>
+                        )}
+                        {s.tcgdex_card_id && s.status !== "basic" && (
+                          <button type="button" onClick={() => setPrintFor(s)} data-testid="slot-print"
+                            title={t.deck_print_title} aria-label={t.deck_print_title}
+                            className="text-[11px] text-gray-500 hover:text-white">⇄</button>
                         )}
                       </div>
                       <div className="flex flex-wrap items-center gap-1 mt-1">
@@ -463,6 +474,75 @@ export default function DeckPage() {
           </div>
         </div>
       )}
+      {printFor && (
+        <PrintPicker deckId={id} slot={printFor} onClose={() => setPrintFor(null)}
+          onPicked={(d) => { show(d); setPrintFor(null); toast.success(t.deck_print_done); }} />
+      )}
+    </div>
+  );
+}
+
+
+/** Die Drucke derselben Karte; Antippen stellt die Zeile (und Karten ohne Druck) darauf um. */
+function PrintPicker({ deckId, slot, onClose, onPicked }: {
+  deckId: number; slot: DeckSlot; onClose: () => void; onPicked: (d: DeckDetail) => void;
+}) {
+  const { t } = useI18n();
+  const [prints, setPrints] = useState<DeckPrint[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const unlinked = slot.cards.filter(({ card }) => !card.tcgdex_card_id).length;
+  const [linkCards, setLinkCards] = useState(true);
+  useEffect(() => {
+    deckApi.prints(deckId, slot.id).then((r) => setPrints(r.data)).catch(() => setPrints([]));
+  }, [deckId, slot.id]);
+  const pick = async (p: DeckPrint) => {
+    setBusy(true);
+    try {
+      onPicked((await deckApi.updateSlot(deckId, slot.id, { tcgdex_card_id: p.tcgdex_card_id, link_cards: linkCards })).data);
+    } catch (e) {
+      toast.error(apiErrorText(e) ?? t.decks_error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-pokemon-card rounded-lg p-4 w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}
+        data-testid="deck-print-picker">
+        <div className="flex items-center gap-2 mb-1">
+          <h3 className="text-white font-medium flex-1">{t.deck_print_heading(slot.name)}</h3>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
+        </div>
+        <p className="text-gray-400 text-xs mb-2">{t.deck_print_hint}</p>
+        {unlinked > 0 && (
+          <label className="flex items-center gap-2 text-xs text-gray-300 mb-2">
+            <input type="checkbox" checked={linkCards} onChange={(e) => setLinkCards(e.target.checked)} data-testid="deck-print-link" />
+            {t.deck_print_link(unlinked)}
+          </label>
+        )}
+        <div className="overflow-y-auto grid grid-cols-3 sm:grid-cols-5 gap-2">
+          {prints === null && <div className="col-span-full text-gray-500 text-sm">{t.detail_loading}</div>}
+          {prints?.length === 0 && <div className="col-span-full text-gray-500 text-sm">{t.deck_print_none}</div>}
+          {prints?.map((p) => (
+            <button key={p.tcgdex_card_id} type="button" disabled={busy || p.current} onClick={() => void pick(p)}
+              data-testid="deck-print" title={[p.name, p.set_name, p.local_id, p.rarity].filter(Boolean).join(" · ")}
+              className={`text-left rounded border p-1 ${p.current ? "border-pokemon-yellow ring-1 ring-pokemon-yellow" : "border-gray-700 hover:border-gray-400"}`}>
+              <div className="aspect-[63/88] bg-gray-800 rounded overflow-hidden">
+                {p.image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={p.image_url} alt="" loading="lazy" className="w-full h-full object-cover"
+                    onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                )}
+              </div>
+              <div className="text-[11px] text-gray-200 mt-0.5 truncate">
+                {[p.set_code || p.set_name, p.local_id].filter(Boolean).join(" ")}
+                {p.regulation_mark && <span className="ml-1 text-gray-500">{p.regulation_mark}</span>}
+              </div>
+              <div className="text-[10px] text-gray-500 truncate">{p.current ? t.deck_print_current : p.rarity}</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

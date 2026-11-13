@@ -13,7 +13,8 @@ from app.models.deck import Deck, DeckSlot
 from app.schemas.card import CardResponse
 from app.schemas.deck import (
     DeckAssigned, DeckCandidate, DeckCardsAdd, DeckCreate, DeckDetail, DeckFillResult, DeckImport,
-    DeckImportResult, DeckLegality, DeckSlotAdd, DeckSlotResponse, DeckSlotUpdate, DeckSummary, DeckUpdate,
+    DeckImportResult, DeckLegality, DeckPrint, DeckSlotAdd, DeckSlotResponse, DeckSlotUpdate, DeckSummary,
+    DeckUpdate,
 )
 from app.services import catalog_images
 from app.services import decks as svc
@@ -58,7 +59,7 @@ def _summary_fields(db: Session, deck: Deck, base_url: str, slots, legal: dict, 
 def _relinked(db: Session, deck: Deck) -> list:
     """Zeilen der Liste; Zeilen ohne Katalog-Druck vorher nachträglich zuordnen (svc.relink)."""
     slots = svc._slots(db, deck.id)
-    if any(not s.tcgdex_card_id for s in slots) and svc.relink(db, deck):
+    if any(not s.tcgdex_card_id or s.match == "name" for s in slots) and svc.relink(db, deck):
         db.commit()
         slots = svc._slots(db, deck.id)
     return slots
@@ -210,9 +211,29 @@ def update_slot(deck_id: int, slot_id: int, payload: DeckSlotUpdate, request: Re
             slot.count = data["count"]
         if "section" in data:
             slot.section = data["section"]
+        if data.get("tcgdex_card_id"):
+            row = catalog_row_for(db, data["tcgdex_card_id"])
+            if row is None:
+                raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
+            if svc.rule_name(row.name_en or row.name or "") != svc.rule_name(slot.name):
+                raise HTTPException(status_code=400, detail="Anderer Kartenname — nur ein anderer Druck derselben Karte")
+            svc.set_print(db, deck, slot, row, link_cards=payload.link_cards)
     _touch(deck)
     db.commit()
     return _detail(db, deck, request)
+
+
+@router.get("/{deck_id}/slots/{slot_id}/prints", response_model=list[DeckPrint])
+def slot_prints(deck_id: int, slot_id: int, request: Request, db: Session = Depends(get_db)):
+    """Die Drucke derselben Karte zur Auswahl (z. B. wenn sie nur über den Namen gefunden wurde)."""
+    deck = _deck(db, deck_id)
+    slot = _slot(db, deck, slot_id)
+    base_url = str(request.base_url)
+    cur = (slot.tcgdex_card_id or "").upper()
+    return [DeckPrint(tcgdex_card_id=r.card_id, name=r.name_en or r.name or r.card_id, set_code=r.set_code,
+                      set_name=r.set_name, local_id=r.local_id, rarity=r.rarity, regulation_mark=r.regulation_mark,
+                      image_url=_image(r, base_url), current=r.card_id.upper() == cur)
+            for r in svc.prints_for(db, slot.name)[:120]]
 
 
 @router.delete("/{deck_id}/slots/{slot_id}", response_model=DeckDetail)

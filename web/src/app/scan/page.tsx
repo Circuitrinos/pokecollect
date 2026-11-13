@@ -1692,9 +1692,11 @@ export default function ScanPage() {
 
                 {/* Bild-Abgleich: Treffer zur Auswahl (Pflicht, wenn nicht eindeutig) */}
                 {(c.alternatives?.length ?? 0) > 1 && (
-                  <div className={`mb-2 rounded p-2 ${c.needs_choice ? "border border-pokemon-yellow bg-yellow-500/10" : "bg-gray-800/40"}`}>
-                    <div className={`text-xs mb-1 ${c.needs_choice ? "text-pokemon-yellow" : "text-gray-400"}`}>
-                      {c.needs_choice ? t.scan_pick_title : t.scan_pick_others}
+                  <div className={`mb-2 rounded p-2 ${c.needs_choice ? "border border-pokemon-yellow bg-yellow-500/10"
+                    : c.print_choice && !c.chosenId ? "border border-pokemon-yellow/40 bg-yellow-500/5" : "bg-gray-800/40"}`}
+                    data-testid={c.print_choice ? "scan-print-choice" : undefined}>
+                    <div className={`text-xs mb-1 ${c.needs_choice || (c.print_choice && !c.chosenId) ? "text-pokemon-yellow" : "text-gray-400"}`}>
+                      {c.needs_choice ? t.scan_pick_title : c.print_choice && !c.chosenId ? t.scan_pick_print : t.scan_pick_others}
                     </div>
                     <div className="flex gap-2 overflow-x-auto pb-1">
                       {c.alternatives!.map((a) => {

@@ -11,7 +11,11 @@ nothing):
     python -m app.tools.deck_diag 4 --rematch  # the deck's cards without a catalog print: their scan
                                                # photo through today's scan (image match + TCGdex)
     python -m app.tools.deck_diag 4 --rematch --fix   # … and link the ones the image match is sure
-                                               # of and whose name agrees (the only option that writes)
+                                               # of and whose name agrees (the only option that writes),
+                                               # or whose printed number picks one of its candidates
+    python -m app.tools.deck_diag 4 --rematch --fix --any-print   # … also unsure ones whose name
+                                               # agrees: the image match's best print (same card,
+                                               # maybe another print of it)
 
 Sections per deck:
   1. deck, format, the Standard cut-off mark, the legality verdict and its issues
@@ -26,7 +30,8 @@ Sections per deck:
   6. --rematch: each card without a catalog print, its saved scan photo sent to the
      image match ("card" mode, like "re-detect" in the review) and the result
      resolved as a scan would now; --fix links it (catalog id, set, legality) when
-     the match is sure and the name is the card's
+     the match is sure and the name is the card's, or the card's printed number is
+     one candidate's; --any-print also takes the best print of an unsure match
 """
 from __future__ import annotations
 
@@ -221,7 +226,7 @@ async def live_checks(card_ids: list[str]) -> None:
             print(f"      fingerprint: {regulation.effect_key(tc.effect)}")
 
 
-async def rematch(deck_ids: list[int], fix: bool) -> None:
+async def rematch(deck_ids: list[int], fix: bool, any_print: bool = False) -> None:
     import mimetypes
 
     import httpx
@@ -270,17 +275,27 @@ async def rematch(deck_ids: list[int], fix: bool) -> None:
                     continue
                 top = cands[0]
                 sure = bool(found.get("auto"))
+                # the card's printed number picks one of the candidates (Lillie's 119/132 → me01-119)
+                num = svc._num(c.karten_nr.split("/")[0]) if c.karten_nr else None
+                by_number = [x for x in cands if num and svc._num(x.get("local_id")) == num
+                             and svc.rule_name(x.get("name") or "") == svc.rule_name(name)]
+                pick = by_number[0] if len(by_number) == 1 else top
+                why = "sure" if sure else ("by its number" if len(by_number) == 1 else "")
+                top = pick
                 read = ScanRawRead(name=top.get("name"), number=top.get("local_id"), tcgdex_card_id=top.get("card_id"))
                 t1 = time.perf_counter()
                 res = await resolve_one(db, read, default_lang=c.sprache or "EN")
                 ms2 = round((time.perf_counter() - t1) * 1000)
                 m = res.match
                 same = svc.rule_name(top.get("name") or "") == svc.rule_name(name)
-                print(f"  card {c.id} “{name}”: image match {top.get('card_id')} “{top.get('name')}” "
-                      f"{'sure' if sure else 'unsure'} (conf {found.get('confidence')}, art inliers {top.get('art_inliers')}, {ms} ms); "
-                      f"others {[x.get('card_id') for x in cands[1:]]}; resolved now → "
+                print(f"  card {c.id} “{name}”{f' no. {c.karten_nr}' if c.karten_nr else ''}: image match "
+                      f"{top.get('card_id')} “{top.get('name')}” {'sure' if sure else 'unsure'}"
+                      f"{' (picked by its number)' if why == 'by its number' else ''} "
+                      f"(conf {found.get('confidence')}, art inliers {top.get('art_inliers')}, {ms} ms); "
+                      f"others {[x.get('card_id') for x in cands if x is not top]}; resolved now → "
                       f"{m.tcgdex_card_id if m else 'NO MATCH'} ({ms2} ms){'' if same else '  [name differs]'}")
-                if fix and sure and same and m is not None and m.tcgdex_card_id == top.get("card_id"):
+                ok = why or any_print
+                if fix and ok and same and m is not None and m.tcgdex_card_id == top.get("card_id"):
                     c.tcgdex_card_id, c.set_id = m.tcgdex_card_id, m.set_id
                     if not c.englischer_name:
                         c.englischer_name = m.englischer_name or top.get("name")
@@ -308,7 +323,7 @@ def main(argv: list[str]) -> None:
         if not ids:
             print("--rematch needs deck ids")
             return
-        asyncio.run(rematch(ids, fix="--fix" in argv))
+        asyncio.run(rematch(ids, fix="--fix" in argv, any_print="--any-print" in argv))
         return
     db = SessionLocal()
     try:

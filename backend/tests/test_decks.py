@@ -470,7 +470,8 @@ def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsy
 
     real = httpx.AsyncClient
     answers = {"Deckscan Boss": ("tdeck1-114", "Boss's Orders", True), "Deckscan Odd": ("tdeck1-062", "Testmon ex", True),
-               "Deckscan Unsure": ("tdeck1-120", "Prime Spec", False)}
+               "Deckscan Unsure": ("tdeck1-120", "Prime Spec", False),
+               "Deckscan Number": ("tdeck2-090", "Boss's Orders", False)}   # unsicher, aber die Nummer entscheidet
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -478,13 +479,16 @@ def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsy
         body = request.content.decode("latin-1")
         who = next(k for k in answers if k.replace(" ", "_") in body)
         cid, name, sure = answers[who]
-        return httpx.Response(200, json={"cards": [{"auto": sure, "confidence": 0.9 if sure else 0.4, "candidates": [
-            {"card_id": cid, "name": name, "local_id": cid.rsplit("-", 1)[1], "art_inliers": 40}]}]})
+        cands = [{"card_id": cid, "name": name, "local_id": cid.rsplit("-", 1)[1], "art_inliers": 40}]
+        if who == "Deckscan Number":     # bester Treffer ein anderer Druck, die Nummer 114 zeigt auf den richtigen
+            cands.append({"card_id": "tdeck1-114", "name": "Boss's Orders", "local_id": "114", "art_inliers": 38})
+        return httpx.Response(200, json={"cards": [{"auto": sure, "confidence": 0.9 if sure else 0.4, "candidates": cands}]})
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
 
     async def fake_get_card(card_id, lang="en"):
-        row = SessionLocal().get(TcgdexCatalog, card_id)
+        with SessionLocal() as s:
+            row = s.get(TcgdexCatalog, card_id)
         return tcgdex.TcgdexCard(id=card_id, localId=row.local_id, name=row.name_en, category=row.category,
                                  set={"id": row.set_id, "name": "Testset"})
 
@@ -496,10 +500,11 @@ def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsy
     deck = client.post(f"{API}/decks", json={"name": "Test-Rematch", "text": "Trainer: 1\n4 Boss's Orders TDA 114\n"}).json()["deck"]
     db = SessionLocal()
     ids = {}
-    for name, en in (("Deckscan Boss", "Boss's Orders"), ("Deckscan Odd", "Boss's Orders"), ("Deckscan Unsure", "Prime Spec")):
+    for name, en, nr in (("Deckscan Boss", "Boss's Orders", None), ("Deckscan Odd", "Boss's Orders", None),
+                         ("Deckscan Unsure", "Prime Spec", None), ("Deckscan Number", "Boss's Orders", "114/193")):
         fn = f"{name.replace(' ', '_')}.jpg"
         (tmp_path / "images" / fn).write_bytes(b"\xff\xd8 " + name.replace(" ", "_").encode())
-        c = PokemonCard(kartenname=name, englischer_name=en, besessen=True, deck_id=deck["id"],
+        c = PokemonCard(kartenname=name, englischer_name=en, karten_nr=nr, besessen=True, deck_id=deck["id"],
                         bild_scan_pfad=f"images/{fn}")
         db.add(c)
         db.flush()
@@ -516,11 +521,17 @@ def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsy
 
     deck_diag.main([str(deck["id"]), "--rematch", "--fix"])
     out = capsys.readouterr().out
-    assert "linked 1 card(s)" in out
+    assert "linked 2 card(s)" in out and "picked by its number" in out
     db.expire_all()
     assert db.get(PokemonCard, ids["Deckscan Boss"]).tcgdex_card_id == "tdeck1-114"
+    assert db.get(PokemonCard, ids["Deckscan Number"]).tcgdex_card_id == "tdeck1-114"   # nicht der beste Treffer
     assert db.get(PokemonCard, ids["Deckscan Odd"]).tcgdex_card_id is None       # Name passt nicht
     assert db.get(PokemonCard, ids["Deckscan Unsure"]).tcgdex_card_id is None    # nicht sicher
+    deck_diag.main([str(deck["id"]), "--rematch", "--fix", "--any-print"])
+    out = capsys.readouterr().out
+    db.expire_all()
+    assert db.get(PokemonCard, ids["Deckscan Unsure"]).tcgdex_card_id == "tdeck1-120"   # mit --any-print
+    assert db.get(PokemonCard, ids["Deckscan Odd"]).tcgdex_card_id is None
     db.execute(delete(PokemonCard).where(PokemonCard.id.in_(list(ids.values()))).execution_options(all_users=True))
     db.execute(delete(DeckSlot).where(DeckSlot.deck_id == deck["id"]))
     db.commit()
@@ -529,3 +540,57 @@ def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsy
 
 async def _async(v):
     return v
+
+
+def test_choose_the_print_by_hand(client, catalog):
+    """Zeile nur über den Namen gefunden (falsches Bild, z. B. die Full Art): Drucke
+    derselben Karte auflisten, einen wählen — die Karte ohne Druck bekommt ihn mit."""
+    from app.models.deck import DeckSlot
+    db = SessionLocal()
+    db.add_all([_row(f"{P}3-155", f"{P}3", "155", "Lana's Test", "Trainer", mark="H", trainer_type="Supporter"),
+                _row(f"{P}3-219", f"{P}3", "219", "Lana's Test", "Trainer", mark="H", trainer_type="Supporter",
+                     rarity="Special Illustration Rare")])
+    db.commit()
+    for cid, n in ((f"{P}3-155", 155), (f"{P}3-219", 219)):
+        db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == cid).update({"local_id_num": n})
+    db.commit()
+    try:
+        # nur über den Namen: der normale Druck, nicht die Special Illustration Rare dahinter
+        row, how = svc.match_card(db, "Lana's Test", None, None)
+        assert (row.card_id, how) == (f"{P}3-155", "name")
+
+        deck = client.post(f"{API}/decks", json={"name": "Test-Print", "text": "Trainer: 1\n1 Boss's Orders TDA 114\n"}).json()["deck"]
+        d = db.get(Deck, deck["id"])
+        db.add(DeckSlot(deck_id=d.id, tcgdex_card_id=f"{P}3-219", name="Lana's Test", count=1, section="trainer",
+                        match="name", position=5))
+        card = PokemonCard(kartenname="Deckscan Lana", englischer_name="Lana's Test", besessen=True, deck_id=d.id)
+        db.add(card)
+        db.commit()
+        got = client.get(f"{API}/decks/{d.id}").json()
+        slot = next(s for s in got["slots"] if s["name"] == "Lana's Test")
+        prints = client.get(f"{API}/decks/{d.id}/slots/{slot['id']}/prints").json()
+        assert [p["tcgdex_card_id"] for p in prints] == [f"{P}3-219", f"{P}3-155"]
+        assert [p["current"] for p in prints] == [True, False]
+
+        r = client.put(f"{API}/decks/{d.id}/slots/{slot['id']}", json={"tcgdex_card_id": f"{P}1-114"})
+        assert r.status_code == 400                                   # andere Karte, kein anderer Druck
+        got = client.put(f"{API}/decks/{d.id}/slots/{slot['id']}", json={"tcgdex_card_id": f"{P}3-155"}).json()
+        slot = next(s for s in got["slots"] if s["name"] == "Lana's Test")
+        assert slot["tcgdex_card_id"] == f"{P}3-155" and slot["match"] == "set" and slot["number"] == "155"
+        db.expire_all()
+        c = db.get(PokemonCard, card.id)
+        assert c.tcgdex_card_id == f"{P}3-155" and c.set_id == f"{P}3" and c.regulation_mark == "H"
+
+        # nur über den Namen gefunden, die eigene Karte kennt ihren Druck: die Zeile übernimmt ihn
+        s2 = db.get(DeckSlot, slot["id"])
+        s2.tcgdex_card_id, s2.match = f"{P}3-219", "name"
+        db.commit()
+        got = client.get(f"{API}/decks/{d.id}").json()
+        slot = next(s for s in got["slots"] if s["name"] == "Lana's Test")
+        assert slot["tcgdex_card_id"] == f"{P}3-155" and slot["match"] == "set"
+        db.execute(delete(PokemonCard).where(PokemonCard.id == card.id).execution_options(all_users=True))
+        db.commit()
+    finally:
+        db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id.like(f"{P}3-%")))
+        db.commit()
+        db.close()

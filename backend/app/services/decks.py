@@ -143,8 +143,11 @@ def set_ids_for_code(db: Session, code: Optional[str]) -> set[str]:
 
 
 def _best(rows: list[TcgdexCatalog]) -> TcgdexCatalog:
-    """Mehrere passende Drucke: der mit dem jüngsten Zeichen (sonst der neueste)."""
-    return sorted(rows, key=lambda r: (r.regulation_mark or "", r.set_id or "", r.card_id), reverse=True)[0]
+    """Mehrere passende Drucke: der mit dem jüngsten Zeichen, im neuesten Set — dort
+    der normale Druck (niedrigste Nummer), nicht die Full-Art/Secret-Rare dahinter."""
+    newest = max(rows, key=lambda r: (r.regulation_mark or "", r.set_id or ""))
+    same_set = [r for r in rows if (r.regulation_mark or "", r.set_id or "") == (newest.regulation_mark or "", newest.set_id or "")]
+    return min(same_set, key=lambda r: (r.local_id_num if r.local_id_num is not None else 1 << 30, r.card_id))
 
 
 def match_card(db: Session, name: str, set_code: Optional[str], number: Optional[str]
@@ -311,6 +314,52 @@ def add_slot(db: Session, deck: Deck, row: TcgdexCatalog, count: int = 1, how: s
     return slot
 
 
+def prints_for(db: Session, name: str) -> list[TcgdexCatalog]:
+    """Alle westlichen Drucke derselben Karte (Name nach den Regeln: Akzente, ’ und
+    ein Zusatz wie „(Ghetsis)" zählen nicht), jüngstes Zeichen zuerst."""
+    want = rule_name(name)
+    first = want.split()[0].split("'")[0] if want else ""
+    if not first:
+        return []
+    col = func.lower(func.coalesce(TcgdexCatalog.name_en, TcgdexCatalog.name))
+    rows = db.scalars(select(TcgdexCatalog).where(TcgdexCatalog.region == "west", col.like(f"{first}%"))).all()
+    rows = [r for r in rows if rule_name(r.name_en or r.name or "") == want]
+    return sorted(rows, key=lambda r: (r.regulation_mark or "", r.set_id or "", r.local_id_num or 0), reverse=True)
+
+
+def set_print(db: Session, deck: Deck, slot: DeckSlot, row: TcgdexCatalog, link_cards: bool = True) -> int:
+    """
+    Zeile auf einen anderen Druck derselben Karte stellen (von Hand gewählt). Steht
+    der Druck schon in einer anderen Zeile, wandert die Anzahl dorthin. link_cards:
+    eigene Karten dieser Zeile ohne Katalog-Druck bekommen ihn auch (Bild, Preis,
+    Legalität). Committet nicht. → Anzahl so verknüpfter Karten.
+    """
+    linked = 0
+    if link_cards:
+        for card, _how in coverage(db, deck).by_slot.get(slot.id, []):
+            if card.tcgdex_card_id:
+                continue
+            card.tcgdex_card_id, card.set_id = row.card_id, row.set_id
+            card.englischer_name = card.englischer_name or row.name_en
+            card.karten_nr = card.karten_nr or row.local_id
+            if row.dex_id is not None and card.dex_id is None:
+                card.dex_id = row.dex_id
+            regulation.apply_to_card(db, card)
+            linked += 1
+    other = next((s for s in _slots(db, deck.id) if s.id != slot.id and s.tcgdex_card_id
+                  and s.tcgdex_card_id.upper() == row.card_id.upper()), None)
+    if other is not None:
+        other.count = min(MAX_SLOT_COUNT, other.count + slot.count)
+        db.delete(slot)
+    else:
+        slot.tcgdex_card_id, slot.match = row.card_id, "set"
+        slot.name = row.name_en or row.name or slot.name
+        slot.set_code, slot.number = row.set_code or None, _num(row.local_id)
+        slot.section = section_of(row, slot.name)
+    db.flush()
+    return linked
+
+
 def _home_for(db: Session, deck: Deck, name: str, number: Optional[str],
               skip: Optional[DeckSlot] = None) -> tuple[Optional[DeckSlot], Optional[TcgdexCatalog], Optional[str]]:
     """
@@ -341,6 +390,17 @@ def relink(db: Session, deck: Deck) -> int:
     den gefundenen Druck eintragen. Committet nicht. → Anzahl geänderter Zeilen.
     """
     changed = 0
+    # nur über den Namen gefundene Zeile, deren eigene Karten alle denselben Druck
+    # haben (z. B. nach dem Verknüpfen der Karten): dieser Druck, samt seinem Bild
+    cov = coverage(db, deck)
+    for s in [s for s in _slots(db, deck.id) if s.match == "name" and s.tcgdex_card_id]:
+        ids = {c.tcgdex_card_id.upper() for c, _how in cov.by_slot.get(s.id, []) if c.tcgdex_card_id}
+        if len(ids) != 1 or s.tcgdex_card_id.upper() in ids:
+            continue
+        row = _rows(db, list(ids)).get(next(iter(ids)))
+        if row is not None and rule_name(row.name_en or row.name or "") == rule_name(s.name):
+            set_print(db, deck, s, row, link_cards=False)
+            changed += 1
     for s in [s for s in _slots(db, deck.id) if not s.tcgdex_card_id]:
         home, row, how = _home_for(db, deck, s.name, s.number, skip=s)
         if home is not None:

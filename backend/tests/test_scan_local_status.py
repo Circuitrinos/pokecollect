@@ -179,3 +179,43 @@ def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_loca
     for bad in ("[[0, 0], [1, 0], [1, 1]]", "kaputt", "[[0, 0], [9, 0], [1, 1], [0, 1]]", "x" * 500):
         post("binder", bad)                                    # unbrauchbar → wie bisher ohne Ecken
         assert b'name="page"' not in seen[-1]
+
+
+def test_nur_der_druck_offen_sperrt_nicht(client, provider_local, png_bytes, monkeypatch):
+    """Unsicher nur beim Druck (alle starken Treffer heißen gleich, z. B. Ultra Ball-
+    Nachdrucke mit derselben Grafik): bester vorgewählt, nicht „bitte wählen" —
+    sonst endet es mit „Keine davon" und die Karte hat keinen Katalog-Druck."""
+    from app.schemas.scan import ScanMatch
+
+    async def resolved(db, reads, default_lang="DE"):     # wie ein Scan mit erreichbarem TCGdex
+        return [ScanCandidate(position=r.position or 0, confidence=0.9, raw=r, suggested={"kartenname": r.name or ""},
+                              match=ScanMatch(tcgdex_card_id=r.tcgdex_card_id, name=r.name)) for r in reads]
+
+    monkeypatch.setattr(scan_module, "resolve_reads", resolved)
+
+    def matcher(cands):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"mode": "single", "ms": 5, "cards": [{
+                "position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "auto": False,
+                "confidence": 0.45, "candidates": cands}]})
+        monkeypatch.setattr(local_match, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    def scan():
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")}, data={"mode": "single"})
+        assert r.status_code == 200, r.text
+        return r.json()["candidates"][0]
+
+    ball = lambda cid, inl: {"card_id": cid, "name": "Ultra Ball", "local_id": cid.rsplit("-", 1)[1], "art_inliers": inl}  # noqa: E731
+    matcher([ball("me01-131", 78), ball("sv01-196", 75), ball("me02.5-213", 70)])
+    c = scan()
+    assert c["print_choice"] is True and c["needs_choice"] is False
+    assert c["match"]["tcgdex_card_id"] == "me01-131" and len(c["alternatives"]) == 3
+    # ein starker Treffer mit anderem Namen: wirklich unklar → weiter „bitte wählen"
+    matcher([ball("me01-131", 78), {"card_id": "me01-119", "name": "Lillie's Determination", "local_id": "119",
+                                     "art_inliers": 60}])
+    c = scan()
+    assert c["needs_choice"] is True and c["print_choice"] is False
+    # schwacher andersnamiger Treffer zählt nicht
+    matcher([ball("me01-131", 78), ball("sv01-196", 70), {"card_id": "dp3-124", "name": "Other", "local_id": "124",
+                                                           "art_inliers": 20}])
+    assert scan()["print_choice"] is True

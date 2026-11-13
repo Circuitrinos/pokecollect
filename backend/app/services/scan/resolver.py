@@ -45,7 +45,8 @@ def _denominator(karten_nr: Optional[str]) -> Optional[int]:
     if not karten_nr or "/" not in karten_nr:
         return None
     part = karten_nr.split("/", 1)[1].strip()
-    return int(part) if part.isdigit() else None
+    # isdigit() wäre auch für „¹" oder „²" wahr, int() aber nicht: nur 0–9
+    return int(part) if part.isascii() and part.isdigit() else None
 
 
 def _norm_name(name: Optional[str]) -> str:

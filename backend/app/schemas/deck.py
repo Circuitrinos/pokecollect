@@ -45,10 +45,27 @@ class DeckSlotAdd(BaseModel):
 
 
 class DeckSlotUpdate(BaseModel):
-    _v_null = field_validator("count", "section", mode="before")(reject_explicit_null)
+    _v_null = field_validator("count", "section", "tcgdex_card_id", mode="before")(reject_explicit_null)
 
     count: Optional[int] = Field(None, ge=0, le=60)    # 0 = aus der Liste nehmen
     section: Optional[DeckSection] = None
+    # anderer Druck derselben Karte (Auswahl aus GET …/prints)
+    tcgdex_card_id: Optional[str] = Field(None, min_length=1, max_length=64)
+    # dabei den eigenen Karten dieser Zeile ohne Katalog-Druck denselben geben
+    link_cards: bool = True
+
+
+class DeckPrint(BaseModel):
+    """Ein Druck derselben Karte (gleicher Name nach den Regeln) zur Auswahl."""
+    tcgdex_card_id: str
+    name: str
+    set_code: Optional[str] = None
+    set_name: Optional[str] = None
+    local_id: Optional[str] = None
+    rarity: Optional[str] = None
+    regulation_mark: Optional[str] = None
+    image_url: Optional[str] = None
+    current: bool = False
 
 
 class DeckCardsAdd(BaseModel):
