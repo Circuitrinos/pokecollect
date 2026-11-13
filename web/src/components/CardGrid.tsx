@@ -10,6 +10,7 @@ import FirstEditionBadge from "@/components/FirstEditionBadge";
 import PrizePackBadge from "@/components/PrizePackBadge";
 import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
+import { useBinderPlace } from "@/lib/binderPlace";
 
 type Props = {
   cards: Card[];
@@ -45,6 +46,7 @@ const RARITY_BORDER: Record<string, string> = {
 
 export default function CardGrid({ cards, apiBase, placeholderEnabled = true, renderOverlay, selection, linkCards = true }: Props) {
   const { t, lang } = useI18n();
+  const place = useBinderPlace();
 
   if (!cards.length) {
     return (
@@ -166,9 +168,9 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
                 {/* Wo die Karte steckt: Sammlungen und Deck (nur in Kartenlisten mitgeliefert) */}
                 {Array.isArray(card.sammlungen) && (card.sammlungen.length > 0 || card.deck_name || card.besessen) && (
                   <div className="flex items-center gap-1 text-[10px] leading-tight min-w-0" data-testid="card-where"
-                    title={[...card.sammlungen.map((c) => `📁 ${c.name}`), card.deck_name ? `🃏 ${card.deck_name}` : ""].filter(Boolean).join("\n") || t.card_no_collection}>
+                    title={[...card.sammlungen.map((c) => `📁 ${place.long(c)}`), card.deck_name ? `🃏 ${card.deck_name}` : ""].filter(Boolean).join("\n") || t.card_no_collection}>
                     {card.sammlungen.length > 0 ? (
-                      <span className="truncate text-sky-300/90">📁 {card.sammlungen.map((c) => c.name).join(", ")}</span>
+                      <span className="truncate text-sky-300/90">📁 {card.sammlungen.map((c) => place.short(c)).join(", ")}</span>
                     ) : card.besessen ? (
                       <span className="truncate italic text-amber-400/80">{t.card_no_collection}</span>
                     ) : null}

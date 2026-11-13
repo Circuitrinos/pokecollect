@@ -337,8 +337,10 @@ def get_card(card_id: int, db: Session = Depends(get_db)):
 @router.get("/{card_id}/collections", response_model=list[CollectionResponse])
 def get_card_collections(card_id: int, db: Session = Depends(get_db)):
     _card_or_404(card_id, db)
-    colls = db.scalars(
-        select(Collection)
+    from app.schemas.card import binder_place
+
+    colls = db.execute(
+        select(Collection, collection_cards.c.position)
         .join(collection_cards, collection_cards.c.collection_id == Collection.id)
         .where(collection_cards.c.card_id == card_id)
         .order_by(Collection.name)
@@ -347,8 +349,9 @@ def get_card_collections(card_id: int, db: Session = Depends(get_db)):
         CollectionResponse(
             id=c.id, name=c.name, beschreibung=c.beschreibung,
             binder_layout=c.binder_layout or "3x3", erstellt_am=c.erstellt_am,
+            card_place=binder_place(position, c.binder_layout),
         )
-        for c in colls
+        for c, position in colls
     ]
 
 

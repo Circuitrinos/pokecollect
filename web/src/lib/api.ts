@@ -101,7 +101,7 @@ export type Card = {
   deck_id?: number | null;            // Deck, in dem die Karte steckt (höchstens eines)
   deck_name?: string | null;
   // Sammlungen der Karte (nur in Kartenlisten; undefined = nicht abgefragt)
-  sammlungen?: { id: number; name: string }[] | null;
+  sammlungen?: { id: number; name: string; place?: { page: number; slot: number; row: number; col: number } | null }[] | null;
   // TCGdex-Anreicherung (v0.7.0)
   tcgdex_card_id: string | null;
   set_id: string | null;
@@ -214,6 +214,7 @@ export type CollectionProgress = {
 export type Collection = {
   id: number;
   name: string;
+  card_place?: { page: number; slot: number; row: number; col: number } | null;   // nur bei den Sammlungen einer Karte
   beschreibung: string | null;
   binder_layout: string | null;
   binder_slots: number | null;

@@ -7,6 +7,7 @@ import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
 import { SearchSyntaxHelp, SearchWarnings, appendTerm } from "@/components/SearchSyntax";
 import { CardTagPills, useCardTags } from "@/components/CardTags";
+import { useBinderPlace } from "@/lib/binderPlace";
 
 // „Karte zuweisen" (Sammlung, Deck): eigene Karten mit der Suchsyntax finden (wie
 // bei Limitless: set:, n:, is:holo, is:stamp, in:none …), Schnellfilter, und je
@@ -29,6 +30,7 @@ export default function AssignCards({
 }) {
   const { t, lang } = useI18n();
   const tagsOf = useCardTags();
+  const place = useBinderPlace();
   const [query, setQuery] = useState(initialQuery);
   const [planning, setPlanning] = useState(false);
   const [free, setFree] = useState(false);
@@ -137,8 +139,8 @@ export default function AssignCards({
                   </div>
                   {(c.sammlungen?.length || c.deck_name) ? (
                     <div className="truncate text-[10px]" data-testid="assign-where"
-                      title={[...(c.sammlungen ?? []).map((x) => `📁 ${x.name}`), c.deck_name ? `🃏 ${c.deck_name}` : ""].filter(Boolean).join("\n")}>
-                      {(c.sammlungen ?? []).length > 0 && <span className="text-sky-300/90">📁 {(c.sammlungen ?? []).map((x) => x.name).join(", ")} </span>}
+                      title={[...(c.sammlungen ?? []).map((x) => `📁 ${place.long(x)}`), c.deck_name ? `🃏 ${c.deck_name}` : ""].filter(Boolean).join("\n")}>
+                      {(c.sammlungen ?? []).length > 0 && <span className="text-sky-300/90">📁 {(c.sammlungen ?? []).map((x) => place.short(x)).join(", ")} </span>}
                       {c.deck_name && <span className={otherDeck ? "text-amber-300" : "text-pink-300/90"}>🃏 {c.deck_name}</span>}
                     </div>
                   ) : null}

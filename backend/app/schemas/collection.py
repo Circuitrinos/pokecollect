@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas._grenzen import PgNichtNegativ
 from app.schemas._validators import reject_control_chars, reject_explicit_null
-from app.schemas.card import CardResponse
+from app.schemas.card import BinderPlace, CardResponse
 
 BINDER_LAYOUTS = ["1x1", "2x2", "3x3", "4x3", "3x4", "4x4"]
 
@@ -72,6 +72,8 @@ class CollectionResponse(CollectionBase):
     ziel_master_set: bool = False
     fortschritt: Optional[ProgressResponse] = None  # nur bei typ="set_ziel"
     geteilt_mit: int = 0                            # mit so vielen Freunden geteilt
+    # nur bei GET /cards/{id}/collections: wo diese Karte im Binder steckt
+    card_place: Optional[BinderPlace] = None
 
     model_config = {"from_attributes": True}
 

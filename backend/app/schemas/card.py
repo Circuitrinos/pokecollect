@@ -283,9 +283,33 @@ class PreisHistorieResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BinderPlace(BaseModel):
+    """Wo die Karte im Binder steckt (1-basiert, wie die Binder-Ansicht zählt)."""
+    page: int
+    slot: int        # Fach auf der Seite
+    row: int
+    col: int
+
+
+def binder_place(position, layout: Optional[str]) -> Optional[BinderPlace]:
+    """Fach-Index (0-basiert, über alle Seiten) + Layout „3x3" (Spalten x Reihen) → Seite/Fach."""
+    if position is None or position < 0:
+        return None
+    cols, rows = 3, 3
+    if layout and "x" in layout:
+        try:
+            cols, rows = (max(1, int(v)) for v in layout.split("x", 1))
+        except ValueError:
+            cols, rows = 3, 3
+    per = cols * rows
+    idx = position % per
+    return BinderPlace(page=position // per + 1, slot=idx + 1, row=idx // cols + 1, col=idx % cols + 1)
+
+
 class CollectionRef(BaseModel):
     id: int
     name: str
+    place: Optional[BinderPlace] = None     # Seite/Fach im Binder (None = ohne Platz)
 
 
 class SearchWarning(BaseModel):

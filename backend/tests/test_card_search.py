@@ -154,7 +154,7 @@ def test_warnings_sort_and_collections_in_the_list(client, cards):
     assert body["search_sort"] == "collection"
     assert order[0] == "Qs Boss" and order[-1] == "Qs Energy"          # „Qs Album B" vor „Qs Binder A", ohne Sammlung am Ende
     by = {c["kartenname"]: c for c in body["items"]}
-    assert by["Qsmon ex"]["sammlungen"] == [{"id": cards["binder"], "name": "Qs Binder A"}]
+    assert by["Qsmon ex"]["sammlungen"] == [{"id": cards["binder"], "name": "Qs Binder A", "place": {"page": 1, "slot": 1, "row": 1, "col": 1}}]
     assert by["Qs Energy"]["sammlungen"] == []
     assert by["Qs Boss"]["deck_name"] == "Test-Qs deck"
     rev = [c["kartenname"] for c in client.get(f"{API}/cards", params={"search": "qs", "sort": "collection", "reverse": True,
@@ -167,5 +167,25 @@ def test_deck_line_picker_shows_the_collections(client, cards):
     slot = next(s for sec in ("pokemon", "trainer", "energy") for s in deck["slots"] if s["section"] == sec)
     got = client.get(f"{API}/decks/{deck['id']}/slots/{slot['id']}/candidates").json()
     by = {c["card"]["kartenname"]: c["card"] for c in got}
-    assert by["Qsmon ex"]["sammlungen"] == [{"id": cards["binder"], "name": "Qs Binder A"}]
+    assert by["Qsmon ex"]["sammlungen"] == [{"id": cards["binder"], "name": "Qs Binder A", "place": {"page": 1, "slot": 1, "row": 1, "col": 1}}]
     client.delete(f"{API}/decks/{deck['id']}")
+
+
+def test_binder_page_and_slot_for_each_collection(client, cards):
+    from app.schemas.card import binder_place
+
+    assert binder_place(0, "3x3").model_dump() == {"page": 1, "slot": 1, "row": 1, "col": 1}
+    assert binder_place(13, "3x3").model_dump() == {"page": 2, "slot": 5, "row": 2, "col": 2}
+    assert binder_place(9, "4x3").model_dump() == {"page": 1, "slot": 10, "row": 3, "col": 2}
+    assert binder_place(None, "3x3") is None and binder_place(5, "kaputt").page == 1
+    client.put(f"{API}/collections/{cards['binder']}", json={"binder_layout": "2x2"})
+    client.put(f"{API}/collections/{cards['binder']}/cards/positions",
+               json={"positions": [{"card_id": cards["Qsmon"], "position": 6}]})
+    by = {c["kartenname"]: c for c in client.get(f"{API}/cards", params={"search": "qs", "limit": 100}).json()["items"]}
+    place = by["Qsmon"]["sammlungen"][0]["place"]
+    assert place == {"page": 2, "slot": 3, "row": 2, "col": 1}, place
+    panel = client.get(f"{API}/cards/{cards['Qsmon']}/collections").json()
+    assert panel[0]["card_place"] == place
+    deck = client.get(f"{API}/decks/{cards['deck']}").json()
+    boss = next(c for c in deck["extra"] + [x["card"] for s in deck["slots"] for x in s["cards"]] if c["kartenname"] == "Qs Boss")
+    assert boss["sammlungen"][0]["name"] == "Qs Album B" and boss["sammlungen"][0]["place"]["page"] == 1

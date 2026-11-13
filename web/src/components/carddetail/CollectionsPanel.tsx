@@ -4,6 +4,7 @@ import Link from "next/link";
 import toast from "react-hot-toast";
 import { Collection, collectionApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { useBinderPlace } from "@/lib/binderPlace";
 
 // Sammlungs-Zuordnung der Kartendetailseite (Issue #14): zeigt die Sammlungen
 // der Karte und erlaubt Zuweisen/Entfernen. Herausgeschnitten aus
@@ -15,6 +16,7 @@ type Props = {
 
 export default function CollectionsPanel({ cardId }: Props) {
   const { t } = useI18n();
+  const place = useBinderPlace();
   const [cardCollections, setCardCollections] = useState<Collection[]>([]);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
 
@@ -57,6 +59,9 @@ export default function CollectionsPanel({ cardId }: Props) {
           {cardCollections.map((c) => (
             <span key={c.id} className="inline-flex items-center gap-1 bg-gray-800 rounded-full px-3 py-1 text-sm text-white">
               <Link href={`/collections/${c.id}`} className="hover:text-pokemon-yellow">{c.name}</Link>
+              {c.card_place && (
+                <span className="text-xs text-sky-300/90" data-testid="collection-place">· {place.longBare(c.card_place)}</span>
+              )}
               <button type="button"
                 onClick={() => handleRemoveFromCollection(c.id)}
                 className="text-gray-500 hover:text-red-400 ml-1"

@@ -14,6 +14,7 @@ import { valueLabel } from "@/lib/enumLabels";
 import { DeckStatusBadge } from "@/components/decks/DeckBits";
 import AssignCards from "@/components/AssignCards";
 import { CardTagPills, useCardTags } from "@/components/CardTags";
+import { useBinderPlace } from "@/lib/binderPlace";
 
 const FORMATS: DeckFormat[] = ["standard", "expanded", "unlimited"];
 const SECTIONS: DeckSection[] = ["pokemon", "trainer", "energy"];
@@ -49,18 +50,29 @@ function CardTile({ card, match, title, mainLang, busy, onRemove, removeTitle }:
   onRemove: () => void; removeTitle: string;
 }) {
   const tags = useCardTags()(card, { mainLang });
+  const place = useBinderPlace();
+  const where = card.sammlungen ?? [];
+  // Seite/Fach im Binder zum Heraussuchen: die erste Sammlung unter dem Bild, alle im Tooltip
+  const fullTitle = [title, ...where.map((c) => `📁 ${place.long(c)}`)].filter(Boolean).join("\n");
   return (
-    <div data-testid="slot-card" title={title}
+    <div data-testid="slot-card" title={fullTitle}
       className={`relative w-14 sm:w-16 shrink-0 rounded ${match === "other_print" ? "ring-2 ring-yellow-500/80" : ""}`}>
-      <Link href={`/cards/${card.id}`} className="block aspect-[63/88] rounded overflow-hidden bg-gray-800 hover:ring-2 hover:ring-pokemon-yellow">
-        <Thumb card={card} className="w-full h-full" />
-      </Link>
-      {(tags.length > 0 || match === "other_print") && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap gap-0.5 p-0.5">
-          {match === "other_print" && <span className="rounded bg-yellow-600/90 px-0.5 text-[9px] leading-tight text-black">⚠</span>}
-          {tags.map((tag) => (
-            <span key={tag.key} title={tag.title} className={`rounded px-1 text-[9px] leading-tight font-medium ${tag.cls}`}>{tag.label}</span>
-          ))}
+      <div className="relative">
+        <Link href={`/cards/${card.id}`} className="block aspect-[63/88] rounded overflow-hidden bg-gray-800 hover:ring-2 hover:ring-pokemon-yellow">
+          <Thumb card={card} className="w-full h-full" />
+        </Link>
+        {(tags.length > 0 || match === "other_print") && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap gap-0.5 p-0.5">
+            {match === "other_print" && <span className="rounded bg-yellow-600/90 px-0.5 text-[9px] leading-tight text-black">⚠</span>}
+            {tags.map((tag) => (
+              <span key={tag.key} title={tag.title} className={`rounded px-1 text-[9px] leading-tight font-medium ${tag.cls}`}>{tag.label}</span>
+            ))}
+          </div>
+        )}
+      </div>
+      {where.length > 0 && (
+        <div className="mt-0.5 truncate text-[9px] leading-tight text-sky-300/90" data-testid="slot-card-place">
+          {where[0].place ? place.bare(where[0].place) : "📁"} {where[0].name}{where.length > 1 ? ` +${where.length - 1}` : ""}
         </div>
       )}
       <button type="button" disabled={busy} title={removeTitle} aria-label={removeTitle} data-testid="slot-card-remove"
@@ -77,6 +89,7 @@ function PickTags({ card }: { card: Card }) {
 
 export default function DeckPage() {
   const { t, lang } = useI18n();
+  const place = useBinderPlace();
   const router = useRouter();
   const params = useParams();
   const id = Number(params.id);
@@ -498,9 +511,9 @@ export default function DeckPage() {
                       <PickTags card={card} />
                       {Array.isArray(card.sammlungen) && (
                         <span className="block text-[11px] truncate" data-testid="deck-pick-where"
-                          title={card.sammlungen.map((c) => c.name).join("\n")}>
+                          title={card.sammlungen.map((c) => place.long(c)).join("\n")}>
                           {card.sammlungen.length > 0
-                            ? <span className="text-sky-300/90">📁 {card.sammlungen.map((c) => c.name).join(", ")}</span>
+                            ? <span className="text-sky-300/90">📁 {card.sammlungen.map((c) => place.short(c)).join(", ")}</span>
                             : <span className="italic text-amber-400/80">{t.card_no_collection}</span>}
                         </span>
                       )}

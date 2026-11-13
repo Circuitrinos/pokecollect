@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.card import PokemonCard
 from app.models.deck import Deck, DeckSlot
-from app.schemas.card import CardResponse
 from app.schemas.deck import (
     DeckAssigned, DeckCandidate, DeckCardsAdd, DeckCreate, DeckDetail, DeckFillResult, DeckImport,
     DeckImportResult, DeckLegality, DeckPrint, DeckSlotAdd, DeckSlotResponse, DeckSlotUpdate, DeckSummary,
@@ -70,8 +69,13 @@ def _detail(db: Session, deck: Deck, request: Request) -> DeckDetail:
     slots = _relinked(db, deck)
     legal = svc.legality(db, deck, slots)
     cov = svc.coverage(db, deck, slots)
+    from app.services.card_collections import with_collections
+
     rows = svc._rows(db, (s.tcgdex_card_id for s in slots))
     free = svc.FreeCards(db)
+    # die eigenen Karten mit ihren Sammlungen (Seite/Fach im Binder zum Heraussuchen)
+    owned = [c for s in slots for c, _how in cov.by_slot[s.id]] + list(cov.extra)
+    resp = {r.id: r for r in with_collections(db, owned)}
     out = []
     for s in slots:
         info = legal["slots"][s.id]
@@ -82,13 +86,13 @@ def _detail(db: Session, deck: Deck, request: Request) -> DeckDetail:
             image_url=_image(rows.get(s.tcgdex_card_id) if s.tcgdex_card_id else None, base_url),
             rarity=info["rarity"], stage=info["stage"], trainer_type=info["trainer_type"],
             status=info["status"], legal_mark=info["legal_mark"], ace_spec=info["ace_spec"],
-            cards=[DeckAssigned(match=how, card=CardResponse.model_validate(c)) for c, how in cov.by_slot[s.id]],
+            cards=[DeckAssigned(match=how, card=resp[c.id]) for c, how in cov.by_slot[s.id]],
             available=sum(1 for _c, how in cands if how != "other_print"),
             available_other=sum(1 for _c, how in cands if how == "other_print"),
         ))
     legality = DeckLegality(**{k: v for k, v in legal.items() if k != "slots"})
     return DeckDetail(**_summary_fields(db, deck, base_url, slots, legal, cov), legality=legality, slots=out,
-                      extra=[CardResponse.model_validate(c) for c in cov.extra])
+                      extra=[resp[c.id] for c in cov.extra])
 
 
 def _touch(deck: Deck) -> None:
