@@ -358,7 +358,7 @@ export default function DeckPage() {
                 return (
                   <div key={s.id} data-testid="deck-slot"
                     className={`flex gap-2 rounded p-2 bg-gray-900/40 ${flag === "error" ? "ring-1 ring-red-700/70" : flag === "warning" ? "ring-1 ring-yellow-700/50" : ""}`}>
-                    <div className="w-11 shrink-0 aspect-[63/88] rounded bg-gray-800 overflow-hidden">
+                    <div className="w-11 sm:w-14 shrink-0 self-start aspect-[63/88] rounded bg-gray-800 overflow-hidden" data-testid="slot-image">
                       {s.image_url && (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={s.image_url} alt="" className="w-full h-full object-cover" loading="lazy"
