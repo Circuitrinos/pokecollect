@@ -4,7 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "@/components/AppImage";
 import toast from "react-hot-toast";
-import { API_BASE, Card, CollectionCard, Collection, SearchWarning, cardApi, collectionApi } from "@/lib/api";
+import { API_BASE, Card, CollectionCard, Collection, cardApi, collectionApi } from "@/lib/api";
 import SortableCardGrid from "@/components/SortableCardGrid";
 import BinderView, { BinderItem, BinderGhost, ASSIGN_DRAG_TYPE } from "@/components/BinderView";
 import BinderEditor from "@/components/BinderEditor";
@@ -23,7 +23,7 @@ import BulkBar, { SelectToggle } from "@/components/BulkBar";
 import { cardImageSrc, extractSetCode } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
 import { useI18n } from "@/lib/i18n";
-import { SearchSyntaxHelp, SearchWarnings, appendTerm } from "@/components/SearchSyntax";
+import AssignCards from "@/components/AssignCards";
 import { scanHref } from "@/lib/navRegistry";
 import { useSets } from "@/lib/useSets";
 
@@ -75,18 +75,6 @@ export default function CollectionDetailPage() {
 
   // Karten-Zuweisung (Suche)
   const [showAssign, setShowAssign] = useState(false);
-  // Planungs-Modus: statt besessener Karten die Wunschliste durchsuchen (#29)
-  const [assignPlanning, setAssignPlanning] = useState(false);
-  const [query, setQuery] = useState("");
-  // Schnellfilter: nur Karten, die noch in keiner Sammlung / in keinem Deck stecken
-  const [assignFree, setAssignFree] = useState(false);
-  const [assignNoDeck, setAssignNoDeck] = useState(false);
-  const [assignInfo, setAssignInfo] = useState<{ total: number; warnings: SearchWarning[] }>({ total: 0, warnings: [] });
-  // allSearchResults: aus API (nur bei Query-Änderung aktualisiert, kein Flicker bei cards-Änderung)
-  const [allSearchResults, setAllSearchResults] = useState<Card[]>([]);
-  const [searching, setSearching] = useState(false);
-  // results: lokal gefiltert (Karten die schon in der Sammlung sind, werden ausgeblendet)
-  const results = allSearchResults.filter((c) => !cards.some((cc) => cc.id === c.id));
 
   const loadCards = useCallback((silent = false) => {
     if (!silent) setLoading(true);
@@ -130,32 +118,6 @@ export default function CollectionDetailPage() {
     if (!Number.isNaN(id)) { loadMeta(); loadCards(); }
   }, [id, loadMeta, loadCards]);
 
-  // Suche: nur besessene Karten (keine Pokédex-Platzhalter)
-  // Kein 'cards' in deps → kein Flicker wenn Karte hinzugefügt wird (lokales Filter reicht)
-  useEffect(() => {
-    if (!showAssign) { setAllSearchResults([]); return; }
-    const handle = setTimeout(async () => {
-      setSearching(true);
-      try {
-        // Planungs-Modus → Wunschliste (nicht-besessen) statt besessener Karten
-        const p: Record<string, unknown> = assignPlanning
-          ? { limit: 80, wunschliste: true }
-          : { limit: 80, besessen: true };
-        const q = query.trim();
-        if (q) p.search = q; // Suchsyntax wie bei Limitless (set:, n:, is:holo, in:none …)
-        if (assignFree) p.collection = "none";
-        if (assignNoDeck) p.deck = "none";
-        if (!q) p.sort = "hinzugefuegt_am";   // ohne Suche: die zuletzt hinzugefügten zuerst
-        if (!q) p.reverse = true;
-        const r = await cardApi.list(p);
-        setAllSearchResults(r.data.items);
-        setAssignInfo({ total: r.data.total, warnings: r.data.search_warnings ?? [] });
-      } finally {
-        setSearching(false);
-      }
-    }, 350);
-    return () => clearTimeout(handle);
-  }, [query, showAssign, assignPlanning, assignFree, assignNoDeck]);
 
   const handleAdd = async (cardId: number) => {
     try {
@@ -367,87 +329,11 @@ export default function CollectionDetailPage() {
           onSaved={(n) => setCollection((c) => (c ? { ...c, geteilt_mit: n } : c))} />
       )}
 
-      {/* Zuweisungs-Panel */}
+      {/* Zuweisungs-Panel: Suchsyntax, Schnellfilter, je Treffer Folierung/Stempel/1st und wo er steckt */}
       {!isGoal && showAssign && (
-        <div className="bg-pokemon-card rounded-lg p-4 mb-6">
-          <div className="flex items-center gap-2 mb-1">
-            <input
-              type="text"
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t.collection_search_placeholder}
-              data-testid="assign-search"
-              className="min-w-0 flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
-            />
-            <SearchSyntaxHelp align="right" onPick={(ex) => setQuery((q) => appendTerm(q, ex))} />
-          </div>
-          <SearchWarnings warnings={assignInfo.warnings} />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-gray-400 text-xs mt-2 mb-3">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={assignPlanning}
-                onChange={(e) => setAssignPlanning(e.target.checked)}
-              />
-              {t.collection_add_planning}
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={assignFree} onChange={(e) => setAssignFree(e.target.checked)} data-testid="assign-free" />
-              {t.collection_assign_free}
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={assignNoDeck} onChange={(e) => setAssignNoDeck(e.target.checked)} data-testid="assign-no-deck" />
-              {t.collection_assign_no_deck}
-            </label>
-            {!searching && <span className="ml-auto text-gray-500" data-testid="assign-count">{t.collection_assign_count(allSearchResults.length, assignInfo.total)}</span>}
-          </div>
-          {searching ? (
-            <div className="text-gray-500 text-sm py-4 text-center">{t.detail_loading}</div>
-          ) : results.length === 0 ? (
-            <div className="text-gray-500 text-sm py-4 text-center">{t.collection_no_results}</div>
-          ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2 max-h-[28rem] overflow-y-auto pr-1">
-              {results.map((c) => {
-                const { src, isPlaceholder, fallbacks } = cardImageSrc(c, API_BASE);
-                const name = lang === "EN" && c.englischer_name ? c.englischer_name : c.kartenname;
-                return (
-                  <button type="button"
-                    key={c.id}
-                    onClick={() => handleAdd(c.id)}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData(ASSIGN_DRAG_TYPE, String(c.id))}
-                    title={t.collection_add}
-                    className="group text-left bg-gray-800/40 rounded-lg overflow-hidden border border-transparent hover:border-green-500 cursor-grab"
-                  >
-                    <div className="aspect-[63/88] relative bg-gray-800">
-                      {src && (
-                        <Image src={src} fallbacks={fallbacks} alt={name} fill className={isPlaceholder ? "object-contain p-1 opacity-70" : "object-cover"} sizes="120px" />
-                      )}
-                      <div className="absolute inset-0 bg-green-600/0 group-hover:bg-green-600/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                        <span className="bg-green-700 text-white text-xs px-2 py-1 rounded">+ {t.collection_add}</span>
-                      </div>
-                    </div>
-                    <div className="px-1 py-1">
-                      <div className="text-white text-[11px] truncate">{name}</div>
-                      <div className="flex items-center gap-1 text-gray-500 text-[10px]">
-                        <span className="truncate">{extractSetCode(c.set_edition)} {c.karten_nr ?? ""}</span>
-                        {c.seltenheit && <RarityBadge rarity={c.seltenheit} language={c.sprache} size="sm" />}
-                        {c.folierung && c.folierung !== "Normal" && <span className="shrink-0 text-gray-400">{c.folierung === "Reverse Holo" ? "RH" : c.folierung}</span>}
-                      </div>
-                      {(c.sammlungen?.length || c.deck_name) ? (
-                        <div className="truncate text-[10px]" data-testid="assign-where"
-                          title={[...(c.sammlungen ?? []).map((x) => `📁 ${x.name}`), c.deck_name ? `🃏 ${c.deck_name}` : ""].filter(Boolean).join("\n")}>
-                          {(c.sammlungen ?? []).length > 0 && <span className="text-sky-300/90">📁 {(c.sammlungen ?? []).map((x) => x.name).join(", ")} </span>}
-                          {c.deck_name && <span className="text-pink-300/90">🃏 {c.deck_name}</span>}
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        <div className="mb-6">
+          <AssignCards excludeIds={cards.map((c) => c.id)} onAdd={(c) => handleAdd(c.id)}
+            planningToggle freeFilter dragType={ASSIGN_DRAG_TYPE} />
         </div>
       )}
 

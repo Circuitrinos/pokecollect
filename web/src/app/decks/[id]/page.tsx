@@ -12,6 +12,8 @@ import { apiErrorText } from "@/lib/uiLang";
 import { cardImageSrc, imgFallback } from "@/lib/utils";
 import { valueLabel } from "@/lib/enumLabels";
 import { DeckStatusBadge } from "@/components/decks/DeckBits";
+import AssignCards from "@/components/AssignCards";
+import { CardTagPills, useCardTags } from "@/components/CardTags";
 
 const FORMATS: DeckFormat[] = ["standard", "expanded", "unlimited"];
 const SECTIONS: DeckSection[] = ["pokemon", "trainer", "energy"];
@@ -40,18 +42,13 @@ function Thumb({ card, className }: { card: Card; className?: string }) {
   return <img src={src} alt="" loading="lazy" onError={imgFallback(fallbacks)} className={`rounded object-cover bg-gray-800 ${className ?? ""}`} />;
 }
 
-const FOIL_SHORT: Record<string, string> = { "Reverse Holo": "RH", Holo: "Holo" };
-
 /** Eine eigene Karte im Deck als Bild (statt nur „EN"): Folierung/abweichende Sprache als
  *  kleines Schild, ⚠ + gelber Rand bei anderem Druck, ✕ nimmt sie aus dem Deck. */
 function CardTile({ card, match, title, mainLang, busy, onRemove, removeTitle }: {
   card: Card; match?: DeckMatch; title: string; mainLang: string | null; busy: boolean;
   onRemove: () => void; removeTitle: string;
 }) {
-  const tags = [
-    card.sprache && card.sprache !== mainLang ? card.sprache : null,
-    card.folierung && card.folierung !== "Normal" ? (FOIL_SHORT[card.folierung] ?? card.folierung) : null,
-  ].filter(Boolean) as string[];
+  const tags = useCardTags()(card, { mainLang });
   return (
     <div data-testid="slot-card" title={title}
       className={`relative w-14 sm:w-16 shrink-0 rounded ${match === "other_print" ? "ring-2 ring-yellow-500/80" : ""}`}>
@@ -62,7 +59,7 @@ function CardTile({ card, match, title, mainLang, busy, onRemove, removeTitle }:
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap gap-0.5 p-0.5">
           {match === "other_print" && <span className="rounded bg-yellow-600/90 px-0.5 text-[9px] leading-tight text-black">⚠</span>}
           {tags.map((tag) => (
-            <span key={tag} className="rounded bg-black/75 px-1 text-[9px] leading-tight text-gray-100">{tag}</span>
+            <span key={tag.key} title={tag.title} className={`rounded px-1 text-[9px] leading-tight font-medium ${tag.cls}`}>{tag.label}</span>
           ))}
         </div>
       )}
@@ -71,6 +68,11 @@ function CardTile({ card, match, title, mainLang, busy, onRemove, removeTitle }:
         className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full border border-gray-700 bg-gray-900/90 text-[10px] leading-none text-gray-400 hover:text-red-400">✕</button>
     </div>
   );
+}
+
+function PickTags({ card }: { card: Card }) {
+  const tags = useCardTags()(card);
+  return <CardTagPills tags={tags} className="mt-0.5" />;
 }
 
 export default function DeckPage() {
@@ -90,6 +92,8 @@ export default function DeckPage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogItem[] | null>(null);
   const [picker, setPicker] = useState<{ slot: DeckSlot; items: { match: DeckMatch; card: Card }[] | null } | null>(null);
+  // „Karte zuweisen": null = zu, sonst die Suche, mit der es aufgeht
+  const [assign, setAssign] = useState<string | null>(null);
   const refreshed = useRef(false);
 
   const show = useCallback((d: DeckDetail) => { setDeck(d); setNotes(d.notizen ?? ""); }, []);
@@ -224,6 +228,11 @@ export default function DeckPage() {
     setPicker(null);
     await run(() => deckApi.addCards(id, [cardId]));
   };
+  const assignCard = async (card: Card) => {
+    const elsewhere = card.deck_id != null && card.deck_id !== id;
+    if (elsewhere && !confirm(t.deck_assign_move(card.deck_name ?? ""))) return;
+    await run(() => deckApi.addCards(id, [card.id], elsewhere), t.collection_added);
+  };
 
   // PTCGL schreibt Energie-Typen als Symbol: „Basic {P} Energy" → „Basic Psychic Energy"
   const slotName = (s: DeckSlot) => s.name.replace(/\{([A-Z])\}/g, (_m, c: string) => ({
@@ -262,6 +271,8 @@ export default function DeckPage() {
             className="bg-pokemon-blue text-white text-sm px-3 py-1.5 rounded disabled:opacity-50">🃏 {t.deck_fill}</button>
           <Link href={`/scan?deck=${id}&from=${encodeURIComponent(`/decks/${id}`)}`}
             className="bg-gray-700 text-white text-sm px-3 py-1.5 rounded hover:bg-gray-600">📷 {t.deck_scan}</Link>
+          <button type="button" onClick={() => setAssign((a) => (a === null ? "" : null))} data-testid="deck-assign-open"
+            className={`text-white text-sm px-3 py-1.5 rounded ${assign !== null ? "bg-pokemon-accent" : "bg-gray-700 hover:bg-gray-600"}`}>＋ {t.deck_assign_open}</button>
           <button type="button" onClick={() => { setShowImport((v) => !v); setImportResult(null); }} data-testid="deck-import-toggle"
             className="bg-gray-700 text-white text-sm px-3 py-1.5 rounded hover:bg-gray-600">⬇ {t.deck_import}</button>
           <button type="button" onClick={() => void doExport()} data-testid="deck-export"
@@ -296,6 +307,12 @@ export default function DeckPage() {
           placeholder={t.deck_notes}
           className="w-full bg-gray-800/60 border border-gray-800 rounded px-2 py-1.5 text-gray-200 text-sm" />
       </div>
+
+      {assign !== null && (
+        <AssignCards key={assign} initialQuery={assign} testId="deck-assign"
+          excludeIds={[...deck.slots.flatMap((sl) => sl.cards.map((x) => x.card.id)), ...deck.extra.map((c) => c.id)]}
+          onAdd={(c) => assignCard(c)} defaultNoDeck currentDeckId={id} />
+      )}
 
       {/* Legalität */}
       <div className="bg-pokemon-card rounded-lg p-4" data-testid="deck-legality">
@@ -460,6 +477,9 @@ export default function DeckPage() {
               <h3 className="text-white font-medium flex-1 truncate">{t.deck_pick_title}: {slotName(picker.slot)}</h3>
               <button type="button" onClick={() => setPicker(null)} className="text-gray-400 hover:text-white">✕</button>
             </div>
+            <button type="button" data-testid="deck-pick-search-all"
+              onClick={() => { const q = `"${slotName(picker.slot).replace(/"/g, "")}"`; setPicker(null); setAssign(q); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              className="mb-2 text-xs text-blue-300 hover:underline">🔍 {t.deck_pick_search_all}</button>
             {picker.items === null ? (
               <p className="text-gray-500 text-sm">{t.detail_loading}</p>
             ) : picker.items.length === 0 ? (
@@ -475,6 +495,7 @@ export default function DeckPage() {
                       <span className="block text-gray-500 text-xs truncate">
                         {[card.set_edition, card.karten_nr, card.sprache, card.folierung ? valueLabel(card.folierung, lang) : null].filter(Boolean).join(" · ")}
                       </span>
+                      <PickTags card={card} />
                       {match !== "exact" && (
                         <span className={`text-[10px] ${match === "other_print" ? "text-yellow-300" : "text-gray-400"}`}>{t.deck_match(match)}</span>
                       )}
