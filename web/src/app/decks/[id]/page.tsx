@@ -524,7 +524,9 @@ function PrintPicker({ deckId, slot, onClose, onPicked }: {
           {prints === null && <div className="col-span-full text-gray-500 text-sm">{t.detail_loading}</div>}
           {prints?.length === 0 && <div className="col-span-full text-gray-500 text-sm">{t.deck_print_none}</div>}
           {prints?.map((p) => (
-            <button key={p.tcgdex_card_id} type="button" disabled={busy || p.current} onClick={() => void pick(p)}
+            // der aktuelle Druck ist nur antippbar, um ihn den Karten ohne Druck zu geben
+            <button key={p.tcgdex_card_id} type="button" disabled={busy || (p.current && !(unlinked > 0 && linkCards))}
+              onClick={() => void pick(p)}
               data-testid="deck-print" title={[p.name, p.set_name, p.local_id, p.rarity].filter(Boolean).join(" · ")}
               className={`text-left rounded border p-1 ${p.current ? "border-pokemon-yellow ring-1 ring-pokemon-yellow" : "border-gray-700 hover:border-gray-400"}`}>
               <div className="aspect-[63/88] bg-gray-800 rounded overflow-hidden">
@@ -538,7 +540,9 @@ function PrintPicker({ deckId, slot, onClose, onPicked }: {
                 {[p.set_code || p.set_name, p.local_id].filter(Boolean).join(" ")}
                 {p.regulation_mark && <span className="ml-1 text-gray-500">{p.regulation_mark}</span>}
               </div>
-              <div className="text-[10px] text-gray-500 truncate">{p.current ? t.deck_print_current : p.rarity}</div>
+              <div className="text-[10px] text-gray-500 truncate">
+                {p.current ? (unlinked > 0 && linkCards ? t.deck_print_current_link : t.deck_print_current) : p.rarity}
+              </div>
             </button>
           ))}
         </div>
