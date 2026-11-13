@@ -40,6 +40,39 @@ function Thumb({ card, className }: { card: Card; className?: string }) {
   return <img src={src} alt="" loading="lazy" onError={imgFallback(fallbacks)} className={`rounded object-cover bg-gray-800 ${className ?? ""}`} />;
 }
 
+const FOIL_SHORT: Record<string, string> = { "Reverse Holo": "RH", Holo: "Holo" };
+
+/** Eine eigene Karte im Deck als Bild (statt nur „EN"): Folierung/abweichende Sprache als
+ *  kleines Schild, ⚠ + gelber Rand bei anderem Druck, ✕ nimmt sie aus dem Deck. */
+function CardTile({ card, match, title, mainLang, busy, onRemove, removeTitle }: {
+  card: Card; match?: DeckMatch; title: string; mainLang: string | null; busy: boolean;
+  onRemove: () => void; removeTitle: string;
+}) {
+  const tags = [
+    card.sprache && card.sprache !== mainLang ? card.sprache : null,
+    card.folierung && card.folierung !== "Normal" ? (FOIL_SHORT[card.folierung] ?? card.folierung) : null,
+  ].filter(Boolean) as string[];
+  return (
+    <div data-testid="slot-card" title={title}
+      className={`relative w-14 sm:w-16 shrink-0 rounded ${match === "other_print" ? "ring-2 ring-yellow-500/80" : ""}`}>
+      <Link href={`/cards/${card.id}`} className="block aspect-[63/88] rounded overflow-hidden bg-gray-800 hover:ring-2 hover:ring-pokemon-yellow">
+        <Thumb card={card} className="w-full h-full" />
+      </Link>
+      {(tags.length > 0 || match === "other_print") && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap gap-0.5 p-0.5">
+          {match === "other_print" && <span className="rounded bg-yellow-600/90 px-0.5 text-[9px] leading-tight text-black">⚠</span>}
+          {tags.map((tag) => (
+            <span key={tag} className="rounded bg-black/75 px-1 text-[9px] leading-tight text-gray-100">{tag}</span>
+          ))}
+        </div>
+      )}
+      <button type="button" disabled={busy} title={removeTitle} aria-label={removeTitle} data-testid="slot-card-remove"
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full border border-gray-700 bg-gray-900/90 text-[10px] leading-none text-gray-400 hover:text-red-400">✕</button>
+    </div>
+  );
+}
+
 export default function DeckPage() {
   const { t, lang } = useI18n();
   const router = useRouter();
@@ -99,6 +132,14 @@ export default function DeckPage() {
   };
 
   if (missing) return <div className="max-w-4xl mx-auto"><Link href="/decks" className="text-pokemon-accent">{t.deck_back}</Link></div>;
+  // die Sprache der meisten Karten im Deck: nur Karten in einer anderen Sprache bekommen ein Schild
+  const mainLang = (() => {
+    const n = new Map<string, number>();
+    for (const c of [...(deck?.slots ?? []).flatMap((s) => s.cards.map((x) => x.card)), ...(deck?.extra ?? [])]) {
+      if (c.sprache) n.set(c.sprache, (n.get(c.sprache) ?? 0) + 1);
+    }
+    return Array.from(n.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  })();
   if (!deck) return <div className="flex items-center justify-center h-64 text-gray-500">{t.detail_loading}</div>;
 
   const fmt = t.deck_format_label(deck.format);
@@ -365,23 +406,14 @@ export default function DeckPage() {
                             className="text-[11px] text-gray-500 hover:text-white">⇄</button>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
                         <span className={`text-[11px] rounded px-1.5 py-0.5 ${covCls}`} title={t.deck_slot_have} data-testid="slot-have">
                           {have}/{s.count}
                         </span>
                         {s.cards.map(({ card, match }) => (
-                          <span key={card.id} data-testid="slot-card"
-                            className={`inline-flex items-center gap-1 rounded-full pl-0.5 pr-1.5 py-0.5 text-[11px] ${match === "other_print" ? "bg-yellow-950/70 text-yellow-200" : "bg-gray-800 text-gray-200"}`}
-                            title={[t.deck_match(match), card.set_edition, card.karten_nr, valueLabel(card.folierung, lang), card.sprache].filter(Boolean).join(" · ")}>
-                            <Thumb card={card} className="w-4 h-5" />
-                            <Link href={`/cards/${card.id}`} className="hover:text-pokemon-yellow">
-                              {[card.sprache, card.folierung && card.folierung !== "Normal" ? valueLabel(card.folierung, lang) : null].filter(Boolean).join(" ") || "#" + card.id}
-                            </Link>
-                            {match === "other_print" && <span>⚠</span>}
-                            <button type="button" disabled={busy} title={t.deck_remove_card} data-testid="slot-card-remove"
-                              onClick={() => void run(() => deckApi.removeCard(id, card.id))}
-                              className="text-gray-500 hover:text-red-400">✕</button>
-                          </span>
+                          <CardTile key={card.id} card={card} match={match} mainLang={mainLang} busy={busy}
+                            title={[t.deck_match(match), card.set_edition, card.karten_nr, valueLabel(card.folierung, lang), card.sprache].filter(Boolean).join(" · ")}
+                            removeTitle={t.deck_remove_card} onRemove={() => void run(() => deckApi.removeCard(id, card.id))} />
                         ))}
                         {have < s.count && (s.available > 0 || s.available_other > 0) && (
                           <button type="button" onClick={() => void openPicker(s)} data-testid="slot-available"
@@ -406,14 +438,14 @@ export default function DeckPage() {
       {deck.extra.length > 0 && (
         <section className="bg-pokemon-card rounded-lg p-4" data-testid="deck-extra">
           <h2 className="text-gray-300 font-medium mb-2">{t.deck_extra_title}</h2>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-3">
             {deck.extra.map((c) => (
-              <span key={c.id} className="inline-flex items-center gap-1 rounded-full bg-gray-800 pl-0.5 pr-2 py-0.5 text-xs text-gray-200">
-                <Thumb card={c} className="w-5 h-7" />
-                <Link href={`/cards/${c.id}`} className="hover:text-pokemon-yellow">{c.englischer_name ?? c.kartenname}</Link>
-                <button type="button" onClick={() => void run(() => deckApi.removeCard(id, c.id))} title={t.deck_remove_card}
-                  className="text-gray-500 hover:text-red-400">✕</button>
-              </span>
+              <div key={c.id} className="w-14 sm:w-16" data-testid="deck-extra-card">
+                <CardTile card={c} mainLang={mainLang} busy={busy}
+                  title={[c.englischer_name ?? c.kartenname, c.set_edition, c.karten_nr, valueLabel(c.folierung, lang), c.sprache].filter(Boolean).join(" · ")}
+                  removeTitle={t.deck_remove_card} onRemove={() => void run(() => deckApi.removeCard(id, c.id))} />
+                <div className="mt-0.5 text-[10px] leading-tight text-gray-300 line-clamp-2">{c.englischer_name ?? c.kartenname}</div>
+              </div>
             ))}
           </div>
         </section>
