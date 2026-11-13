@@ -1,5 +1,65 @@
 # Changelog
 
+## [v1.15.0] – 2026-11-12 (Offene Scans, ganzes Foto in der Scan-Kontrolle, Play!-Stempel und Reverse Holo im Scan) — backup
+
+**Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect eine
+neue Tabelle für offene Scans an; vorhandene Daten bleiben unverändert. Auch
+den Bild-Abgleich (matcher) aktualisieren — Stempel-Prüfung, Reverse-Holo-
+Erkennung und Kanten-Vorschläge brauchen seine neue Version. Danach die
+Stempel-Vorlage neu lernen (Admin → Play!-Stempel → Vorlage lernen) und für die
+Reverse-Holo-Erkennung ein Modell hochladen (Admin → Reverse Holo erkennen).
+
+### Neu
+- **Offene Scans:** Die Scan-Kontrolle wird auf dem Server gespeichert — Seite
+  verlassen, später oder auf einem anderen Gerät weitermachen. „Offene Scans“
+  im Menü, in der unteren Leiste und neben „Scannen“, jeweils mit Anzahl; die
+  Liste zeigt das ganze Foto mit den Karten umrandet (gelb offen, grün
+  gespeichert), ein Tipp öffnet es groß. Dieselbe Karte wird nicht doppelt
+  gespeichert. Offene Scans verfallen nach 30 Tagen und sind nicht im Backup.
+- **„Später bestätigen · nächstes Foto“:** einen Stapel durchscannen und
+  später in Ruhe bestätigen.
+- **Keine Karte erkannt** ist kein Fehler mehr: das Foto bleibt als offener
+  Scan, die Karten lassen sich von Hand umranden.
+- **Ganzes Foto in der Scan-Kontrolle:** jede gefundene Karte umrandet und
+  nummeriert wie die Liste (Tipp auf die Nummer springt hin), so fällt eine
+  übersehene Karte auf; ausblendbar. Je Karte stehen Scan-Foto und
+  Katalogbild nebeneinander.
+- **Play!-Stempel im Scan:** Die Vorlage wird aus den markierten Stempeln der
+  Sammlung gelernt; der Scan prüft jede Karte, setzt bei sicherem Fund
+  „Prize Pack“ („Stempel 93 %“) und zeigt bei wahrscheinlichem „Stempel?“.
+  Der Stempel-Editor schlägt die Stelle vor.
+- **Reverse Holo im Scan:** Mit hochgeladenem Modell fragt die Scan-Kontrolle
+  bei Normal-Karten, die es als Reverse Holo gibt, „Reverse Holo? — tippen
+  zum Setzen“. Neuere Sets drucken den Set-Code-Kasten auf Reverse Holos
+  invertiert; damit waren auf 860 eigenen Scans 9 von 10 Fragen richtig und
+  98 % der Reverse Holos wurden gefragt.
+- **1. Edition und Zustand** im Scan-Formular; „1. Edition“ ist immer da, auch
+  wo der Katalog keinen solchen Druck kennt.
+- **Ecken-Editor:** Kanten und den ganzen Rahmen verschieben; gedreht gilt die
+  Ansicht als oben. Kanten-Vorschläge auch beim Nachtragen einer übersehenen
+  Karte und bei „Ecken anpassen“.
+- **Bild finden:** Zuschnitt mit Vorschlag, ausgerichtet am Artwork
+  gleichnamiger Drucke.
+- **Admins** können Zuschnitte und Stempel der Karten aller Nutzer korrigieren
+  (sonst bleiben fremde Karten privat).
+- **Werkzeuge im Bild-Abgleich:** dataset_report.py (reicht der
+  Scan-Datensatz zum Trainieren?), stamp_eval.py (Stempel-Schwellen messen),
+  foil_eval.py (Reverse-Holo-Modell bauen; listet Karten, deren Folierung
+  falsch aussieht).
+
+### Geändert
+- **Bild-Abgleich:** Die Vorauswahl gleicht den Unterschied zwischen Foto und
+  Katalogbild aus — auf Scan-Fotos richtiger erster Treffer 72 % → 92 %
+  (`EMBED_DOMAIN=0` schaltet es ab).
+- **Zuschnitt-Vorschläge** erkennen „eine Pokémon-Karte“ am typischen
+  Kartenrahmen statt an Hüllen und Binder-Taschen (Binder-Fotos: Ecken-Fehler
+  3,2 % → 1,5 %).
+
+### Behoben
+- **Basis-Energie** wird am Namen erkannt — Decks meldeten manche als „nicht
+  legal“.
+- **Statistik-Ringe:** die Legende steht unter dem Ring statt darüber.
+
 ## [v1.14.0] – 2026-11-11 (Decks, Bildsuche, Zuschnitte mit Vorschlag, Folien-Muster) — backup
 
 **Backup vor dem Update empfohlen.** Beim ersten Start legt PokéCollect neue
