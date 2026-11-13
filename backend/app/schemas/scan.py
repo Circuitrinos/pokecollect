@@ -7,7 +7,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, field_validator, Field
 
 from app.schemas._grenzen import PgNichtNegativ  # #117
-from app.schemas._validators import reject_control_chars
+from app.schemas._validators import clean_card_nr, reject_control_chars
 
 # "card" = bereits entzerrte Karte (Ecken im App-Editor gesetzt) → nur neu abgleichen
 ScanMode = Literal["single", "multi", "binder", "card"]
@@ -152,6 +152,11 @@ class ScanCommitItem(BaseModel):
         if v not in ZUSTAND_VALUES:
             raise ValueError(f"zustand: einer von {ZUSTAND_VALUES}")
         return v
+
+    @field_validator("karten_nr", mode="before")
+    @classmethod
+    def _karten_nr(cls, v):
+        return clean_card_nr(v)
 
 
 class ScanCommitRequest(BaseModel):

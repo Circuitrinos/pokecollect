@@ -339,12 +339,9 @@ def set_print(db: Session, deck: Deck, slot: DeckSlot, row: TcgdexCatalog, link_
         for card, _how in coverage(db, deck).by_slot.get(slot.id, []):
             if card.tcgdex_card_id:
                 continue
-            card.tcgdex_card_id, card.set_id = row.card_id, row.set_id
-            card.englischer_name = card.englischer_name or row.name_en
-            card.karten_nr = card.karten_nr or row.local_id
-            if row.dex_id is not None and card.dex_id is None:
-                card.dex_id = row.dex_id
-            regulation.apply_to_card(db, card)
+            from app.services import rematch
+
+            rematch.fill_from_row(db, card, row)    # Nummer mit Nenner, Illustrator, Seltenheit, Bild …
             linked += 1
     other = next((s for s in _slots(db, deck.id) if s.id != slot.id and s.tcgdex_card_id
                   and s.tcgdex_card_id.upper() == row.card_id.upper()), None)

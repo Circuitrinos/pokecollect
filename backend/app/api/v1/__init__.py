@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_auth
-from app.api.v1 import (auth, cards, catalog, collections, data, decks, friends, prices, scan, scan_drafts, scan_quality,
+from app.api.v1 import (auth, card_gaps, cards, catalog, collections, data, decks, friends, prices, scan, scan_drafts, scan_quality,
                         sealed, settings, sets, users)
 
 router = APIRouter(prefix="/api/v1")
@@ -14,6 +14,7 @@ router.include_router(auth.router)
 
 # Alle Fach-Router erzwingen ein gültiges JWT (require_auth, Issue #1).
 for protected in (
+    card_gaps.router,      # nur Admins
     cards.router,
     catalog.router,
     collections.router,

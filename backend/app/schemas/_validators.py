@@ -111,3 +111,15 @@ def reject_explicit_null(v: Any) -> Any:
     if v is None:
         raise ValueError("Feld darf nicht null sein (weglassen = unverändert)")
     return v
+
+
+def clean_card_nr(v):
+    """Karten-Nr. aus zwei Feldern (Nummer / Gesamtzahl): „117 / 132" → „117/132", „117/" → „117";
+    nur eine Gesamtzahl („/132") oder leer ist keine Nummer → None."""
+    if not isinstance(v, str):
+        return v
+    left, _, right = v.strip().partition("/")
+    left, right = left.strip(), right.strip()
+    if not left:
+        return None
+    return f"{left}/{right}" if right else left

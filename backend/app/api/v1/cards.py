@@ -1,10 +1,9 @@
 import json
 import logging
-from urllib.parse import urlparse
 import math
 from typing import Literal, Optional, Union
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, select, update, or_, and_, cast, false, String
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -40,7 +39,8 @@ from app.services.pricing import variant_usd
 from app.services.provenance import bild_quelle, daten_quelle
 from app.schemas.card import (
     CardCreate, CardListResponse, CardResponse, CardUpdate,
-    EnumsResponse, StampUpdate, StatsResponse,
+    EnumsResponse, RematchApply, RematchChange, RematchFoil, RematchPrint, RematchProposal,
+    StampUpdate, StatsResponse,
     SELTENHEIT_VALUES, KARTENVERSION_VALUES, FOLIERUNG_VALUES, MUSTER_VALUES,
     SPRACHE_VALUES, ZUSTAND_VALUES, PRIORITAET_VALUES,
 )
@@ -589,31 +589,11 @@ async def link_catalog(card_id: int, req: LinkCatalogRequest, db: Session = Depe
 
 
 async def _link_to_row(db: Session, card: PokemonCard, row, image_url: Optional[str]) -> None:
-    """Karte auf eine Katalogkarte umstellen (Set, Nummer, Namen, Seltenheit,
-    TCGdex-ID) und deren Bild zeigen; ein eigenes Foto wird zum Scan-Foto."""
-    from app.services.catalog import _build_card_from_catalog
+    """Karte auf eine Katalogkarte umstellen (Set, Nummer mit Nenner, Namen, Seltenheit,
+    Illustrator, TCGdex-ID) und deren Bild zeigen; ein eigenes Foto wird zum Scan-Foto."""
+    from app.services import rematch
 
-    fields = await _build_card_from_catalog(db, row, card.sprache)
-    for key in ("kartenname", "englischer_name", "set_edition", "karten_nr", "seltenheit",
-                "tcgdex_card_id", "set_id", "dex_id", "illustrator"):
-        if fields.get(key) is not None:
-            setattr(card, key, fields[key])
-    if not card.pokedex_nr and fields.get("pokedex_nr"):
-        card.pokedex_nr = fields["pokedex_nr"]
-    url = None
-    if image_url and is_allowed_image_url(image_url):
-        url = image_url
-    elif fields.get("bild_karte_url"):
-        url = fields["bild_karte_url"]
-    else:
-        card.bild_karte_url = None
-        url = await image_fallback.find_catalog_image(db, card)
-    if url:
-        _show_image(db, card, url)
-        if (not row.image_url or row.image_source == "tcgplayer") and urlparse(url).hostname == pokemon_com.HOST:
-            row.image_url, row.image_source, row.image_pfad = url, image_fallback.SOURCE, None
-    card.regulation_mark = None                      # neue Karte → Zeichen aus dem Katalog
-    regulation.apply_to_card(db, card)
+    await rematch.apply(db, card, row, image_url=image_url, show_image=True)
 
 
 def _show_image(db: Session, card: PokemonCard, url: str) -> None:
@@ -655,6 +635,95 @@ async def link_pokemon_com(card_id: int, req: PokemonComLinkRequest, db: Session
         await _link_to_row(db, card, row, url)
     else:
         _show_image(db, card, url)                   # nur das Bild — die Karte kennt der Katalog nicht
+    db.commit()
+    db.refresh(card)
+    return _card_response(db, card)
+
+
+def _rematch_print(row, base_url: str, current: Optional[str], photo_ids: set[str]) -> RematchPrint:
+    from app.services import catalog_images
+
+    return RematchPrint(
+        tcgdex_card_id=row.card_id, name=row.name_en or row.name or row.card_id, set_code=row.set_code,
+        set_name=row.set_name, local_id=row.local_id, rarity=row.rarity,
+        image_url=catalog_images.resolve_catalog_image_url(row.image_pfad, row.image_url, base_url),
+        current=bool(current) and row.card_id.upper() == current.upper(), photo=row.card_id in photo_ids)
+
+
+def _shown(v) -> Optional[str]:
+    return None if v is None else str(v)
+
+
+@router.get("/{card_id}/rematch", response_model=RematchProposal)
+async def rematch_proposal(
+    card_id: int,
+    request: Request,
+    print_id: Optional[str] = Query(None, max_length=64, alias="print"),
+    db: Session = Depends(get_db),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Neu abgleichen, Vorschau: welcher Druck es ist (eigenes Foto durch den Bild-Abgleich,
+    sonst die Verknüpfung, sonst Set + Nummer) und was das an der Karte ergänzt oder
+    richtigstellt. print: einen anderen Druck ansehen (aus „Andere Drucke").
+    Admins auch an Karten anderer Konten (Werkzeug „Karten mit Lücken").
+    """
+    from app.services import decks as deck_svc, rematch
+    from app.services.catalog import catalog_fields, enrich
+
+    card = _photo_card_or_404(card_id, db, user)
+    found = await rematch.find(db, card)
+    row, how, sure = found.row, found.how, found.sure
+    if print_id:
+        picked = catalog_row_for(db, print_id)
+        if picked is None:
+            raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
+        row, how, sure = picked, "picked", True
+    base_url = str(request.base_url)
+    photo_ids = {r.card_id for r in found.candidates}
+    out = RematchProposal(how=how, sure=sure, photo=found.photo)
+    if row is not None:
+        await enrich(db, row)
+        out.found = _rematch_print(row, base_url, card.tcgdex_card_id, photo_ids)
+        out.changes = [RematchChange(field=c.field, old=_shown(c.old), new=_shown(c.new), kind=c.kind)
+                       for c in rematch.changes(card, catalog_fields(db, row, card.sprache), row)]
+        current = catalog_row_for(db, card.tcgdex_card_id)
+        same_name = current is None or deck_svc.rule_name(current.name_en or current.name or "") \
+            == deck_svc.rule_name(row.name_en or row.name or "")
+        out.safe = sure and how != "picked" and same_name
+        options = rematch.foil_options(row)
+        hint = await rematch.photo_foil_hint(row.card_id, found.crop)
+        suggested, why = rematch.foil_suggestion(card.folierung, options, hint)
+        out.foil = RematchFoil(current=card.folierung, options=options, suggested=suggested, why=why, photo_hint=hint)
+    name = (row.name_en or row.name) if row is not None else (card.englischer_name or card.kartenname or "")
+    seen: set[str] = set()
+    alts = []
+    for r in [*found.candidates, *deck_svc.prints_for(db, name)]:
+        if r.card_id in seen or (row is not None and r.card_id == row.card_id):
+            continue
+        seen.add(r.card_id)
+        alts.append(_rematch_print(r, base_url, card.tcgdex_card_id, photo_ids))
+    out.alternatives = alts[:60]
+    return out
+
+
+@router.post("/{card_id}/rematch", response_model=CardResponse)
+async def rematch_apply(card_id: int, req: RematchApply, db: Session = Depends(get_db),
+                        user: AuthUser = Depends(require_auth)):
+    """Neu abgleichen, übernehmen: den Druck setzen und die Felder aus dem Katalog füllen
+    (fields: nur diese; folierung: fehlende Foliierung mitsetzen)."""
+    from app.services import rematch
+
+    card = _photo_card_or_404(card_id, db, user)
+    row = catalog_row_for(db, req.tcgdex_card_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Karte nicht im Katalog")
+    if req.folierung is not None and req.folierung not in rematch.FOILS:
+        raise HTTPException(status_code=422, detail="Unbekannte Folierung")
+    done = await rematch.apply(db, card, row, only=set(req.fields) if req.fields is not None else None,
+                               folierung=req.folierung)
+    log.info("Re-match Karte %s → %s: %s%s", card.id, row.card_id, [c.field for c in done],
+             f", Folierung {req.folierung}" if req.folierung else "")
     db.commit()
     db.refresh(card)
     return _card_response(db, card)

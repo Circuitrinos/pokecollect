@@ -50,6 +50,7 @@ EN: dict[str, str] = {
     "Karte nicht gefunden": "Card not found",
     "Karte nicht im Katalog": "Card not in the catalog",
     "Anderer Kartenname — nur ein anderer Druck derselben Karte": "A different card name — only another print of the same card",
+    "Unbekannte Folierung": "Unknown foiling",
     "Karte nicht in dieser Sammlung": "Card not in this collection",
     "Katalog-Karte nicht gefunden": "Catalog card not found",
     "Katalog-Karte oder Sammlung nicht gefunden": "Catalog card or collection not found",

@@ -147,7 +147,7 @@ export function useCardForm<T extends CardFormShape>(
   };
 
   const validateCardNr = (nr: string): boolean => {
-    if (!nr) return true;
+    if (!nr || nr.startsWith("/")) { setCardNrError(null); return true; }   // nur Gesamtzahl = keine Nummer
     // Akzeptiert nackte Nummer („041"), optional mit Buchstabe/Präfix und
     // optionaler Gesamtzahl („041/109", „TG01/TG30"). Der Resolver ergänzt die
     // Gesamtzahl — die volle NNN/MAX-Form wird NICHT mehr erzwungen (Issue #31).

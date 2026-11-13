@@ -12,6 +12,7 @@ import { useCardForm } from "@/lib/useCardForm";
 import { formatEur } from "@/lib/utils";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { useI18n } from "@/lib/i18n";
+import { splitCardNr } from "@/lib/cardNumber";
 import { valueLabel } from "@/lib/enumLabels";
 import { fetchPokemonNames, PokemonNames } from "@/lib/pokedex";
 import { priceSourceKey, priceSourceRate, priceSourceVariant } from "@/lib/priceSource";
@@ -232,7 +233,7 @@ export default function EditForm({
 
         {/* Set/Edition: im Edit-Modus SetPicker, sonst normales Feld */}
         {editing ? (
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <SetPicker
               value={String((form as Record<string, unknown>).set_edition ?? "")}
               onChange={handleSetChange}
@@ -258,9 +259,15 @@ export default function EditForm({
             dense
           />
         ) : (
-          <div>
-            <dt className="text-gray-500 text-xs">{t.field_card_nr}</dt>
-            <dd className="text-white">{String(card.karten_nr ?? "–")}</dd>
+          <div className="grid grid-cols-2 gap-2" data-testid="card-nr-view">
+            <div>
+              <dt className="text-gray-500 text-xs">{t.field_card_nr}</dt>
+              <dd className="text-white">{splitCardNr(card.karten_nr)[0] || "–"}</dd>
+            </div>
+            <div>
+              <dt className="text-gray-500 text-xs">{t.field_card_total}</dt>
+              <dd className="text-white">{splitCardNr(card.karten_nr)[1] || "–"}</dd>
+            </div>
           </div>
         )}
 

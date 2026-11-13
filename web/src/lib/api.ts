@@ -343,6 +343,11 @@ export const cardApi = {
   linkPokemonCom: (id: number, url: string) => api.post<Card>(`/cards/${id}/link-pokemon-com`, { url }),
   linkCatalog: (id: number, catalogCardId: string, imageUrl?: string | null) =>
     api.post<Card>(`/cards/${id}/link-catalog`, { card_id: catalogCardId, image_url: imageUrl ?? null }),
+  // Neu abgleichen: Druck (Foto → Verknüpfung → Set + Nummer) und fehlende Daten aus dem Katalog
+  rematch: (id: number, print?: string) =>
+    api.get<RematchProposal>(`/cards/${id}/rematch`, { params: print ? { print } : {} }),
+  applyRematch: (id: number, body: { tcgdex_card_id: string; fields?: string[] | null; folierung?: string | null }) =>
+    api.post<Card>(`/cards/${id}/rematch`, body),
 
   stats: () => api.get<StatsResponse>("/cards/meta/stats"),
 
@@ -658,6 +663,52 @@ export type ScanQualityOverview = {
     unchecked: number; photos: number };
   thresholds: { inliers: number; corner_err: number };
   items: ScanQualityItem[];
+};
+
+export type RematchPrint = {
+  tcgdex_card_id: string;
+  name: string;
+  set_code: string | null;
+  set_name: string | null;
+  local_id: string | null;
+  rarity: string | null;
+  image_url: string | null;
+  current: boolean;
+  photo: boolean;
+};
+export type RematchChange = { field: string; old: string | null; new: string | null; kind: "fill" | "change" };
+export type RematchProposal = {
+  found: RematchPrint | null;
+  how: "photo" | "link" | "number" | "name" | "picked" | null;
+  sure: boolean;
+  safe: boolean;
+  photo: "used" | "no_photo" | "off" | "down" | "nothing";
+  changes: RematchChange[];
+  foil: { current: string | null; options: string[]; suggested: string | null; why: "only" | "photo" | null; photo_hint: boolean | null };
+  alternatives: RematchPrint[];
+};
+export type CardGap = "print" | "number" | "illustrator" | "rarity" | "set" | "english_name" | "foiling" | "image" | "differs";
+export type CardGapItem = {
+  card_id: number;
+  own: boolean;
+  username: string | null;
+  name: string;
+  english_name: string | null;
+  set: string | null;
+  number: string | null;
+  language: string | null;
+  foiling: string | null;
+  tcgdex_card_id: string | null;
+  gaps: CardGap[];
+  photo: string | null;
+  has_photo: boolean;
+  image: string | null;
+};
+export type CardGapOverview = { total: number; counts: Record<CardGap, number>; shown: number; matching: number; items: CardGapItem[] };
+
+export const cardGapsApi = {
+  overview: (gap: CardGap | null, owner: "all" | "mine" | "others" = "all") =>
+    api.get<CardGapOverview>("/card-gaps", { params: { ...(gap ? { gap } : {}), owner } }),
 };
 
 export const scanQualityApi = {

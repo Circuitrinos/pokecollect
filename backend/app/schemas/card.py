@@ -3,10 +3,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.schemas._grenzen import MONEY_FIELD, PgNichtNegativ
-from app.schemas._validators import reject_control_chars, reject_explicit_null
+from app.schemas._validators import clean_card_nr, reject_control_chars, reject_explicit_null
 from app.services.bild_spiegel import pokedex_url, spiegel_pfad
 from app.services.image_lang import image_lang
 
@@ -95,6 +95,11 @@ class CardCreate(CardBase):
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
     _v_reg = field_validator("regulation_mark", mode="after")(_regulation_mark_input)
 
+    @field_validator("karten_nr", mode="before")
+    @classmethod
+    def _karten_nr(cls, v):
+        return clean_card_nr(v)
+
 
 class CardUpdate(BaseModel):
     kartenname: Optional[str] = None
@@ -130,6 +135,11 @@ class CardUpdate(BaseModel):
     _v_null = field_validator(
         "kartenname", "erste_edition", "prize_pack", "besessen", "wunschliste", "im_pokedex",
     )(reject_explicit_null)
+
+    @field_validator("karten_nr", mode="before")
+    @classmethod
+    def _karten_nr(cls, v):
+        return clean_card_nr(v)
 
 
 class StampUpdate(BaseModel):
@@ -314,3 +324,49 @@ class EnumsResponse(BaseModel):
     sprache: list[str]
     zustand: list[str]
     prioritaet: list[str]
+
+
+# ── Neu abgleichen („Re-match", services/rematch.py) ─────────────────────────
+
+class RematchPrint(BaseModel):
+    tcgdex_card_id: str
+    name: str
+    set_code: Optional[str] = None
+    set_name: Optional[str] = None
+    local_id: Optional[str] = None
+    rarity: Optional[str] = None
+    image_url: Optional[str] = None
+    current: bool = False        # der Druck, mit dem die Karte jetzt verknüpft ist
+    photo: bool = False          # vom Bild-Abgleich vorgeschlagen
+
+
+class RematchChange(BaseModel):
+    field: str                   # Kartenfeld (karten_nr, illustrator, …) oder "bild"
+    old: Optional[str] = None
+    new: Optional[str] = None
+    kind: str                    # "fill" (fehlte) | "change" (stand anders da)
+
+
+class RematchFoil(BaseModel):
+    current: Optional[str] = None
+    options: list[str] = []
+    suggested: Optional[str] = None
+    why: Optional[str] = None    # "only" (gibt es nur so) | "photo" (Foto-Hinweis)
+    photo_hint: Optional[bool] = None   # Foto sieht nach Reverse Holo aus (None = weiß nicht)
+
+
+class RematchProposal(BaseModel):
+    found: Optional[RematchPrint] = None
+    how: Optional[str] = None    # "photo" | "link" | "number" | "name" | "picked"
+    sure: bool = False
+    safe: bool = False           # ohne Rückfrage übernehmbar (sicher und gleicher Name)
+    photo: str = "no_photo"      # "used" | "no_photo" | "off" | "down" | "nothing"
+    changes: list[RematchChange] = []
+    foil: RematchFoil = RematchFoil()
+    alternatives: list[RematchPrint] = []
+
+
+class RematchApply(BaseModel):
+    tcgdex_card_id: str = Field(..., min_length=1, max_length=64)
+    fields: Optional[list[str]] = Field(None, max_length=20)   # nur diese Felder (None = alle vorgeschlagenen)
+    folierung: Optional[str] = Field(None, max_length=40)

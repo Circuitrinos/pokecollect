@@ -26,6 +26,7 @@ import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, t
 import { useTiltGrid } from "@/lib/useTiltGrid";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
+import { joinCardNr, splitCardNr } from "@/lib/cardNumber";
 import { valueLabel } from "@/lib/enumLabels";
 import { IMAGE_LANGS, imageLangOf, withImageLang } from "@/lib/imageLang";
 
@@ -1825,13 +1826,25 @@ export default function ScanPage() {
                         placeholder={t.form_pokedex_nr}
                         className="min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
                       />
-                      <input
-                        value={String(s.karten_nr ?? "")}
-                        onChange={(e) => updateField(idx, "karten_nr", e.target.value)}
-                        onBlur={() => void refreshCandidate(idx)}
-                        placeholder={t.scan_field_nr}
-                        className="min-w-0 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs font-mono"
-                      />
+                      <div className="flex min-w-0 items-center gap-0.5" data-testid="scan-card-nr">
+                        <input
+                          value={splitCardNr(s.karten_nr)[0]}
+                          onChange={(e) => updateField(idx, "karten_nr", e.target.value.includes("/")
+                            ? joinCardNr(...splitCardNr(e.target.value)) : joinCardNr(e.target.value, splitCardNr(s.karten_nr)[1]))}
+                          onBlur={() => void refreshCandidate(idx)}
+                          placeholder={t.scan_field_nr}
+                          aria-label={t.form_card_nr}
+                          className="min-w-0 flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs font-mono"
+                        />
+                        <span className="text-gray-500 text-xs">/</span>
+                        <input
+                          value={splitCardNr(s.karten_nr)[1]}
+                          onChange={(e) => updateField(idx, "karten_nr", joinCardNr(splitCardNr(s.karten_nr)[0], e.target.value.replace("/", "")))}
+                          onBlur={() => void refreshCandidate(idx)}
+                          aria-label={t.form_card_total} title={t.form_card_total}
+                          className="w-12 shrink-0 bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white text-xs font-mono"
+                        />
+                      </div>
                       <select
                         value={String(s.sprache ?? "DE")}
                         onChange={(e) => { updateField(idx, "sprache", e.target.value); void refreshCandidate(idx, { sprache: e.target.value }); }}

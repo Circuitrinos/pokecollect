@@ -756,19 +756,42 @@ async def refresh_catalog_eur(db: Session, limit: int = 500) -> dict:
     }
 
 
-async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Optional[str] = "DE") -> dict:
-    """Karten-Felder aus einem Katalog-Eintrag (lädt bei Bedarf Volldetails nach).
+def _is_promo(name: Optional[str]) -> bool:
+    return bool(name) and "promo" in name.lower()
+
+
+def card_number(db: Session, row: TcgdexCatalog, sets: Optional[dict] = None) -> Optional[str]:
+    """Die aufgedruckte Nummer, wie der Scan sie schreibt: „117/132" (mit der offiziellen
+    Kartenzahl des Sets), Promos und Nummern wie „TG05" ohne Nenner. sets: Cache set_id → PokemonSet."""
+    local = (row.local_id or "").strip()
+    if not local:
+        return None
+    if sets is not None and row.set_id in sets:
+        srow = sets[row.set_id]
+    else:
+        srow = db.scalars(select(PokemonSet).where(PokemonSet.set_id == row.set_id)).first() if row.set_id else None
+        if sets is not None and row.set_id:
+            sets[row.set_id] = srow
+    official = srow.card_count_official if srow is not None else None
+    promo = _is_promo(row.set_name) or (srow is not None and (_is_promo(srow.name) or _is_promo(srow.name_en)))
+    if local.isdigit() and official and not promo:
+        return f"{local.zfill(3)}/{str(official).zfill(3)}"
+    return local
+
+
+def catalog_fields(db: Session, row: TcgdexCatalog, lang: Optional[str] = "DE", sets: Optional[dict] = None) -> dict:
+    """Karten-Felder aus einem Katalog-Eintrag, so wie er gerade ist (ohne Nachladen).
     Karten- und Setname in der Kartensprache: deutsch nur für deutsche Karten,
     sonst englisch (fehlt der englische Name, der deutsche)."""
-    if not row.enriched:
-        tc = await tcgdex.get_card(row.card_id, _catalog_lang(row.region))
-        if tc:
-            _apply_full(row, tc)
-            db.commit()
     german = (lang or "DE").upper() == "DE"
     set_name = row.set_name
     if not german and row.set_id:
-        srow = db.scalars(select(PokemonSet).where(PokemonSet.set_id == row.set_id)).first()
+        if sets is not None and row.set_id in sets:
+            srow = sets[row.set_id]
+        else:
+            srow = db.scalars(select(PokemonSet).where(PokemonSet.set_id == row.set_id)).first()
+            if sets is not None:
+                sets[row.set_id] = srow
         if srow and srow.name_en:
             set_name = srow.name_en
     set_edition = None
@@ -777,13 +800,15 @@ async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Option
     elif row.set_code:
         set_edition = row.set_code
     card_name = (row.name or row.name_en) if german else (row.name_en or row.name)
+    number = card_number(db, row, sets)
+    promo = _is_promo(row.set_name) or _is_promo(set_name)
     return {
         "kartenname": card_name or row.card_id,
         "englischer_name": row.name_en,
         "pokedex_nr": row.dex_id,
         "set_edition": set_edition,
-        "karten_nr": row.local_id,
-        "seltenheit": _map_rarity(row.rarity),
+        "karten_nr": number,
+        "seltenheit": "Promo" if promo else _map_rarity(row.rarity),
         "tcgdex_card_id": row.card_id,
         "set_id": row.set_id,
         "dex_id": row.dex_id,
@@ -791,6 +816,21 @@ async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Option
         "bild_karte_url": row.image_url if tcgdex.is_allowed_image_url(row.image_url)
         else (f"katalog:{row.card_id}" if row.image_pfad and row.image_source == "manual" else None),
     }
+
+
+async def enrich(db: Session, row: TcgdexCatalog) -> None:
+    """Volldetails (Illustrator, Varianten …) einmal nachladen, wenn sie fehlen."""
+    if not row.enriched:
+        tc = await tcgdex.get_card(row.card_id, _catalog_lang(row.region))
+        if tc:
+            _apply_full(row, tc)
+            db.commit()
+
+
+async def _build_card_from_catalog(db: Session, row: TcgdexCatalog, lang: Optional[str] = "DE") -> dict:
+    """Karten-Felder aus einem Katalog-Eintrag (lädt bei Bedarf Volldetails nach)."""
+    await enrich(db, row)
+    return catalog_fields(db, row, lang)
 
 
 def _resolve_card_attrs(

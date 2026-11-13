@@ -296,12 +296,20 @@ async def rematch(deck_ids: list[int], fix: bool, any_print: bool = False) -> No
                       f"{m.tcgdex_card_id if m else 'NO MATCH'} ({ms2} ms){'' if same else '  [name differs]'}")
                 ok = why or any_print
                 if fix and ok and same and m is not None and m.tcgdex_card_id == top.get("card_id"):
-                    c.tcgdex_card_id, c.set_id = m.tcgdex_card_id, m.set_id
-                    if not c.englischer_name:
-                        c.englischer_name = m.englischer_name or top.get("name")
-                    if not c.karten_nr and m.local_id:
-                        c.karten_nr = m.local_id
-                    regulation.apply_to_card(db, c)
+                    row = db.get(TcgdexCatalog, m.tcgdex_card_id)
+                    try:
+                        from app.services import rematch
+                    except ImportError:             # older app images
+                        rematch = None
+                    if rematch is not None and row is not None:
+                        rematch.fill_from_row(db, c, row)
+                    else:
+                        c.tcgdex_card_id, c.set_id = m.tcgdex_card_id, m.set_id
+                        if not c.englischer_name:
+                            c.englischer_name = m.englischer_name or top.get("name")
+                        if not c.karten_nr and m.local_id:
+                            c.karten_nr = m.local_id
+                        regulation.apply_to_card(db, c)
                     fixed += 1
                     print(f"      → linked to {m.tcgdex_card_id}")
         if fix:

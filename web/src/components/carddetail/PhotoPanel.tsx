@@ -6,6 +6,7 @@ import { API_BASE, Card, ScanCheck, cardApi } from "@/lib/api";
 import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 import { settleCrop } from "@/lib/settleCrop";
 import CardFinder from "@/components/carddetail/CardFinder";
+import RematchDialog from "@/components/carddetail/RematchDialog";
 import { cropToCardPhoto, normalizeOrientation, CropTransform } from "@/lib/cardCrop";
 import { imageUrl, cardImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -263,6 +264,7 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
   const canShowOwn = !showsOwn && !!card.bild_scan_pfad;
   const [switching, setSwitching] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
+  const [rematchOpen, setRematchOpen] = useState(false);
   const [langBusy, setLangBusy] = useState(false);
   const changeImageLang = async (lang: string) => {
     setLangBusy(true);
@@ -383,6 +385,15 @@ export default function PhotoPanel({ card, onCardUpdated, onCardSaved, onImageCl
       </button>
       {finderOpen && (
         <CardFinder card={card} onClose={() => setFinderOpen(false)} onLinked={(c) => onCardSaved(c)} />
+      )}
+      <button type="button" onClick={() => setRematchOpen(true)} data-testid="card-rematch" title={t.rematch_open_hint}
+        className="w-full mt-1 text-sm bg-gray-800 text-gray-300 hover:text-white rounded px-3 py-1.5">
+        ↻ {t.rematch_open}
+      </button>
+      {rematchOpen && (
+        <RematchDialog cardId={card.id} title={card.englischer_name || card.kartenname}
+          photoUrl={imageUrl(stampPhoto, API_BASE, card.aktualisiert_am)}
+          onClose={() => setRematchOpen(false)} onApplied={(c) => onCardSaved(c)} />
       )}
       {isAdmin && card.tcgdex_card_id && (
         <button type="button" onClick={() => setPictureOpen(true)} data-testid="card-find-picture"

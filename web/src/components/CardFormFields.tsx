@@ -3,6 +3,7 @@ import { useId } from "react";
 import { PokemonSet } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
+import { joinCardNr, setTotal, splitCardNr } from "@/lib/cardNumber";
 import RaritySelect from "@/components/RaritySelect";
 
 // Gemeinsame Feld-Bausteine für die Karten-Formulare (Neuanlage + Detail-Edit,
@@ -134,7 +135,7 @@ export function TextareaField({ label, value, onChange, dense }: {
 }) {
   const id = useId();
   return (
-    <div className="col-span-2">
+    <div className="col-span-full">
       <label htmlFor={id} className={labelCls(dense)}>{label}</label>
       <textarea
         id={id}
@@ -173,7 +174,9 @@ export function PokedexNrField({ value, onChange, nameLoading, dense }: {
   );
 }
 
-/** Karten-Nr. mit Format-Hinweis + Validierungsfehler aus useCardForm. */
+/** Karten-Nr. als zwei Felder — Nummer und Gesamtzahl des Sets („117" / „132") —, gespeichert
+ *  zusammen („117/132"). Ist das Set bekannt, kommt die Gesamtzahl von dort, sobald die
+ *  Nummer eingetragen ist. Validierungsfehler aus useCardForm. */
 export function CardNrField({ value, onChange, validate, selectedSet, error, dense, loading }: {
   value: unknown;
   onChange: (v: string) => void;
@@ -185,21 +188,48 @@ export function CardNrField({ value, onChange, validate, selectedSet, error, den
 }) {
   const { t } = useI18n();
   const id = useId();
+  const [number, total] = splitCardNr(value);
+  const fromSet = setTotal(selectedSet);
+  const setNumber = (v: string) => {
+    if (v.includes("/")) { onChange(joinCardNr(...splitCardNr(v))); return; }   // „117/132" eingefügt
+    onChange(joinCardNr(v, total));
+  };
+  const fillTotal = () => {
+    const combined = !total && fromSet && /^\d+$/.test(number) ? joinCardNr(number, fromSet) : joinCardNr(number, total);
+    if (combined !== String(value ?? "")) onChange(combined);
+    validate(combined);
+  };
   return (
     <div>
       <label htmlFor={id} className={labelCls(dense)}>
         {t.form_card_nr}
         {loading && <span className="ml-2 text-gray-500 animate-pulse">…</span>}
       </label>
-      <input
-        id={id}
-        type="text"
-        value={String(value ?? "")}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={(e) => validate(e.target.value)}
-        placeholder={selectedSet?.max_card_nr ? `001/${String(selectedSet.max_card_nr).padStart(3, "0")}` : t.form_card_nr_placeholder}
-        className={inputCls(dense, !!error)}
-      />
+      <div className="flex items-center gap-1" data-testid="card-nr-field">
+        <input
+          id={id}
+          type="text"
+          value={number}
+          onChange={(e) => setNumber(e.target.value)}
+          onBlur={fillTotal}
+          placeholder={fromSet ? "001" : t.form_card_nr_placeholder_number}
+          aria-label={t.form_card_nr}
+          data-testid="card-nr-number"
+          className={`${inputCls(dense, !!error)} min-w-0 flex-1`}
+        />
+        <span className="text-gray-500 text-sm">/</span>
+        <input
+          type="text"
+          value={total}
+          onChange={(e) => onChange(joinCardNr(number, e.target.value.replace("/", "")))}
+          onBlur={(e) => validate(joinCardNr(number, e.target.value))}
+          placeholder={fromSet || t.form_card_total_placeholder}
+          aria-label={t.form_card_total}
+          title={t.form_card_total}
+          data-testid="card-nr-total"
+          className={`${inputCls(dense, !!error)} !w-20 shrink-0`}
+        />
+      </div>
       {selectedSet?.max_card_nr && !error && (
         <p className={`text-gray-500 text-xs ${dense ? "mt-0.5" : "mt-1"}`}>
           {t.form_card_nr_hint(selectedSet.max_card_nr)}
