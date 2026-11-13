@@ -477,7 +477,7 @@ export type DeckSlot = {
   rarity: string | null;
   stage: string | null;
   trainer_type: string | null;
-  status: "ok" | "basic" | "not_legal" | "unknown" | "unmatched";
+  status: "ok" | "reprint_text" | "basic" | "not_legal" | "unknown" | "unmatched";
   legal_mark: string | null;
   ace_spec: boolean;
   cards: { match: DeckMatch; card: Card }[];

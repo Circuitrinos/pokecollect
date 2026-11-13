@@ -92,7 +92,7 @@ class DeckSlotResponse(BaseModel):
     rarity: Optional[str] = None
     stage: Optional[str] = None
     trainer_type: Optional[str] = None
-    status: str                 # ok | basic | not_legal | unknown | unmatched
+    status: str                 # ok | reprint_text | basic | not_legal | unknown | unmatched
     legal_mark: Optional[str] = None
     ace_spec: bool = False
     cards: list[DeckAssigned] = []

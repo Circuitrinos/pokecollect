@@ -55,9 +55,18 @@ def _summary_fields(db: Session, deck: Deck, base_url: str, slots, legal: dict, 
     )
 
 
+def _relinked(db: Session, deck: Deck) -> list:
+    """Zeilen der Liste; Zeilen ohne Katalog-Druck vorher nachträglich zuordnen (svc.relink)."""
+    slots = svc._slots(db, deck.id)
+    if any(not s.tcgdex_card_id for s in slots) and svc.relink(db, deck):
+        db.commit()
+        slots = svc._slots(db, deck.id)
+    return slots
+
+
 def _detail(db: Session, deck: Deck, request: Request) -> DeckDetail:
     base_url = str(request.base_url)
-    slots = svc._slots(db, deck.id)
+    slots = _relinked(db, deck)
     legal = svc.legality(db, deck, slots)
     cov = svc.coverage(db, deck, slots)
     rows = svc._rows(db, (s.tcgdex_card_id for s in slots))
@@ -91,7 +100,7 @@ def list_decks(request: Request, db: Session = Depends(get_db)):
     base_url = str(request.base_url)
     out = []
     for deck in db.scalars(select(Deck).order_by(Deck.name, Deck.id)).all():
-        slots = svc._slots(db, deck.id)
+        slots = _relinked(db, deck)
         legal = svc.legality(db, deck, slots)
         cov = svc.coverage(db, deck, slots)
         out.append(DeckSummary(**_summary_fields(db, deck, base_url, slots, legal, cov)))

@@ -353,15 +353,16 @@ def test_deck_diag_explains_reprints_and_unmatched_lines(client, catalog, capsys
     slot.tcgdex_card_id, slot.set_code = f"{P}9-132", None
     db.commit()
     card = PokemonCard(kartenname="Deckscan Testmon ex", englischer_name="Testmon ex", karten_nr="062/193",
-                       besessen=True, tcgdex_card_id=None)
+                       besessen=True, tcgdex_card_id=None, deck_id=d.id)
     db.add(card)
-    db.flush()
-    svc.assign(db, d, card)          # wie ein Scan ohne Katalog-Treffer: Zeile nur mit Namen
+    # so legten ältere Versionen einen Scan ohne Katalog-Treffer ab: Zeile nur mit Namen
+    db.add(DeckSlot(deck_id=d.id, tcgdex_card_id=None, name="Testmon ex", number="62", count=1,
+                    section="pokemon", match=None, position=2))
     db.commit()
 
     deck_diag.main([str(d.id)])
     out = capsys.readouterr().out
-    assert "not_legal" in out and "Boss's Orders" in out
+    assert "reprint_text" in out and "Boss's Orders" in out
     assert f"{P}1-114" in out and "differs" in out               # der I-Druck hat einen anderen Text
     assert f"{P}2-090" in out and "OTHER" in out                  # „(Ghetsis)": für die Reprint-Regel ein anderer Name
     assert "newest mark, any text: I; with the same text: F" in out
@@ -370,4 +371,88 @@ def test_deck_diag_explains_reprints_and_unmatched_lines(client, catalog, capsys
     db.execute(delete(PokemonCard).where(PokemonCard.id == card.id).execution_options(all_users=True))
     db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id == f"{P}9-132"))
     db.commit()
+    db.close()
+
+
+def test_reprint_with_newer_wording_is_legal_but_marked(client, catalog):
+    """Boss's Orders aus Brilliant Stars (F, alter Wortlaut) ist über den I-Nachdruck
+    legal, obwohl dessen Text neu formuliert ist: im Deck kein Fehler, aber gekennzeichnet."""
+    db = SessionLocal()
+    db.add(_row(f"{P}9-132", f"{P}9", "132", "Boss's Orders", "Trainer", mark="F", trainer_type="Supporter"))
+    db.commit()
+    db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == f"{P}9-132").update({"effect_key": "old wording"})
+    db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == f"{P}1-114").update({"effect_key": "new wording"})
+    db.commit()
+    try:
+        deck = client.post(f"{API}/decks", json={"name": "Test-Reprint", "text": "Trainer: 1\n1 Boss's Orders ZZ9 132\n"}).json()["deck"]
+        from app.models.deck import DeckSlot
+        slot = db.scalars(select(DeckSlot).where(DeckSlot.deck_id == deck["id"])).one()
+        slot.tcgdex_card_id = f"{P}9-132"
+        db.commit()
+        d = client.get(f"{API}/decks/{deck['id']}").json()
+        s = d["slots"][0]
+        assert s["status"] == "reprint_text" and s["legal_mark"] == "I"
+        assert "not_in_format" not in _issues(d)
+        # ganz ohne legalen Nachdruck bleibt es ein Fehler
+        db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == f"{P}1-114").update({"regulation_mark": "F"})
+        db.commit()
+        d = client.get(f"{API}/decks/{deck['id']}").json()
+        assert d["slots"][0]["status"] == "not_legal" and "not_in_format" in _issues(d)
+    finally:
+        db.query(TcgdexCatalog).filter(TcgdexCatalog.card_id == f"{P}1-114").update(
+            {"regulation_mark": "I", "effect_key": None})
+        db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id == f"{P}9-132"))
+        db.commit()
+        db.close()
+
+
+def test_cards_without_a_catalog_print_land_on_the_right_line(client, catalog):
+    """Scan ins Deck, Karte nur mit Name (+ Nummer): früher eine eigene Namens-Zeile je
+    Karte unter Pokémon („nicht im Katalog"). Jetzt: Zeile desselben Drucks bzw. Namens,
+    sonst der gefundene Druck — und alte solche Zeilen werden beim Öffnen nachgetragen."""
+    from app.models.deck import DeckSlot
+    deck = client.post(f"{API}/decks", json={"name": "Test-Relink", "text":
+                       "Pokémon: 1\n2 Testmon ex TDA 62\n\nTrainer: 1\n1 Boss's Orders TDA 114\n"}).json()["deck"]
+    db = SessionLocal()
+    d = db.get(Deck, deck["id"])
+    # alte Daten: Namens-Zeilen (alle unter Pokémon), wie frühere Scans sie anlegten
+    for pos, (name, number) in enumerate([("Boss's Orders", None), ("Boss's Orders", "114"),
+                                          ("Prime Spec", None), ("Totally Unknown", None)], start=10):
+        db.add(DeckSlot(deck_id=d.id, tcgdex_card_id=None, name=name, number=number, count=1,
+                        section="pokemon", match=None, position=pos))
+    db.commit()
+    got = client.get(f"{API}/decks/{deck['id']}").json()
+    by = {(s["name"], s["section"]): s for s in got["slots"]}
+    assert by[("Boss's Orders", "trainer")]["count"] == 3               # beide in die vorhandene Zeile
+    assert by[("Prime Spec", "trainer")]["tcgdex_card_id"] == f"{P}1-120"
+    assert by[("Prime Spec", "trainer")]["match"] == "name"
+    assert by[("Totally Unknown", "pokemon")]["status"] == "unmatched"   # nichts gefunden: bleibt
+    assert not any(s["section"] == "pokemon" and s["name"] == "Boss's Orders" for s in got["slots"])
+
+    # neue Scans: Karte ohne Druck → Zeile desselben Namens bzw. Drucks, nicht eine eigene
+    added = []
+    for name, nr in (("Boss's Orders", None), ("Testmon ex", "062/193"), ("Other Spec", None)):
+        c = PokemonCard(kartenname=f"Deckscan {name}", englischer_name=name, karten_nr=nr, besessen=True)
+        db.add(c)
+        db.flush()
+        svc.assign(db, d, c)
+        added.append(c.id)
+    db.commit()
+    slots = svc._slots(db, d.id)
+    names = [(s.name, s.section, s.count, s.tcgdex_card_id) for s in slots]
+    assert ("Boss's Orders", "trainer", 3, f"{P}1-114") in names        # freie Plätze: Liste wächst nicht
+    assert ("Testmon ex", "pokemon", 2, f"{P}1-062") in names
+    assert any(n == "Other Spec" and sec == "trainer" and tid == f"{P}2-121" for n, sec, _c, tid in names)
+    assert [n for n, _s, _c, tid in names if tid is None] == ["Totally Unknown"]
+    cov = svc.coverage(db, d)
+    assert not cov.extra and sorted(c.id for v in cov.by_slot.values() for c, _ in v) == sorted(added)
+    # voll (3 Plätze, dann 4 Karten): die vierte Karte ohne Druck zählt die gleichnamige Zeile hoch
+    for _ in range(3):
+        c = PokemonCard(kartenname="Deckscan Boss", englischer_name="Boss's Orders", besessen=True)
+        db.add(c)
+        db.flush()
+        svc.assign(db, d, c)
+    db.commit()
+    boss = [s for s in svc._slots(db, d.id) if s.name == "Boss's Orders"]
+    assert len(boss) == 1 and boss[0].count == 4 and boss[0].section == "trainer"
     db.close()

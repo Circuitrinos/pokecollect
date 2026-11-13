@@ -961,9 +961,11 @@ const DE = {
   } as Record<string, string>)[code] ?? code),
   deck_slot_status: (st: string, mark: string | null) => (({
     not_legal: `nicht legal${mark && mark !== "-" ? ` (${mark})` : ""}`,
+    reprint_text: `≠ Nachdruck ${mark ?? ""}`.trim(),
     unknown: "Legalität unbekannt",
     unmatched: "nicht im Katalog",
   } as Record<string, string>)[st] ?? ""),
+  deck_slot_reprint_text: (mark: string | null) => `Legal über den gleichnamigen Nachdruck${mark ? ` (${mark})` : ""}: der hat einen neueren Wortlaut. Nach der Reprint-Regel spielbar, solange der Text funktional gleich ist — im Zweifel die offizielle Liste prüfen.`,
   deck_slot_by_name: "nur über den Namen gefunden — Druck prüfen",
   deck_slot_have: "Eigene Karten im Deck",
   deck_slot_available: (n: number) => `+${n} frei`,
@@ -2045,9 +2047,11 @@ const EN: typeof DE = {
   } as Record<string, string>)[code] ?? code),
   deck_slot_status: (st: string, mark: string | null) => (({
     not_legal: `not legal${mark && mark !== "-" ? ` (${mark})` : ""}`,
+    reprint_text: `≠ reprint ${mark ?? ""}`.trim(),
     unknown: "legality unknown",
     unmatched: "not in the catalog",
   } as Record<string, string>)[st] ?? ""),
+  deck_slot_reprint_text: (mark: string | null) => `Legal through the reprint with the same name${mark ? ` (${mark})` : ""}, which has newer wording. Playable under the reprint rule as long as the text works the same — check the official list if unsure.`,
   deck_slot_by_name: "found by name only — check the print",
   deck_slot_have: "Your cards in the deck",
   deck_slot_available: (n: number) => `+${n} free`,

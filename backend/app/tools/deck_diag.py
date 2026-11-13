@@ -13,8 +13,9 @@ Sections per deck:
   1. deck, format, the Standard cut-off mark, the legality verdict and its issues
   2. every list line: catalog print, kind (Pokémon/Trainer/Energy), mark, status,
      and for lines without a print what a fresh match by name/number would find
-  3. reprint rule for every "not legal"/"unknown" Trainer/Energy line: all
-     prints of that name in the catalog with mark and text fingerprint
+  3. reprint rule for every Trainer/Energy line not legal by its own mark
+     ("not legal", "unknown", "≠ reprint"): all prints of that name in the
+     catalog with mark and text fingerprint
   4. the cards in the deck: catalog id (and whether the catalog knows it), how
      they were added (scan drafts that saved them: what the scan had matched)
   5. --live: TCGdex reachable from here? the texts of the prints behind section 3
@@ -119,13 +120,13 @@ def diagnose(db, deck_id: int, live: bool, drafts: dict[int, tuple[int, dict]], 
     print(table(out, ["slot", "pos", "section", "n", "name", "set", "no.", "catalog id", "in cat", "kind",
                       "mark", "chk", "match", "status", "legal", "fresh match now"]))
 
-    section("2. reprint rule (not legal / unknown Trainer and Energy lines)")
+    section("2. reprint rule (Trainer/Energy lines not legal by their own mark)")
     keys = {k for r in rows.values() if r.regulation_checked and (k := regulation._reprint_key(r))}
     reprints = regulation._reprint_marks(db, keys)
     any_ = False
     for s in slots:
         row = rows.get(s.tcgdex_card_id) if s.tcgdex_card_id else None
-        if leg["slots"].get(s.id, {}).get("status") not in ("not_legal", "unknown") or row is None:
+        if leg["slots"].get(s.id, {}).get("status") not in ("not_legal", "unknown", "reprint_text") or row is None:
             continue
         any_ = True
         key = regulation._reprint_key(row) if row.regulation_checked else None

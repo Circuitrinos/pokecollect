@@ -346,6 +346,10 @@ export default function DeckPage() {
                           <span className={`text-[10px] rounded px-1 ${s.status === "not_legal" ? "bg-red-900/60 text-red-300" : "bg-yellow-900/50 text-yellow-300"}`}
                             data-testid="slot-status">{t.deck_slot_status(s.status, s.legal_mark)}</span>
                         )}
+                        {s.status === "reprint_text" && (
+                          <span className="text-[10px] rounded px-1 border border-amber-400/60 text-amber-300" data-testid="slot-status"
+                            title={t.deck_slot_reprint_text(s.legal_mark)}>{t.deck_slot_status(s.status, s.legal_mark)}</span>
+                        )}
                         {s.match === "name" && (
                           <span className="text-[10px] rounded px-1 bg-yellow-900/50 text-yellow-300">{t.deck_slot_by_name}</span>
                         )}

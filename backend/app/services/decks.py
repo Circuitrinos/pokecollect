@@ -296,7 +296,7 @@ def import_lines(db: Session, deck: Deck, parsed: Parsed, replace: bool = False)
             "not_found": missing, "unreadable": parsed.unreadable}
 
 
-def add_slot(db: Session, deck: Deck, row: TcgdexCatalog, count: int = 1) -> DeckSlot:
+def add_slot(db: Session, deck: Deck, row: TcgdexCatalog, count: int = 1, how: str = "set") -> DeckSlot:
     """Druck aus dem Katalog in die Liste (vorhanden → Anzahl erhöhen). Committet nicht."""
     for s in _slots(db, deck.id):
         if s.tcgdex_card_id and s.tcgdex_card_id.upper() == row.card_id.upper():
@@ -305,10 +305,57 @@ def add_slot(db: Session, deck: Deck, row: TcgdexCatalog, count: int = 1) -> Dec
     name = row.name_en or row.name or row.card_id
     slot = DeckSlot(deck_id=deck.id, tcgdex_card_id=row.card_id, name=name, set_code=(row.set_code or None),
                     number=_num(row.local_id), count=min(MAX_SLOT_COUNT, count),
-                    section=section_of(row, name), match="set", position=_next_position(db, deck.id))
+                    section=section_of(row, name), match=how, position=_next_position(db, deck.id))
     db.add(slot)
     db.flush()
     return slot
+
+
+def _home_for(db: Session, deck: Deck, name: str, number: Optional[str],
+              skip: Optional[DeckSlot] = None) -> tuple[Optional[DeckSlot], Optional[TcgdexCatalog], Optional[str]]:
+    """
+    Wohin gehört eine Karte bzw. Zeile ohne Katalog-Druck (z. B. ein Scan, der
+    nur den Namen kannte)? → (vorhandene Zeile | None, Katalog-Druck | None, wie gefunden).
+    1. Name + Nummer ergeben einen Druck → dessen Zeile (oder er selbst, neu)
+    2. sonst die Zeile mit demselben Namen im Deck (meist genau dieser Druck)
+    3. sonst der jüngste Druck dieses Namens („nach Name")
+    """
+    num = _num(number)
+    row, how = match_card(db, name, None, num) if name else (None, None)
+    slots = [s for s in _slots(db, deck.id) if s is not skip]
+    if row is not None and how == "set" and num:
+        same_print = next((s for s in slots if s.tcgdex_card_id and s.tcgdex_card_id.upper() == row.card_id.upper()), None)
+        return same_print, row, how
+    key = rule_name(name)
+    same_name = next((s for s in slots if s.tcgdex_card_id and rule_name(s.name) == key), None)
+    if same_name is not None:
+        return same_name, None, None
+    return None, row, how
+
+
+def relink(db: Session, deck: Deck) -> int:
+    """
+    Zeilen ohne Katalog-Druck nachträglich zuordnen (ältere Scans ins Deck legten
+    für eine Karte ohne Druck eine eigene Namens-Zeile an — immer unter Pokémon,
+    eine Zeile je Karte): in die Zeile desselben Drucks bzw. Namens zählen, sonst
+    den gefundenen Druck eintragen. Committet nicht. → Anzahl geänderter Zeilen.
+    """
+    changed = 0
+    for s in [s for s in _slots(db, deck.id) if not s.tcgdex_card_id]:
+        home, row, how = _home_for(db, deck, s.name, s.number, skip=s)
+        if home is not None:
+            home.count = min(MAX_SLOT_COUNT, home.count + s.count)
+            db.delete(s)
+        elif row is not None:
+            s.tcgdex_card_id, s.match = row.card_id, how
+            s.section = section_of(row, s.name)
+            if how == "set":
+                s.set_code = row.set_code or s.set_code
+        else:
+            continue
+        db.flush()
+        changed += 1
+    return changed
 
 
 # ── Eigene Karten ↔ Liste ───────────────────────────────────────────────────
@@ -438,9 +485,18 @@ def assign(db: Session, deck: Deck, card: PokemonCard, extend_list: bool = True)
         row = _rows(db, [card.tcgdex_card_id]).get(card.tcgdex_card_id) if card.tcgdex_card_id else None
         if row is not None:
             add_slot(db, deck, row, 1)
+            return
+        # Karte ohne Katalog-Druck (Scan kannte nur Name/Nummer): Druck bzw.
+        # gleichnamige Zeile suchen statt einer eigenen Namens-Zeile unter Pokémon
+        name = card.englischer_name or card.kartenname or ""
+        number = _num(card.karten_nr.split("/")[0]) if card.karten_nr else None
+        home, found, how = _home_for(db, deck, name, number)
+        if home is not None:
+            home.count = min(MAX_SLOT_COUNT, home.count + 1)
+            db.flush()
+        elif found is not None:
+            add_slot(db, deck, found, 1, how=how or "name")
         else:
-            name = card.englischer_name or card.kartenname
-            number = _num(card.karten_nr.split("/")[0]) if card.karten_nr else None
             db.add(DeckSlot(deck_id=deck.id, tcgdex_card_id=None, name=name, set_code=None, number=number,
                             count=1, section=section_of(None, name), match=None,
                             position=_next_position(db, deck.id)))
@@ -463,7 +519,11 @@ def _expanded_ok(row: Optional[TcgdexCatalog]) -> Optional[bool]:
 def slot_status(fmt: str, slot: DeckSlot, row: Optional[TcgdexCatalog], min_mark: str,
                 reprints: dict) -> tuple[str, Optional[str]]:
     """→ (Status, maßgebliches Zeichen) eines Platzes im Format:
-    ok | basic | not_legal | unknown | unmatched."""
+    ok | reprint_text | basic | not_legal | unknown | unmatched.
+    reprint_text: Trainer/Spezial-Energie, deren gleichnamiger Nachdruck legal ist,
+    nur mit neuem Wortlaut (z. B. Boss's Orders: „… with their Active Pokémon" →
+    „… to the Active Spot") — nach der Reprint-Regel spielbar, im Deck darum kein
+    Fehler, aber gekennzeichnet (der Text ist nicht verglichen, nur der Name)."""
     if row is None:
         return ("basic" if basic_energy_type(slot.name) else "unmatched"), None
     if _is_basic_energy(row, slot.name):
@@ -473,10 +533,14 @@ def slot_status(fmt: str, slot: DeckSlot, row: Optional[TcgdexCatalog], min_mark
     if fmt == "expanded":
         ok = _expanded_ok(row)
         return ("unknown" if ok is None else ("ok" if ok else "not_legal")), None
-    _mark, legal, _basic, _name_mark = regulation._compute(row, None, reprints)
+    _mark, legal, _basic, name_mark = regulation._compute(row, None, reprints)
     if legal is None:
         return "unknown", None
-    return ("ok" if legal != regulation.NO_MARK and legal >= min_mark else "not_legal"), legal
+    if legal != regulation.NO_MARK and legal >= min_mark:
+        return "ok", legal
+    if name_mark and name_mark >= min_mark:
+        return "reprint_text", name_mark
+    return "not_legal", legal
 
 
 def legality(db: Session, deck: Deck, slots: Optional[list[DeckSlot]] = None) -> dict:
