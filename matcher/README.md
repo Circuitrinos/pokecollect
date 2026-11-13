@@ -183,7 +183,9 @@ inverted on foil cards; `code_corr` compares that corner with the catalog image
 `holo_diff.py` runs it over the scan dataset; `foil_eval.py <holo_diff output>`
 tests how well those numbers tell Normal / Holo / Reverse Holo apart on cards
 they were not fitted on (folds by card) and how many "reverse holo?" hints would
-be right; `--save foil_model.json` writes the model (asking only where 80 % of
+be right, and lists the labels to check — cards whose foiling label disagrees
+with the photo (set code inverted on a "Normal", plain on a "Reverse Holo"), in
+`labels_to_check.csv` and, with `--sheet`, as pictures; `--save foil_model.json` writes the model (asking only where 80 % of
 the asks were right, `--precision`). Uploaded in the app (Admin → Reverse holo
 detection, → `PUT /foil/model`), the scan review checks each plain card whose
 print exists as reverse holo (`POST /foil`: crop + catalog image → score, hint)

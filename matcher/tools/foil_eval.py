@@ -5,6 +5,7 @@ has never seen?
 
   python holo_diff.py pokecollect-scans-<date>.zip --out holo_diff --pairs
   python foil_eval.py holo_diff [--save foil_model.json] [--precision 0.8]
+                                [--sheet labels_to_check.jpg] [--app-url https://…]
 
 Reads holo_diff's index.csv (one row per scanned card: how much the photo
 differs from the plain catalog image inside the art box and in the frame
@@ -17,6 +18,11 @@ neither — if the photo caught the light.
      cards it did not learn from (5 folds by card)
   3. your own pairs: the same card as Normal and as Reverse Holo — does the
      reverse holo light up more?
+  4. labels to check: cards whose foiling label disagrees with the photo —
+     "Normal" with an inverted set code box (or scored like a reverse holo by a
+     model that never saw that card), "Reverse Holo" with the plain box, "Holo"
+     with an inverted box. Written to labels_to_check.csv; --sheet draws each
+     one's set code corner next to the catalog image.
 
 The verdict says whether a simple rule is enough for a suggestion in the scan,
 or whether it takes a model trained on the difference images themselves.
@@ -168,6 +174,8 @@ def oof_scores(rows: list[dict], pos: str, neg: str) -> tuple[np.ndarray, np.nda
         w = fit_logreg((x[tr] - mu) / sd, y[tr], 2)
         z = np.hstack([(x[te] - mu) / sd, np.ones((te.sum(), 1))]) @ w
         score[te] = z[:, 1] - z[:, 0]
+    for r, sc in zip(data, score, strict=True):
+        r["oof"] = float(sc)               # score from a model that never saw this card
     keep = np.isfinite(score)
     return score[keep], y[keep].astype(bool)
 
@@ -182,6 +190,90 @@ def recall_at_precision(score: np.ndarray, is_pos: np.ndarray, want: float) -> t
         return 0.0, 0
     i = ok.max()
     return float(hits[i] / max(1, is_pos.sum())), int(flagged[i])
+
+
+CODE_INVERTED, CODE_SAME = -0.3, 0.3    # set code vs catalog: clearly the negative / clearly the same
+
+
+def labels_to_check(cat: list[dict], hint_cut: float | None) -> list[dict]:
+    """
+    Cards whose foiling label disagrees with the photo, strongest first:
+      Normal       → Reverse Holo?  set code inverted, or out-of-fold score above the hint cut
+      Reverse Holo → Normal?        set code the same as the plain print (in a set whose reverse
+                                    holos invert it) or a score as low as a typical plain card
+      Holo         → Reverse Holo?  set code inverted (a holo matches its holo catalog image)
+    """
+    sets: dict[str, list[float]] = defaultdict(list)
+    for r in cat:
+        if r["foiling"] == "Reverse Holo" and r.get("code") is not None:
+            sets[(r["card_id"] or "?").rsplit("-", 1)[0]].append(r["code"])
+    inverts = {sid: float(np.median(v)) <= CODE_INVERTED for sid, v in sets.items() if len(v) >= 2}
+    normal_oof = [r["oof"] for r in cat if r["foiling"] == "Normal" and np.isfinite(r.get("oof", np.nan))]
+    plain_like = float(np.median(normal_oof)) if normal_oof else None
+    out = []
+    for r in cat:
+        code, oof = r.get("code"), r.get("oof", np.nan)
+        sid = (r["card_id"] or "?").rsplit("-", 1)[0]
+        why, strength = None, 0.0
+        # the set code decides where it can (it doesn't depend on the light); the shine
+        # only speaks for cards whose set code says nothing (older sets, no print there)
+        code_says = code is not None and inverts.get(sid) is not False and (code <= CODE_INVERTED or code >= CODE_SAME)
+        if r["foiling"] == "Normal":
+            if code is not None and code <= CODE_INVERTED:
+                why, strength = "sure: set code inverted", -code + 1
+            elif not code_says and hint_cut is not None and np.isfinite(oof) and oof >= hint_cut:
+                why, strength = "maybe: shines like a reverse holo", min(1.0, (oof - hint_cut) / 4)
+            suggest = "Reverse Holo"
+        elif r["foiling"] == "Reverse Holo":
+            if code is not None and code >= CODE_SAME and inverts.get(sid, True):
+                why, strength = "sure: set code like the plain print", code + 1
+            elif not code_says and plain_like is not None and np.isfinite(oof) and oof <= plain_like:
+                why, strength = "maybe: no foil to see", min(1.0, (plain_like - oof) / 4)
+            suggest = "Normal"
+        elif r["foiling"] == "Holo":
+            if code is not None and code <= CODE_INVERTED:
+                why, strength = "sure: set code inverted (a holo matches its catalog image)", -code + 1
+            suggest = "Reverse Holo"
+        if why:
+            out.append({**r, "suggest": suggest, "why": why, "strength": strength})
+    return sorted(out, key=lambda x: -x["strength"])
+
+
+def draw_sheet(found: list[dict], base: Path, path: Path) -> int:
+    """Each suspect: the set code corner of the photo above the catalog image's, plus the whole photo."""
+    try:
+        import cv2
+    except ImportError:
+        print("   (--sheet needs opencv)")
+        return 0
+    tiles = []
+    for r in found:
+        # holo_diff's picture of this comparison (older index.csv: rebuild its path)
+        rel = r.get("sheet") or (f"{r['kind']}/{(r['foiling'] or 'unknown').replace(' ', '_')}__"
+                                 f"{(r.get('pattern') or 'none').replace(' ', '_')}/{r['id']}_vs_{r.get('against') or 'catalog'}.png")
+        img = cv2.imread(str(base / rel))
+        if img is None:
+            continue
+        w = img.shape[1] // 3
+        h = img.shape[0]
+        photo, ref = img[:, :w], img[:, w:2 * w]
+        corner = lambda im: im[int(0.86 * h):int(0.995 * h), 0:int(0.5 * w)]   # noqa: E731
+        codes = np.vstack([corner(photo), corner(ref)])
+        thumb = cv2.resize(photo, (int(w * codes.shape[0] / h), codes.shape[0]))
+        tile = np.hstack([thumb, codes])
+        bar = np.full((34, tile.shape[1], 3), 30, np.uint8)
+        txt = f"{r['id']}  {r['foiling']} -> {r['suggest']}?  code {r['code'] if r.get('code') is not None else '-'}"
+        cv2.putText(bar, txt[:60], (6, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        tiles.append(np.vstack([bar, tile]))
+    if not tiles:
+        return 0
+    tw = max(t.shape[1] for t in tiles)
+    tiles = [np.pad(t, ((0, 6), (0, tw - t.shape[1] + 6), (0, 0))) for t in tiles]
+    cols = 2
+    rows = [np.hstack(tiles[i:i + cols] + [np.zeros_like(tiles[0])] * (cols - len(tiles[i:i + cols])))
+            for i in range(0, len(tiles), cols)]
+    cv2.imwrite(str(path), np.vstack(rows))
+    return len(tiles)
 
 
 def balanced(conf: np.ndarray) -> float:
@@ -228,6 +320,8 @@ def main() -> None:
     ap.add_argument("holo_diff", help="holo_diff.py's --out folder (or its index.csv)")
     ap.add_argument("--save", type=Path, help="write the model for the scan (foil_model.json)")
     ap.add_argument("--precision", type=float, default=0.8, help="share of right asks the model aims for")
+    ap.add_argument("--sheet", type=Path, help="picture of the labels to check (set code corner vs catalog)")
+    ap.add_argument("--app-url", help="your PokéCollect address, for links to the cards (e.g. https://tcg.example.com)")
     args = ap.parse_args()
     rows = load(Path(args.holo_diff))
     if not any(r.get("code") is not None for r in rows):
@@ -308,22 +402,51 @@ def main() -> None:
               f"({two[0, 1]} plain cards flagged, {two[1, 0]} reverse holos missed)")
     oof = oof_scores(cat, "Reverse Holo", "Normal")
     rec80 = 0.0
+    hint_cut = None
     if oof is not None:
-        for want in (0.9, 0.8, 0.6):
+        for want in sorted({0.95, 0.9, 0.8, 0.6, args.precision}, reverse=True):
             rec, _ = recall_at_precision(*oof, want)
-            rec80 = rec if want == 0.8 else rec80
+            rec80 = rec if want == args.precision else rec80
             print(f"   flagging only the surest: {want:.0%} of the flags right → catches {rec:.0%} of reverse holos")
+        order = np.argsort(-oof[0])
+        hits = np.cumsum(oof[1][order])
+        ok = np.where(hits / np.arange(1, len(order) + 1) >= args.precision)[0]
+        hint_cut = float(oof[0][order[ok.max()]]) if len(ok) else None
     if score is None:
         print("   not enough rows — run holo_diff.py on the scan dataset first")
     elif score >= 0.9 and (precision or 0) >= 0.85:
         print(f"   {score:.0%}: a rule on these numbers is good enough to suggest Reverse Holo in the scan")
     elif rec80 >= 0.4:
         print(f"   {score:.0%} overall: worth a careful hint (\"reverse holo?\") on the surest cards only — "
-              f"it would catch about {rec80:.0%} of reverse holos with 4 in 5 hints right")
+              f"it would catch about {rec80:.0%} of reverse holos with {args.precision:.0%} of hints right")
     else:
         print(f"   {score:.0%}: these numbers are not enough (too many plain cards would be flagged) — the foil "
               "has to be learned from the "
               "difference images (holo_cluster.py features or a small CNN), with more photos under varied light")
+    print("\n4. Labels to check (the photo disagrees with the foiling you set)")
+    found = labels_to_check(cat, hint_cut)
+    base = Path(args.holo_diff) if Path(args.holo_diff).is_dir() else Path(args.holo_diff).parent
+    if not found:
+        print("   none")
+    else:
+        url = (args.app_url or "").rstrip("/")
+        for r in found[:40]:
+            code = f"{r['code']:+.2f}" if r.get("code") is not None else "  –  "
+            sc = f"{r['oof']:+.1f}" if np.isfinite(r.get("oof", np.nan)) else "  – "
+            print(f"   {str(r['id']):>7}  {r['foiling']:<12} → {r['suggest']:<12}? set code {code}  score {sc}  "
+                  f"{(r.get('name') or r['card_id'] or '')[:28]:<28} {url}/cards/{r['id']}  ({r['why']})")
+        if len(found) > 40:
+            print(f"   … {len(found) - 40} more in labels_to_check.csv")
+        with open(base / "labels_to_check.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["id", "card_id", "name", "set", "number", "label", "suggest", "why", "code_corr", "score"])
+            for r in found:
+                w.writerow([r["id"], r["card_id"], r.get("name"), r.get("set"), r.get("number"), r["foiling"],
+                            r["suggest"], r["why"], r.get("code"), round(r["oof"], 2) if np.isfinite(r.get("oof", np.nan)) else ""])
+        print(f"   {len(found)} in {base / 'labels_to_check.csv'}")
+        if args.sheet:
+            n = draw_sheet(found[:60], base, args.sheet)
+            print(f"   {n} pictures in {args.sheet} (top: your photo's set code corner, below: the catalog image's)")
     if args.save:
         save_model(cat, args.save, args.precision)
 

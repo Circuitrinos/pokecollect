@@ -108,6 +108,8 @@ def main() -> int:
         out.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(out / f"{lab['id']}_vs_{against}.png"), sheet(warped, ref, diff))
         rows.append({"kind": kind, "id": lab["id"], "against": against, "card_id": lab.get("card_id"),
+                     "name": lab.get("name"), "set": lab.get("set"), "number": lab.get("number"),
+                     "sheet": f"{kind}/{group}/{lab['id']}_vs_{against}.png",
                      "foiling": lab.get("foiling"), "pattern": lab.get("pattern"), "rarity": lab.get("rarity"),
                      "check": (lab.get("check") or {}).get("status"), "inliers": inl,
                      "art_diff": round(art, 2), "frame_diff": round(frame, 2),
@@ -149,8 +151,8 @@ def main() -> int:
                     compare(lab, photo, base, "vs_plain_photo", str(plain[0]["id"]))
 
     with open(args.out / "index.csv", "w", newline="", encoding="utf-8") as f:
-        fields = ["kind", "id", "against", "card_id", "foiling", "pattern", "rarity", "check",
-                  "inliers", "art_diff", "frame_diff", "frame_art_ratio", "code_corr"]
+        fields = ["kind", "id", "against", "card_id", "name", "set", "number", "foiling", "pattern", "rarity",
+                  "check", "inliers", "art_diff", "frame_diff", "frame_art_ratio", "code_corr", "sheet"]
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(rows)
