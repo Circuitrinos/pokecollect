@@ -1,7 +1,7 @@
 """
 PokéCollect card matcher — identifies cards by artwork.
 
-POST /match   photo (+ mode, rows, cols) -> per detected card: corners,
+POST /match   photo (+ mode, rows, cols, page) -> per detected card: corners,
               top candidates (TCGdex ids), and whether the choice is clean
 POST /verify  saved scan photo + its card id (+ original, corners) -> how well
               it fits the card's catalog images, and better corners
@@ -243,10 +243,13 @@ def _identify(img: np.ndarray, quad: np.ndarray, top_k: int) -> tuple[matcher.De
     return _decide(card, _match(card, store.snapshot(), top_k), quad)
 
 
-def _best_of(img: np.ndarray, quads: list[np.ndarray], top_k: int) -> tuple[matcher.Decision, np.ndarray]:
+def _best_of(img: np.ndarray, quads: list[np.ndarray], top_k: int,
+             snap_outline: bool = False) -> tuple[matcher.Decision, np.ndarray]:
     """
     Match every outline hypothesis (cheap), keep the one with the strongest art
     match, and only then run the decision (which may need slow OCR) on it.
+    snap_outline: also when the art match is already clear, put the corners on
+    the matched card's true outline (a pocket-sized guess becomes the card).
     """
     snap = store.snapshot()
     best = None
@@ -260,6 +263,13 @@ def _best_of(img: np.ndarray, quads: list[np.ndarray], top_k: int) -> tuple[matc
             break
     _, card, cands, q = best
     card, cands, q = _refine(img, card, cands, q, snap, top_k)
+    if snap_outline and cands and cands[0].geo_ok and not cands[0].upside_down:
+        inner = matcher.card_outline_in_query(cands[0], (card.shape[1], card.shape[0]))
+        if inner is not None:
+            q2 = cv2.perspectiveTransform(inner.reshape(-1, 1, 2),
+                                          np.linalg.inv(detect.warp_matrix(q))).reshape(4, 2)
+            if detect.plausible_quad(q2, img.shape) and _overlap(q2, np.float32(q)) > 0.6:
+                card, q = detect.warp(img, q2), q2
     return _decide(card, cands, q)
 
 
@@ -782,25 +792,51 @@ def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> 
 
 @app.post("/match")
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
-                rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5)) -> dict:
+                rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form("")) -> dict:
+    """
+    page (binder mode, optional): the binder page's four corners in the photo,
+    JSON [[x, y], …] as fractions of width/height, top left first, clockwise —
+    the app's tilted grid when the photo was taken at an angle (against glare).
+    The page is straightened before it is split into pockets.
+    """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
+    corners = _page_corners(page) if mode == "binder" else None
     # The work is CPU-bound: run it in a worker thread so /health keeps
     # answering (the backend's status check has a 2 s timeout).
-    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)))
+    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners)
 
 
-def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int) -> dict:
+def _page_corners(page: str) -> np.ndarray | None:
+    """The binder page's corners (fractions) from the form, or None if absent or not a sane quadrilateral."""
+    if not page:
+        return None
+    try:
+        q = np.float32(json.loads(page))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "page: four [x, y] corners expected")
+    if q.shape != (4, 2) or not np.all(np.isfinite(q)) or np.abs(q).max() > 3:
+        raise HTTPException(400, "page: four [x, y] corners expected")
+    # convex, clockwise in image coordinates (y down), not degenerate
+    def turn(a: np.ndarray, b: np.ndarray) -> float:
+        return float(a[0] * b[1] - a[1] * b[0])
+    cross = [turn(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]) for i in range(4)]
+    if not (all(c > 0 for c in cross) and cv2.contourArea(q) > 0.05):
+        return None
+    return q
+
+
+def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None) -> dict:
     t0 = time.perf_counter()
     with _match_lock:
         queued = time.perf_counter() - t0
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(400, "unreadable image")
-        res = _run_match(img, mode, rows, cols, top_k)
+        res = _run_match(img, mode, rows, cols, top_k, page)
         state["matches"] += 1
     if queued >= 0.05:
         res["timing"]["queued"] = round(queued * 1000)
@@ -849,13 +885,74 @@ def _verify_request(data: bytes, card_id: str, orig: bytes, quad: str) -> dict:
     return res
 
 
-def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> dict:
+PAGE_MARGIN = 0.05      # around the straightened page, of its long side
+POCKET_SLACK = 0.12     # each pocket is searched this much wider/taller (the grid is only roughly on the page)
+PAGE_MAX_SIDE = 2400    # straightened page, px
+
+
+def _straighten_page(img: np.ndarray, page: np.ndarray, rows: int, cols: int):
+    """
+    The binder page (corners as fractions) warped upright: → (page image, its
+    page rectangle (x, y, w, h), homography photo → page image), or None.
+    The page keeps its grid's shape (cols × 63 by rows × 88), sized like its
+    longer edges in the photo.
+    """
+    h, w = img.shape[:2]
+    q = page * np.float32([w, h])
+    lens = [float(np.linalg.norm(q[(i + 1) % 4] - q[i])) for i in range(4)]   # top, right, bottom, left
+    aspect = (cols * 63.0) / (rows * 88.0)
+    pw = max(lens[0], lens[2], max(lens[1], lens[3]) * aspect)
+    pw = min(pw, PAGE_MAX_SIDE, PAGE_MAX_SIDE * aspect)
+    ph = pw / aspect
+    if pw < 60 * cols or ph < 80 * rows:
+        return None
+    m = round(PAGE_MARGIN * max(pw, ph))
+    dst = np.float32([[m, m], [m + pw, m], [m + pw, m + ph], [m, m + ph]])
+    H = cv2.getPerspectiveTransform(q.astype(np.float32), dst)
+    out = cv2.warpPerspective(img, H, (int(round(pw + 2 * m)), int(round(ph + 2 * m))),
+                              flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    return out, (float(m), float(m), float(pw), float(ph)), H
+
+
+def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int) -> list[dict] | None:
+    """Binder page shot at an angle: straighten it, find a card in each pocket, corners back into the photo."""
+    with timing.phase("page"):
+        st = _straighten_page(img, page, rows, cols)
+    if st is None:
+        return None
+    flat, (px, py, pw, ph), H = st
+    Hinv = np.linalg.inv(H)
+    fh, fw = flat.shape[:2]
+    cw, ch = pw / cols, ph / rows
+    cards: list[dict] = []
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = px + c * cw, py + r * ch
+            ex, ey = POCKET_SLACK * cw, POCKET_SLACK * ch
+            X0, Y0 = int(max(0, x0 - ex)), int(max(0, y0 - ey))
+            X1, Y1 = int(min(fw, x0 + cw + ex)), int(min(fh, y0 + ch + ey))
+            cell = flat[Y0:Y1, X0:X1]
+            opts = [d.quad + [X0, Y0] for d in _detect(cell, max_cards=2, nested=True) if d.area_frac > 0.3]
+            opts.append(np.float32([[x0, y0], [x0 + cw, y0], [x0 + cw, y0 + ch], [x0, y0 + ch]]))
+            d, q = _best_of(flat, opts, top_k, snap_outline=True)
+            if d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD:  # skip empty pockets
+                back = cv2.perspectiveTransform(np.float32(q).reshape(-1, 1, 2), Hinv).reshape(-1, 2)
+                cards.append(_result(d, back, img, r * cols + c))
+    return cards
+
+
+def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None) -> dict:
     timing.start()
     t0 = time.perf_counter()
     h, w = img.shape[:2]
     cards: list[dict] = []
+    straightened = None
+    if mode == "binder" and rows > 0 and cols > 0 and page is not None:
+        straightened = _binder_straightened(img, page, rows, cols, top_k)
 
-    if mode == "binder" and rows > 0 and cols > 0:
+    if straightened is not None:
+        cards = straightened
+    elif mode == "binder" and rows > 0 and cols > 0:
         ch, cw = h // rows, w // cols
         for r in range(rows):
             for c in range(cols):
@@ -906,5 +1003,8 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int) -> 
         d, q = _best_of(img, opts, top_k)
         cards.append(_result(d, q, img, None))
 
-    return {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
-            "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}
+    res = {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
+           "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}
+    if straightened is not None:
+        res["page"] = "straightened"
+    return res

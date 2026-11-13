@@ -22,6 +22,8 @@ import { cropToCardPhoto, loadImg, normalizeOrientation, shrinkForUpload, CropTr
 import { ringOrder } from "@/lib/cropOrient";
 import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
+import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, type Quad } from "@/lib/tiltGrid";
+import { useTiltGrid } from "@/lib/useTiltGrid";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
@@ -63,6 +65,8 @@ function thumbUrl(url: string | null): string | null {
 }
 
 const LANGS = ["DE", "EN", "CN", "JP", "FR", "ES", "IT"];
+const TILT_KEY = "scan_tilt_grid";   // „Raster neigen" bleibt eingeschaltet (localStorage)
+const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: normales Raster, keine Ecken an den Server
 
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
@@ -315,6 +319,35 @@ export default function ScanPage() {
   const gAspect = guideAspect(mode, layoutCols, layoutRows);
   const handleCaptureRef = useRef<() => void>(() => {});
 
+  // Mappenseite schräg fotografieren (gegen Spiegelungen): der Lagesensor neigt
+  // das Raster so, wie die flache Seite aus dem geneigten Handy aussieht. Beim
+  // Einschalten (und mit „Gerade") gilt die Haltung als gerade über der Seite.
+  const tilt = useTiltGrid();
+  const tiltOn = mode === "binder" && cameraOn;   // läuft über mehrere Aufnahmen weiter (Serienscan, gleiche Haltung)
+  const tiltDeg = tilt.state === "on" ? turnDegrees(tilt.turn) : 0;
+  const tiltQuad: Quad | null = tiltOn && step === "setup" && tilt.state === "on" && vidSize && gAspect !== null && tiltDeg >= TILT_MIN_DEG
+    ? tiltedGuide(guideRect(vidSize.w, vidSize.h, gAspect), vidSize.w, vidSize.h, tilt.turn)
+    : null;
+  const tiltQuadRef = useRef<Quad | null>(null);
+  tiltQuadRef.current = tiltQuad;
+  const { stop: stopTilt, start: startTilt } = tilt;
+  useEffect(() => {   // Mappe verlassen / Kamera aus → Sensor aus; eingeschaltet gemerkt → beim Öffnen wieder an
+    if (!tiltOn) { stopTilt(); return; }
+    let wanted = false;
+    try { wanted = localStorage.getItem(TILT_KEY) === "1"; } catch { /* privat */ }
+    if (wanted) void startTilt(true);   // still: wo das ohne Tipp nicht geht (iOS beim ersten Mal), bleibt es aus
+  }, [tiltOn, stopTilt, startTilt]);
+  const toggleTilt = () => {
+    const on = tilt.state === "off" || tilt.state === "unavailable" || tilt.state === "denied";
+    try { localStorage.setItem(TILT_KEY, on ? "1" : "0"); } catch { /* privat */ }
+    if (on) void tilt.start(); else tilt.stop();
+  };
+  useEffect(() => {
+    if (tilt.state !== "unavailable" && tilt.state !== "denied") return;
+    toast(tilt.state === "unavailable" ? t.scan_tilt_unavailable : t.scan_tilt_denied, { icon: "📐" });
+    try { localStorage.setItem(TILT_KEY, "0"); } catch { /* privat */ }
+  }, [tilt.state, t]);
+
   // Kartensuche im Live-Bild: ~7×/s vier gerade Kanten am Rahmen (Karte bzw.
   // Kartenraster liegt drin) → grüne Kontur, auch ohne Auto-Aufnahme. Mit
   // Auto-Aufnahme löst sie aus, sobald der Fund ~½ s ruhig steht.
@@ -337,10 +370,18 @@ export default function ScanPage() {
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       ctx.drawImage(v, 0, 0, w, h);
       const guide = guideRect(w, h, gAspect);
-      const lock = findCardInGuide(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h, guide);
+      let gray = toGray(ctx.getImageData(0, 0, w, h).data, w, h);
+      // geneigtes Raster: das Bild erst so umrechnen, als stünde das Handy gerade über der Seite
+      const tq = tiltQuadRef.current;
+      const small = tq ? (tq.map(([x, y]) => [x * k, y * k]) as Quad) : null;
+      if (small) gray = straightenToGuide(gray, w, h, small, guide);
+      const lock = findCardInGuide(gray, w, h, guide);
       steady = lock && prev && lockMovement(prev, lock, guide) <= 0.022 ? steady + 1 : 0;
       prev = lock;
-      setLockQuad(lock ? lock.quad.map(([x, y]) => [x / k, y / k] as Pt) : null);
+      setLockQuad(lock ? lock.quad.map((p) => {
+        const [x, y] = small ? fromGuide(p, small, guide) : p;
+        return [x / k, y / k] as Pt;
+      }) : null);
       setLockSteady(steady > 0);
       if (!autoCapture) return;             // nur anzeigen
       if (needClearRef.current) {           // erst die vorige Karte aus dem Rahmen nehmen
@@ -650,7 +691,7 @@ export default function ScanPage() {
   const keepRef = useRef(keepUnrecognised);
   keepRef.current = keepUnrecognised;
 
-  const runScan = useCallback(async (rawBlob: Blob) => {
+  const runScan = useCallback(async (rawBlob: Blob, page?: Pt[] | null) => {
     setBusy(true);
     let blob: Blob | null = null;
     try {
@@ -670,6 +711,7 @@ export default function ScanPage() {
         rows: mode === "binder" ? rows : 0,
         cols: mode === "binder" ? cols : 0,
         default_language: defaultLang,
+        page: mode === "binder" ? page : null,
       });
       const list: EditableCandidate[] = res.data.candidates.map((c) => ({
         ...c,
@@ -727,11 +769,15 @@ export default function ScanPage() {
   }, [layout, mode, t, setPokedexRep, defaultLang]);
 
   const handleCapture = async () => {
+    // geneigtes Raster: wo die Seite im Foto liegt (Anteile des Videobilds = des Fotos)
+    const v = videoRef.current;
+    const tq = tiltQuadRef.current;
+    const page = tq && v && v.videoWidth ? tq.map(([x, y]) => [x / v.videoWidth, y / v.videoHeight] as Pt) : null;
     const blob = await blobFromVideo();
     // Kamera läuft weiter (Serienscan); Auto-Aufnahme erst nach Kartenwechsel wieder scharf.
     needClearRef.current = true;
     setWaitingNext(true);
-    if (blob) runScan(blob);
+    if (blob) runScan(blob, page);
   };
   handleCaptureRef.current = () => { void handleCapture(); };  // Auto-Aufnahme nutzt immer die aktuelle Fassung
 
@@ -1296,7 +1342,8 @@ export default function ScanPage() {
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
                   {vidSize && (
                     <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
-                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads} />
+                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
+                      tilted={tiltQuad} />
                   )}
                   {vidSize && (() => {
                     const chip = busy ? t.scan_analyzing
@@ -1308,6 +1355,22 @@ export default function ScanPage() {
                       </div>
                     );
                   })()}
+                  {tiltOn && step === "setup" && (
+                    <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                      <button type="button" onClick={toggleTilt} aria-pressed={tilt.state === "on" || tilt.state === "starting"}
+                        title={t.scan_tilt_hint} data-testid="scan-tilt"
+                        className={`rounded-full px-3 py-1.5 text-xs text-white ${tilt.state === "on" || tilt.state === "starting"
+                          ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                        {t.scan_tilt}{tilt.state === "on" ? ` · ${Math.round(tiltDeg)}°` : ""}
+                      </button>
+                      {tilt.state === "on" && (
+                        <button type="button" onClick={tilt.level} title={t.scan_tilt_level_hint} data-testid="scan-tilt-level"
+                          className="rounded-full bg-black/50 px-3 py-1.5 text-xs text-white hover:bg-black/70">
+                          {t.scan_tilt_level}
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {/* Bedienung auf dem Bild (wie eine Kamera-App) – kein Scrollen nötig */}
                   <div className="absolute inset-x-0 bottom-0 grid grid-cols-3 items-center bg-gradient-to-t from-black/75 to-transparent px-3 pb-3 pt-10">
                     <button type="button" onClick={stopCamera}
@@ -1329,6 +1392,7 @@ export default function ScanPage() {
                 </div>
                 <p className="text-center text-gray-500 text-xs">
                   {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
+                  {mode === "binder" && <span className="block">{tilt.state === "on" ? t.scan_tilt_on_hint : t.scan_tilt_hint}</span>}
                 </p>
               </div>
             ) : (
@@ -1894,16 +1958,50 @@ export default function ScanPage() {
 }
 
 
+/** Das Raster, wie die flache Seite aus dem geneigten Handy aussieht (sonst wie CameraGuide). */
+function TiltedGuide({ w, h, cols, rows, quad, found, steady, boxes }: {
+  w: number; h: number; cols: number; rows: number; quad: Quad; found: Pt[] | null; steady: boolean; boxes?: Pt[][] | null;
+}) {
+  const at = squareToQuad(quad);
+  const color = found ? (steady ? "#22c55e" : "#86efac") : "#facc15";
+  const pts = (ps: Pt[]) => ps.map(([x, y]) => `${x},${y}`).join(" ");
+  const line = (a: Pt, b: Pt, key: string) => (
+    <line key={key} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={color} strokeOpacity={0.45} strokeWidth={1}
+      vectorEffect="non-scaling-stroke" />
+  );
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+      data-testid="scan-tilted-guide">
+      <path fillRule="evenodd" fill="rgba(0,0,0,0.38)"
+        d={`M0 0H${w}V${h}H0Z M${quad.map(([x, y]) => `${x} ${y}`).join(" L")}Z`} />
+      {Array.from({ length: cols - 1 }, (_, i) => line(at((i + 1) / cols, 0), at((i + 1) / cols, 1), `c${i}`))}
+      {Array.from({ length: rows - 1 }, (_, i) => line(at(0, (i + 1) / rows), at(1, (i + 1) / rows), `r${i}`))}
+      <polygon points={pts(quad)} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke" />
+      {found && (
+        <polygon points={pts(found)} fill="rgba(34,197,94,0.12)" stroke="#22c55e" strokeWidth={2}
+          vectorEffect="non-scaling-stroke" />
+      )}
+      {boxes?.map((b, i) => (
+        <polygon key={i} points={pts(b)} fill="rgba(56,189,248,0.14)" stroke="#38bdf8"
+          strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      ))}
+    </svg>
+  );
+}
+
 /**
  * Rahmen über dem Live-Bild, in Video-Pixeln (viewBox = Videoformat, das Video
  * wird unverzerrt in voller Breite gezeigt): Bereich außerhalb abgedunkelt,
  * bei der Mappe das Raster, und die gefundene Karte als grüne Kontur.
  */
-function CameraGuide({ w, h, aspect, cols, rows, quad, steady, boxes }: {
+function CameraGuide({ w, h, aspect, cols, rows, quad, steady, boxes, tilted }: {
   w: number; h: number; aspect: number | null; cols: number; rows: number; quad: Pt[] | null; steady: boolean;
   boxes?: Pt[][] | null;   // vom Bild-Abgleich gefundene Karten (mehrere Karten / Mappe)
+  tilted?: Quad | null;    // Mappenseite aus dem geneigten Handy (Lagesensor): Raster als Viereck
 }) {
   const g = aspect !== null ? guideRect(w, h, aspect) : null;
+  if (g && tilted) return <TiltedGuide w={w} h={h} cols={cols} rows={rows} quad={tilted} found={quad} steady={steady} boxes={boxes} />;
   const r = g ? (Math.min(g.w / cols, g.h / rows) * 0.045) : 0;   // Kartenecken ~3 mm von 63 mm
   const color = quad ? (steady ? "#22c55e" : "#86efac") : "#facc15";
   return (

@@ -1106,13 +1106,16 @@ export const scanApi = {
   usage: () => api.get<ScanUsage>("/scan/usage"),
   models: (provider: string) =>
     api.get<ScanModelList>("/scan/models", { params: { provider } }),
-  scan: (file: Blob, opts: { mode: ScanMode; rows?: number; cols?: number; default_language?: string }) => {
+  scan: (file: Blob, opts: { mode: ScanMode; rows?: number; cols?: number; default_language?: string;
+    page?: [number, number][] | null }) => {
     const form = new FormData();
     form.append("file", file, "scan.jpg");
     form.append("mode", opts.mode);
     form.append("rows", String(opts.rows ?? 0));
     form.append("cols", String(opts.cols ?? 0));
     form.append("default_language", opts.default_language ?? "DE");
+    // Mappenseite schräg fotografiert: ihre Ecken (Anteile), damit der Bild-Abgleich sie entzerrt
+    if (opts.page) form.append("page", JSON.stringify(opts.page.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)])));
     return api.post<ScanResponse>("/scan", form);
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),

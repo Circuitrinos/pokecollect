@@ -112,14 +112,17 @@ def _stamp(raw) -> Optional[ScanStamp]:
 
 
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
-                  rows: int = 0, cols: int = 0) -> LocalResult:
+                  rows: int = 0, cols: int = 0, page: str | None = None) -> LocalResult:
     t0 = time.perf_counter()
+    form = {"mode": mode, "rows": str(rows), "cols": str(cols), "top_k": "5"}
+    if page:   # Mappenseite schräg fotografiert: ihre Ecken (ältere Matcher ignorieren das Feld)
+        form["page"] = page
     try:
         async with _client() as client:
             r = await client.post(
                 f"{base_url.rstrip('/')}/match",
                 files={"file": ("scan", image_bytes, mime_type)},
-                data={"mode": mode, "rows": str(rows), "cols": str(cols), "top_k": "5"},
+                data=form,
             )
     except Exception as exc:
         log.warning("Matcher nicht erreichbar (%s): %s", base_url, exc)

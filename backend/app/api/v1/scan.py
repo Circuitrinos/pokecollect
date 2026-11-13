@@ -8,6 +8,7 @@ GET  /api/v1/scan/status   welche Engine aktiv ist (für die UI)
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -240,6 +241,20 @@ def scan_usage(db: Session = Depends(get_db)):
     }
 
 
+def _page_corners(page: str) -> str | None:
+    """Ecken der schräg fotografierten Mappenseite (App) prüfen → JSON für den Bild-Abgleich, sonst None."""
+    if not page or len(page) > 400:
+        return None
+    try:
+        q = json.loads(page)
+        pts = [[round(float(x), 4), round(float(y), 4)] for x, y in q]
+    except (ValueError, TypeError):
+        return None
+    if len(pts) != 4 or any(not (-1.0 <= v <= 2.0) for p in pts for v in p):
+        return None
+    return json.dumps(pts)
+
+
 @router.post("", response_model=ScanResponse)
 async def scan(
     file: UploadFile = File(...),
@@ -247,13 +262,18 @@ async def scan(
     rows: int = Form(0),
     cols: int = Form(0),
     default_language: str = Form("DE"),
+    page: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """
     Erkennt Karten auf einem Foto.
     - mode=single  : eine Karte
     - mode=multi   : mehrere lose Karten (Gemini empfohlen)
-    - mode=binder  : ganze Mappenseite; rows×cols = Raster (z.B. 3×3)
+    - mode=binder  : ganze Mappenseite; rows×cols = Raster (z.B. 3×3).
+      page (optional): die vier Ecken der Seite im Foto als Anteile,
+      [[x, y], …] ab oben links im Uhrzeigersinn — das geneigte Raster der
+      App bei einem schräg aufgenommenen Foto; der Bild-Abgleich entzerrt die
+      Seite damit, bevor er sie in Fächer teilt.
     """
     data = await file.read()
     if not data:
@@ -280,7 +300,8 @@ async def scan(
     local_extras: dict[int, local_match.LocalExtra] = {}
     if provider == "local":
         result = await local_match.extract(
-            data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols)  # card → matcher
+            data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
+            page=_page_corners(page) if mode == "binder" else None)
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
         else:

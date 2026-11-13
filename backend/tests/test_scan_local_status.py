@@ -149,3 +149,31 @@ def test_scan_gibt_stempel_befund_weiter(client, provider_local, png_bytes):
     assert stamps["sv03-1"]["sure"] is True and stamps["sv03-1"]["score"] == 0.93
     assert stamps["sv03-2"]["ok"] is False
     assert stamps["sv03-3"] is None and stamps["sv03-4"] is None
+
+
+def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_local, png_bytes, monkeypatch):
+    """Geneigtes Raster: die Ecken der Seite gehen (gerundet, geprüft) an den matcher — nur bei der Mappe."""
+    seen: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.content)
+        return httpx.Response(200, json={"mode": "binder", "ms": 50, "page": "straightened", "cards": [{
+            "position": 4, "quad": [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]], "auto": True, "confidence": 0.95,
+            "candidates": [{"card_id": "sv03-125", "name": "Charizard ex", "local_id": "125"}]}]})
+    monkeypatch.setattr(local_match, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    page = "[[0.12345678, 0.1], [0.9, 0.05], [0.95, 0.97], [0.08, 0.9]]"
+
+    def post(mode: str, page: str):
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                        data={"mode": mode, "rows": "3", "cols": "3", "page": page})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    body = post("binder", page)
+    assert b'name="page"\r\n\r\n[[0.1235, 0.1], [0.9, 0.05], [0.95, 0.97], [0.08, 0.9]]' in seen[-1]
+    assert body["candidates"][0]["raw"]["tcgdex_card_id"] == "sv03-125"
+    post("multi", page)                                        # nur die Mappe kennt ein Raster
+    assert b'name="page"' not in seen[-1]
+    for bad in ("[[0, 0], [1, 0], [1, 1]]", "kaputt", "[[0, 0], [9, 0], [1, 1], [0, 1]]", "x" * 500):
+        post("binder", bad)                                    # unbrauchbar → wie bisher ohne Ecken
+        assert b'name="page"' not in seen[-1]
