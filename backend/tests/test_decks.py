@@ -456,3 +456,76 @@ def test_cards_without_a_catalog_print_land_on_the_right_line(client, catalog):
     boss = [s for s in svc._slots(db, d.id) if s.name == "Boss's Orders"]
     assert len(boss) == 1 and boss[0].count == 4 and boss[0].section == "trainer"
     db.close()
+
+
+def test_deck_diag_rematch_links_sure_cards_only_with_fix(client, catalog, capsys, monkeypatch, tmp_path):
+    """--rematch schickt das Scan-Foto einer Karte ohne Druck durch den heutigen Scan;
+    --fix verknüpft nur, wenn der Bild-Abgleich sicher ist und der Name passt."""
+    import httpx
+
+    from app.config import settings
+    from app.models.deck import DeckSlot
+    from app.services import tcgdex
+    from app.tools import deck_diag
+
+    real = httpx.AsyncClient
+    answers = {"Deckscan Boss": ("tdeck1-114", "Boss's Orders", True), "Deckscan Odd": ("tdeck1-062", "Testmon ex", True),
+               "Deckscan Unsure": ("tdeck1-120", "Prime Spec", False)}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ready", "catalog": 3, "uptime_s": 5})
+        body = request.content.decode("latin-1")
+        who = next(k for k in answers if k.replace(" ", "_") in body)
+        cid, name, sure = answers[who]
+        return httpx.Response(200, json={"cards": [{"auto": sure, "confidence": 0.9 if sure else 0.4, "candidates": [
+            {"card_id": cid, "name": name, "local_id": cid.rsplit("-", 1)[1], "art_inliers": 40}]}]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+    async def fake_get_card(card_id, lang="en"):
+        row = SessionLocal().get(TcgdexCatalog, card_id)
+        return tcgdex.TcgdexCard(id=card_id, localId=row.local_id, name=row.name_en, category=row.category,
+                                 set={"id": row.set_id, "name": "Testset"})
+
+    monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
+    monkeypatch.setattr(tcgdex, "search_cards", lambda *a, **k: _async([]))
+    monkeypatch.setattr(settings, "images_dir", str(tmp_path / "images"))
+    (tmp_path / "images").mkdir()
+
+    deck = client.post(f"{API}/decks", json={"name": "Test-Rematch", "text": "Trainer: 1\n4 Boss's Orders TDA 114\n"}).json()["deck"]
+    db = SessionLocal()
+    ids = {}
+    for name, en in (("Deckscan Boss", "Boss's Orders"), ("Deckscan Odd", "Boss's Orders"), ("Deckscan Unsure", "Prime Spec")):
+        fn = f"{name.replace(' ', '_')}.jpg"
+        (tmp_path / "images" / fn).write_bytes(b"\xff\xd8 " + name.replace(" ", "_").encode())
+        c = PokemonCard(kartenname=name, englischer_name=en, besessen=True, deck_id=deck["id"],
+                        bild_scan_pfad=f"images/{fn}")
+        db.add(c)
+        db.flush()
+        ids[name] = c.id
+    db.commit()
+
+    deck_diag.main([str(deck["id"]), "--rematch"])
+    out = capsys.readouterr().out
+    assert "image match http" in out and "ready" in out
+    assert "tdeck1-114 “Boss's Orders” sure" in out and "resolved now → tdeck1-114" in out
+    assert "[name differs]" in out                      # „Odd": Foto zeigt etwas anderes
+    db.expire_all()
+    assert db.get(PokemonCard, ids["Deckscan Boss"]).tcgdex_card_id is None      # ohne --fix: nichts geschrieben
+
+    deck_diag.main([str(deck["id"]), "--rematch", "--fix"])
+    out = capsys.readouterr().out
+    assert "linked 1 card(s)" in out
+    db.expire_all()
+    assert db.get(PokemonCard, ids["Deckscan Boss"]).tcgdex_card_id == "tdeck1-114"
+    assert db.get(PokemonCard, ids["Deckscan Odd"]).tcgdex_card_id is None       # Name passt nicht
+    assert db.get(PokemonCard, ids["Deckscan Unsure"]).tcgdex_card_id is None    # nicht sicher
+    db.execute(delete(PokemonCard).where(PokemonCard.id.in_(list(ids.values()))).execution_options(all_users=True))
+    db.execute(delete(DeckSlot).where(DeckSlot.deck_id == deck["id"]))
+    db.commit()
+    db.close()
+
+
+async def _async(v):
+    return v

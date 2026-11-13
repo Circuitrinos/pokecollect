@@ -8,6 +8,10 @@ nothing):
     python -m app.tools.deck_diag 4            # deck 4
     python -m app.tools.deck_diag 4 7 --live   # also ask TCGdex (reachability, card texts)
     python - 4 --live < deck_diag.py           # the same without the file in the image
+    python -m app.tools.deck_diag 4 --rematch  # the deck's cards without a catalog print: their scan
+                                               # photo through today's scan (image match + TCGdex)
+    python -m app.tools.deck_diag 4 --rematch --fix   # … and link the ones the image match is sure
+                                               # of and whose name agrees (the only option that writes)
 
 Sections per deck:
   1. deck, format, the Standard cut-off mark, the legality verdict and its issues
@@ -19,6 +23,10 @@ Sections per deck:
   4. the cards in the deck: catalog id (and whether the catalog knows it), how
      they were added (scan drafts that saved them: what the scan had matched)
   5. --live: TCGdex reachable from here? the texts of the prints behind section 3
+  6. --rematch: each card without a catalog print, its saved scan photo sent to the
+     image match ("card" mode, like "re-detect" in the review) and the result
+     resolved as a scan would now; --fix links it (catalog id, set, legality) when
+     the match is sure and the name is the card's
 """
 from __future__ import annotations
 
@@ -213,9 +221,95 @@ async def live_checks(card_ids: list[str]) -> None:
             print(f"      fingerprint: {regulation.effect_key(tc.effect)}")
 
 
+async def rematch(deck_ids: list[int], fix: bool) -> None:
+    import mimetypes
+
+    import httpx
+
+    from app.config import settings
+    from app.schemas.scan import ScanRawRead
+    from app.services.card_images import safe_media_path
+    from app.services.scan.resolver import resolve_one
+
+    section("6. cards without a catalog print: their scan photo through today's scan (--rematch)")
+    db = SessionLocal()
+    fixed = 0
+    try:
+        cards = db.scalars(select(PokemonCard).where(PokemonCard.deck_id.in_(deck_ids),
+                                                     PokemonCard.tcgdex_card_id.is_(None))
+                           .order_by(PokemonCard.id)).all()
+        if not cards:
+            print("  (none)")
+            return
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=3.0)) as client:
+            try:
+                h = (await client.get(f"{settings.matcher_url.rstrip('/')}/health", timeout=3.0)).json()
+                print(f"  image match {settings.matcher_url}: {h.get('status')}, {h.get('catalog', '?')} catalog cards, up {h.get('uptime_s', '?')} s")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  image match {settings.matcher_url}: NOT REACHABLE ({exc})")
+                return
+            for c in cards:
+                name = c.englischer_name or c.kartenname or ""
+                path = safe_media_path(c.bild_scan_pfad or c.bild_karte_pfad)
+                if path is None or not path.is_file():
+                    print(f"  card {c.id} {name}: no scan photo on disk")
+                    continue
+                t0 = time.perf_counter()
+                r = await client.post(f"{settings.matcher_url.rstrip('/')}/match",
+                                      files={"file": (path.name, path.read_bytes(),
+                                                      mimetypes.guess_type(path.name)[0] or "image/jpeg")},
+                                      data={"mode": "card", "top_k": "3"})
+                ms = round((time.perf_counter() - t0) * 1000)
+                if r.status_code != 200:
+                    print(f"  card {c.id} {name}: image match answered {r.status_code} ({ms} ms)")
+                    continue
+                found = (r.json().get("cards") or [{}])[0]
+                cands = found.get("candidates") or []
+                if not cands:
+                    print(f"  card {c.id} {name}: image match found nothing ({ms} ms)")
+                    continue
+                top = cands[0]
+                sure = bool(found.get("auto"))
+                read = ScanRawRead(name=top.get("name"), number=top.get("local_id"), tcgdex_card_id=top.get("card_id"))
+                t1 = time.perf_counter()
+                res = await resolve_one(db, read, default_lang=c.sprache or "EN")
+                ms2 = round((time.perf_counter() - t1) * 1000)
+                m = res.match
+                same = svc.rule_name(top.get("name") or "") == svc.rule_name(name)
+                print(f"  card {c.id} “{name}”: image match {top.get('card_id')} “{top.get('name')}” "
+                      f"{'sure' if sure else 'unsure'} (conf {found.get('confidence')}, art inliers {top.get('art_inliers')}, {ms} ms); "
+                      f"others {[x.get('card_id') for x in cands[1:]]}; resolved now → "
+                      f"{m.tcgdex_card_id if m else 'NO MATCH'} ({ms2} ms){'' if same else '  [name differs]'}")
+                if fix and sure and same and m is not None and m.tcgdex_card_id == top.get("card_id"):
+                    c.tcgdex_card_id, c.set_id = m.tcgdex_card_id, m.set_id
+                    if not c.englischer_name:
+                        c.englischer_name = m.englischer_name or top.get("name")
+                    if not c.karten_nr and m.local_id:
+                        c.karten_nr = m.local_id
+                    regulation.apply_to_card(db, c)
+                    fixed += 1
+                    print(f"      → linked to {m.tcgdex_card_id}")
+        if fix:
+            if hasattr(svc, "relink"):    # older app images: the deck page sorts the lines out once updated
+                for d in db.scalars(select(Deck).where(Deck.id.in_(deck_ids))).all():
+                    svc.relink(db, d)
+            db.commit()
+            print(f"  linked {fixed} card(s)")
+    finally:
+        if not fix:
+            db.rollback()
+        db.close()
+
+
 def main(argv: list[str]) -> None:
     live = "--live" in argv
     ids = [int(a) for a in argv if a.isdigit()]
+    if "--rematch" in argv:
+        if not ids:
+            print("--rematch needs deck ids")
+            return
+        asyncio.run(rematch(ids, fix="--fix" in argv))
+        return
     db = SessionLocal()
     try:
         if not ids:
