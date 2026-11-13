@@ -270,10 +270,11 @@ async def scan(
     - mode=single  : eine Karte
     - mode=multi   : mehrere lose Karten (Gemini empfohlen)
     - mode=binder  : ganze Mappenseite; rows×cols = Raster (z.B. 3×3).
-      page (optional): die vier Ecken der Seite im Foto als Anteile,
-      [[x, y], …] ab oben links im Uhrzeigersinn — das geneigte Raster der
-      App bei einem schräg aufgenommenen Foto; der Bild-Abgleich entzerrt die
-      Seite damit, bevor er sie in Fächer teilt.
+      page (optional, auch bei mode=multi mit Raster-Hilfe): die vier Ecken des
+      Rasters im Foto als Anteile, [[x, y], …] ab oben links im Uhrzeigersinn —
+      das geneigte Raster der App bei einem schräg aufgenommenen Foto; der
+      Bild-Abgleich entzerrt das Foto damit (Mappe: danach in Fächer teilen,
+      lose Karten: danach überall suchen).
     """
     data = await file.read()
     if not data:
@@ -301,7 +302,7 @@ async def scan(
     if provider == "local":
         result = await local_match.extract(
             data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
-            page=_page_corners(page) if mode == "binder" else None)
+            page=_page_corners(page) if mode in ("binder", "multi") else None)
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
         else:

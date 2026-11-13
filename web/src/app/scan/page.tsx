@@ -65,13 +65,22 @@ function thumbUrl(url: string | null): string | null {
 }
 
 const LANGS = ["DE", "EN", "CN", "JP", "FR", "ES", "IT"];
-const TILT_KEY = "scan_tilt_grid";   // „Raster neigen" bleibt eingeschaltet (localStorage)
+const TILT_KEY = "scan_tilt_grid";
+const MULTI_GRID_KEY = "scan_multi_grid";   // Raster-Hilfe bei losen Karten (localStorage)   // „Raster neigen" bleibt eingeschaltet (localStorage)
 const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: normales Raster, keine Ecken an den Server
 
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
   if (!m) return { cols: 3, rows: 3 };
   return { cols: Number(m[1]), rows: Number(m[2]) };
+}
+
+/** Raster-Hilfe für lose Karten („3x3", Groß/Klein und Leerzeichen egal); leer/ungültig → keins. */
+function parseGrid(grid: string): { cols: number; rows: number } | null {
+  const m = grid.trim().toLowerCase().match(/^(\d{1,2})\s*[x×]\s*(\d{1,2})$/);
+  if (!m) return null;
+  const cols = Number(m[1]), rows = Number(m[2]);
+  return cols >= 1 && rows >= 1 && cols <= 10 && rows <= 10 && cols * rows > 1 ? { cols, rows } : null;
 }
 
 /** Verkleinert das Bild vor dem Upload (schnellere Analyse), max. Kantenlänge maxDim. */
@@ -148,6 +157,15 @@ export default function ScanPage() {
   const [slot, setSlot] = useState<number | null>(null);
   const [slotRefresh, setSlotRefresh] = useState(0);
   const [layout, setLayout] = useState("3x3");
+  // Raster-Hilfe bei losen Karten (z.B. auf dem Tisch ausgelegt), gemerkt im Browser; leer = keins
+  const [multiGrid, setMultiGrid] = useState("");
+  useEffect(() => {
+    try { setMultiGrid(localStorage.getItem(MULTI_GRID_KEY) ?? ""); } catch { /* privat */ }
+  }, []);
+  const changeMultiGrid = (v: string) => {
+    setMultiGrid(v);
+    try { localStorage.setItem(MULTI_GRID_KEY, v); } catch { /* privat */ }
+  };
   const [setPokedexRep, setSetPokedexRep] = useState(false);
   const [priority, setPriority] = useState("");  // für Wunschkarten-Scan
 
@@ -314,16 +332,20 @@ export default function ScanPage() {
     return () => { stop = true; };
   }, [cameraOn, step, mode]);
 
-  // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten keiner.
-  const { cols: layoutCols, rows: layoutRows } = parseLayout(layout);
-  const gAspect = guideAspect(mode, layoutCols, layoutRows);
+  // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten nur mit Raster-Hilfe.
+  const looseGrid = mode === "multi" ? parseGrid(multiGrid) : null;
+  const gridShown = mode === "binder" || looseGrid !== null;
+  const { cols: layoutCols, rows: layoutRows } = looseGrid ?? parseLayout(layout);
+  const gAspect = looseGrid ? guideAspect("binder", layoutCols, layoutRows) : guideAspect(mode, layoutCols, layoutRows);
+  // Auto-Aufnahme sucht vier gerade Kanten im Rahmen — lose Karten haben keine, dort nur die Raster-Hilfe
+  const lockAspect = looseGrid ? null : gAspect;
   const handleCaptureRef = useRef<() => void>(() => {});
 
   // Mappenseite schräg fotografieren (gegen Spiegelungen): der Lagesensor neigt
   // das Raster so, wie die flache Seite aus dem geneigten Handy aussieht. Beim
   // Einschalten (und mit „Gerade") gilt die Haltung als gerade über der Seite.
   const tilt = useTiltGrid();
-  const tiltOn = mode === "binder" && cameraOn;   // läuft über mehrere Aufnahmen weiter (Serienscan, gleiche Haltung)
+  const tiltOn = gridShown && cameraOn;   // läuft über mehrere Aufnahmen weiter (Serienscan, gleiche Haltung)
   const tiltDeg = tilt.state === "on" ? turnDegrees(tilt.turn) : 0;
   const tiltQuad: Quad | null = tiltOn && step === "setup" && tilt.state === "on" && vidSize && gAspect !== null && tiltDeg >= TILT_MIN_DEG
     ? tiltedGuide(guideRect(vidSize.w, vidSize.h, gAspect), vidSize.w, vidSize.h, tilt.turn)
@@ -355,7 +377,7 @@ export default function ScanPage() {
   useEffect(() => {
     setLockQuad(null);
     setLockSteady(false);
-    if (!cameraOn || gAspect === null || step !== "setup") return;
+    if (!cameraOn || lockAspect === null || step !== "setup") return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
@@ -369,7 +391,7 @@ export default function ScanPage() {
       const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       ctx.drawImage(v, 0, 0, w, h);
-      const guide = guideRect(w, h, gAspect);
+      const guide = guideRect(w, h, lockAspect);
       let gray = toGray(ctx.getImageData(0, 0, w, h).data, w, h);
       // geneigtes Raster: das Bild erst so umrechnen, als stünde das Handy gerade über der Seite
       const tq = tiltQuadRef.current;
@@ -396,7 +418,7 @@ export default function ScanPage() {
       }
     }, 140);
     return () => window.clearInterval(id);
-  }, [cameraOn, autoCapture, gAspect, step]);
+  }, [cameraOn, autoCapture, lockAspect, step]);
 
   const blobFromVideo = (): Promise<Blob | null> =>
     new Promise((resolve) => {
@@ -705,13 +727,16 @@ export default function ScanPage() {
         if (prev) URL.revokeObjectURL(prev);
         return URL.createObjectURL(photo);
       });
-      const { cols, rows } = parseLayout(layout);
+      // lose Karten mit Raster-Hilfe: das Raster sagt dem Bild-Abgleich, wie die geneigte Fläche gerade aussieht
+      const grid = mode === "multi" ? parseGrid(multiGrid) : null;
+      const { cols, rows } = grid ?? parseLayout(layout);
+      const useGrid = mode === "binder" || (grid !== null && !!page);
       const res = await scanApi.scan(blob, {
         mode,
-        rows: mode === "binder" ? rows : 0,
-        cols: mode === "binder" ? cols : 0,
+        rows: useGrid ? rows : 0,
+        cols: useGrid ? cols : 0,
         default_language: defaultLang,
-        page: mode === "binder" ? page : null,
+        page: mode === "binder" || mode === "multi" ? page : null,
       });
       const list: EditableCandidate[] = res.data.candidates.map((c) => ({
         ...c,
@@ -766,7 +791,7 @@ export default function ScanPage() {
     } finally {
       setBusy(false);
     }
-  }, [layout, mode, t, setPokedexRep, defaultLang]);
+  }, [layout, multiGrid, mode, t, setPokedexRep, defaultLang]);
 
   const handleCapture = async () => {
     // geneigtes Raster: wo die Seite im Foto liegt (Anteile des Videobilds = des Fotos)
@@ -1341,13 +1366,13 @@ export default function ScanPage() {
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
                   {vidSize && (
-                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={mode === "binder" ? layoutCols : 1}
-                      rows={mode === "binder" ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
+                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={gridShown ? layoutCols : 1}
+                      rows={gridShown ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
                       tilted={tiltQuad} />
                   )}
                   {vidSize && (() => {
                     const chip = busy ? t.scan_analyzing
-                      : gAspect !== null && autoCapture ? (waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching)
+                      : lockAspect !== null && autoCapture ? (waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching)
                       : detQuads ? t.scan_cam_found(detQuads.length) : null;
                     return chip && (
                       <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-3 py-1 text-xs text-white">
@@ -1356,7 +1381,7 @@ export default function ScanPage() {
                     );
                   })()}
                   {tiltOn && step === "setup" && (
-                    <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                    <div className="absolute top-10 right-2 flex flex-row-reverse items-center gap-1">
                       <button type="button" onClick={toggleTilt} aria-pressed={tilt.state === "on" || tilt.state === "starting"}
                         title={t.scan_tilt_hint} data-testid="scan-tilt"
                         className={`rounded-full px-3 py-1.5 text-xs text-white ${tilt.state === "on" || tilt.state === "starting"
@@ -1382,7 +1407,7 @@ export default function ScanPage() {
                       className="justify-self-center h-16 w-16 rounded-full border-4 border-white bg-white/25 shadow-lg transition hover:bg-white/40 active:scale-95 disabled:opacity-50">
                       {busy && <span className="block h-full w-full animate-pulse rounded-full bg-white/50" />}
                     </button>
-                    {gAspect !== null ? (
+                    {lockAspect !== null ? (
                       <label className="justify-self-end flex items-center gap-1 rounded-full bg-black/50 px-3 py-1.5 text-xs text-white">
                         <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
                         {t.scan_autocapture}
@@ -1392,7 +1417,7 @@ export default function ScanPage() {
                 </div>
                 <p className="text-center text-gray-500 text-xs">
                   {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
-                  {mode === "binder" && <span className="block">{tilt.state === "on" ? t.scan_tilt_on_hint : t.scan_tilt_hint}</span>}
+                  {gridShown && <span className="block">{tilt.state === "on" ? t.scan_tilt_on_hint : t.scan_tilt_hint}</span>}
                 </p>
               </div>
             ) : (
@@ -1474,6 +1499,21 @@ export default function ScanPage() {
                     <option key={p} value={p}>{valueLabel(p, lang)}</option>
                   ))}
                 </select>
+              </div>
+            )}
+            {mode === "multi" && (
+              <div>
+                <label htmlFor="scan-multi-grid" className="text-gray-400 text-xs block mb-1">{t.scan_multi_grid}</label>
+                <input
+                  id="scan-multi-grid"
+                  type="text"
+                  value={multiGrid}
+                  onChange={(e) => changeMultiGrid(e.target.value)}
+                  placeholder={t.scan_multi_grid_placeholder}
+                  title={t.scan_multi_grid_hint}
+                  data-testid="scan-multi-grid"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-sm font-mono"
+                />
               </div>
             )}
             {mode === "binder" && (
@@ -2005,7 +2045,8 @@ function CameraGuide({ w, h, aspect, cols, rows, quad, steady, boxes, tilted }: 
   const r = g ? (Math.min(g.w / cols, g.h / rows) * 0.045) : 0;   // Kartenecken ~3 mm von 63 mm
   const color = quad ? (steady ? "#22c55e" : "#86efac") : "#facc15";
   return (
-    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+      data-testid="scan-guide">
       {g && (
         <>
           <path fillRule="evenodd" fill="rgba(0,0,0,0.38)"

@@ -81,8 +81,12 @@ export function focalPx(w: number, h: number): number {
 /**
  * The guide's corners (TL, TR, BR, BL) as the flat page looks after the turn,
  * in frame px; null when the page would turn edge-on or behind the camera.
+ * A near side swinging off screen is pulled in around the frame centre until
+ * the whole guide fits `fit` of the frame — the shape stays, as if the phone
+ * stepped back (which is what one does to keep the page in view).
  */
-export function tiltedGuide(g: Rect, frameW: number, frameH: number, turn: Mat3, f = focalPx(frameW, frameH)): Quad | null {
+export function tiltedGuide(g: Rect, frameW: number, frameH: number, turn: Mat3, f = focalPx(frameW, frameH),
+  fit = 0.96): Quad | null {
   const cx = frameW / 2, cy = frameH / 2;
   const corners: Pt[] = [[g.x, g.y], [g.x + g.w, g.y], [g.x + g.w, g.y + g.h], [g.x, g.y + g.h]];
   const out: Pt[] = [];
@@ -94,7 +98,13 @@ export function tiltedGuide(g: Rect, frameW: number, frameH: number, turn: Mat3,
     if (qz < 0.25 * f) return null;
     out.push([cx + (f * qx) / qz, cy + (f * qy) / qz]);
   }
-  return out as Quad;
+  const hx = (cx * fit), hy = (cy * fit);   // half the allowed width / height around the centre
+  let k = 1;
+  for (const [x, y] of out) {
+    if (Math.abs(x - cx) > hx) k = Math.min(k, hx / Math.abs(x - cx));
+    if (Math.abs(y - cy) > hy) k = Math.min(k, hy / Math.abs(y - cy));
+  }
+  return (k < 1 ? out.map(([x, y]) => [cx + (x - cx) * k, cy + (y - cy) * k]) : out) as Quad;
 }
 
 /** Homography of the unit square onto a quad (TL, TR, BR, BL): (s, t) → point. */

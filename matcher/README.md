@@ -92,17 +92,28 @@ desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates i
 - `POST /learn`: index new scan photos soon (the api calls it after each scan photo upload).
 - `POST /match` (multipart): `file`, `mode` = `single|multi|binder|card`, `rows`, `cols`, `top_k`
   (`card`: the image is already a straightened card, e.g. after the user moved its corners).
-  `page` (binder, optional): the page's four corners as fractions, JSON `[[x, y], …]` from
-  the top left, clockwise — the app's tilted grid when the page was shot at an angle
-  against glare. The page is warped upright (grid shape `cols × 63` by `rows × 88`), each
-  pocket searched with 12 % slack, the corners snapped to the matched card's outline and
-  mapped back into the photo (`"page": "straightened"` in the response). On synthetic
-  3×3 pages tilted 25–35° with the app's focal-length guess 15 % off: 9 of 9 cards in
-  the right pocket each time (the plain split: 7, 6 and 3 of 9), corners ≈ 1–2 % of a
-  card off; with the guess 25–30 % off and the page framed off-centre: 7 of 7 and 6 of 7
-  (plain split: 4 and 2 of 7).
+  `page` (binder and multi, optional): the grid's four corners as fractions, JSON
+  `[[x, y], …]` from the top left, clockwise — the app's tilted grid when the cards were
+  shot at an angle against glare (`rows`/`cols` give the grid's shape). The photo is
+  warped upright first (`"page": "straightened"` in the response), corners are mapped
+  back into the photo. Binder: the page (grid shape `cols × 63` by `rows × 88`) is
+  searched for cards anywhere, each put in the pocket under its centre; pockets still
+  empty are searched one by one with 12 % slack, corners snapped to the matched card.
+  Multi: the whole photo is warped (up to 60 % of the grid's size past it) and loose
+  cards are found as usual. The grid only removes the tilt — the cards needn't sit in
+  its cells, and the phone stepping back (the app shrinks the grid to keep it on
+  screen) is fine. Synthetic 3×3 layouts, app's focal-length guess 15 % off, the
+  photographer stepping back to keep the grid in view:
+
+  | tilt | binder: plain split → straightened | loose cards: plain → straightened |
+  |---|---|---|
+  | 15° | 9 → 9 of 9 (corners 5 % → 1 % of a card off) | 9 → 9 of 9 |
+  | 25° | 4 → 8 of 9 | 5 → 9 of 9 |
+  | 30° sideways | 4 → 9 of 9 | 5 → 9 of 9 |
+  | 35°, guess 25 % off, off-centre | 3 → 7 of 9 | 4 → 6 of 9 |
+
   The response's `shortlist` says which shortlist was used (`dinov2` or `phash`);
-  `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `queued`).
+  `timing` breaks `ms` down (`detect`, `embed`, `embed_wait`, `match`, `ocr`, `page`, `queued`).
   Each match is also logged with that breakdown.
 - `POST /outline` (multipart): `file` (any picture), optionally `quad` (rough corners,
   fractions) and `refs` (comma-separated catalog ids, e.g. other prints of the same name).

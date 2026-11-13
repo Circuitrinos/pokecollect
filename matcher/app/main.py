@@ -794,17 +794,18 @@ def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> 
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
                 rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form("")) -> dict:
     """
-    page (binder mode, optional): the binder page's four corners in the photo,
-    JSON [[x, y], …] as fractions of width/height, top left first, clockwise —
-    the app's tilted grid when the photo was taken at an angle (against glare).
-    The page is straightened before it is split into pockets.
+    page (binder and multi mode, optional): the grid's four corners in the
+    photo, JSON [[x, y], …] as fractions of width/height, top left first,
+    clockwise — the app's tilted grid when the photo was taken at an angle
+    (against glare). The photo is straightened by it first: a binder page is
+    then split into pockets (rows × cols), loose cards are found anywhere.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
-    corners = _page_corners(page) if mode == "binder" else None
+    corners = _page_corners(page) if mode in ("binder", "multi") else None
     # The work is CPU-bound: run it in a worker thread so /health keeps
     # answering (the backend's status check has a 2 s timeout).
     return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners)
@@ -885,7 +886,7 @@ def _verify_request(data: bytes, card_id: str, orig: bytes, quad: str) -> dict:
     return res
 
 
-PAGE_MARGIN = 0.05      # around the straightened page, of its long side
+PAGE_MARGIN = 0.08      # around the straightened page, of its long side
 POCKET_SLACK = 0.12     # each pocket is searched this much wider/taller (the grid is only roughly on the page)
 PAGE_MAX_SIDE = 2400    # straightened page, px
 
@@ -915,7 +916,12 @@ def _straighten_page(img: np.ndarray, page: np.ndarray, rows: int, cols: int):
 
 
 def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int) -> list[dict] | None:
-    """Binder page shot at an angle: straighten it, find a card in each pocket, corners back into the photo."""
+    """
+    Binder page shot at an angle: straighten it, find the cards on it (anywhere,
+    like loose cards — the grid the app guessed from the phone's tilt is only
+    roughly on the page), put each in the pocket under its centre, search the
+    pockets still empty one by one, corners back into the photo.
+    """
     with timing.phase("page"):
         st = _straighten_page(img, page, rows, cols)
     if st is None:
@@ -924,9 +930,20 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
     Hinv = np.linalg.inv(H)
     fh, fw = flat.shape[:2]
     cw, ch = pw / cols, ph / rows
+    found: dict[int, tuple[matcher.Decision, np.ndarray]] = {}
+    for d, oq in _multi_cards(flat, top_k):
+        cx, cy = np.float32(oq).mean(axis=0)
+        r, c = int((cy - py) // ch), int((cx - px) // cw)
+        if 0 <= r < rows and 0 <= c < cols and r * cols + c not in found:
+            found[r * cols + c] = (d, np.float32(oq))
     cards: list[dict] = []
     for r in range(rows):
         for c in range(cols):
+            if r * cols + c in found:
+                d, q = found[r * cols + c]
+                back = cv2.perspectiveTransform(q.reshape(-1, 1, 2), Hinv).reshape(-1, 2)
+                cards.append(_result(d, back, img, r * cols + c))
+                continue
             x0, y0 = px + c * cw, py + r * ch
             ex, ey = POCKET_SLACK * cw, POCKET_SLACK * ch
             X0, Y0 = int(max(0, x0 - ex)), int(max(0, y0 - ey))
@@ -941,6 +958,77 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
     return cards
 
 
+def _multi_cards(img: np.ndarray, top_k: int) -> list[tuple[matcher.Decision, np.ndarray]]:
+    """
+    Loose cards anywhere: match every outline, then keep the strongest matches
+    greedily and drop anything overlapping a kept one. Mats, merged pairs and
+    partial sub-rectangles match worse than a true card outline, so they lose.
+    → (decision, corners) in reading order.
+    """
+    snap = store.snapshot()
+    scored = []
+    for det in _detect(img, max_cards=24, nested=True):
+        card = detect.warp(img, det.quad)
+        cands = _match(card, snap, top_k)
+        if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
+            continue
+        q = det.quad
+        if not cands[0].geo_ok:
+            # sloppy or merged outline: let the homography find the real card
+            card, cands, q = _refine(img, card, cands, q, snap, top_k)
+        # plausible geometry first: a merged two-card outline can rack up
+        # art inliers but never maps cleanly onto one template
+        scored.append(((cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers), q, card, cands))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    kept = []
+    for key, q, card, cands in scored:
+        if all(_overlap(q, k[1]) < 0.3 for k in kept):
+            kept.append((key, q, card, cands))
+    return [_decide(card, cands, q) for _, q, card, cands in
+            sorted(kept, key=lambda t: (t[1][:, 1].mean(), t[1][:, 0].mean()))]
+
+
+VIEW_MAX_SIDE = 3200    # straightened photo (loose cards), px
+VIEW_REACH = 0.6        # loose cards: how far past the grid (of its size) the straightened view reaches
+
+
+def _multi_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int) -> list[dict] | None:
+    """
+    Loose cards shot at an angle: the whole photo turned upright by the grid's
+    corners (cards may lie anywhere, also outside the grid), cards found as
+    usual, corners mapped back into the photo.
+    """
+    h, w = img.shape[:2]
+    q = (page * np.float32([w, h])).astype(np.float32)
+    lens = [float(np.linalg.norm(q[(i + 1) % 4] - q[i])) for i in range(4)]
+    aspect = (cols * 63.0) / (rows * 88.0) if rows > 0 and cols > 0 else (lens[0] + lens[2]) / max(lens[1] + lens[3], 1)
+    pw = max(lens[0], lens[2], max(lens[1], lens[3]) * aspect)
+    ph = pw / aspect
+    H = cv2.getPerspectiveTransform(q, np.float32([[0, 0], [pw, 0], [pw, ph], [0, ph]]))
+    with timing.phase("page"):
+        corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
+        try:
+            at = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
+        except cv2.error:
+            return None
+        if not np.all(np.isfinite(at)):
+            return None
+        x0 = max(float(at[:, 0].min()), -VIEW_REACH * pw)
+        y0 = max(float(at[:, 1].min()), -VIEW_REACH * ph)
+        x1 = min(float(at[:, 0].max()), (1 + VIEW_REACH) * pw)
+        y1 = min(float(at[:, 1].max()), (1 + VIEW_REACH) * ph)
+        if x1 - x0 < 100 or y1 - y0 < 100:
+            return None
+        k = min(1.0, VIEW_MAX_SIDE / max(x1 - x0, y1 - y0))
+        S = np.float64([[k, 0, -x0 * k], [0, k, -y0 * k], [0, 0, 1]])
+        Hv = S @ H
+        view = cv2.warpPerspective(img, Hv, (int(round((x1 - x0) * k)), int(round((y1 - y0) * k))),
+                                   flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+    back = np.linalg.inv(Hv)
+    return [_result(d, cv2.perspectiveTransform(np.float32(oq).reshape(-1, 1, 2), back).reshape(-1, 2), img, None)
+            for d, oq in _multi_cards(view, top_k)]
+
+
 def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None) -> dict:
     timing.start()
     t0 = time.perf_counter()
@@ -949,6 +1037,8 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
     straightened = None
     if mode == "binder" and rows > 0 and cols > 0 and page is not None:
         straightened = _binder_straightened(img, page, rows, cols, top_k)
+    elif mode == "multi" and page is not None:
+        straightened = _multi_straightened(img, page, rows, cols, top_k)
 
     if straightened is not None:
         cards = straightened
@@ -965,31 +1055,7 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
                 if d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD:  # skip empty pockets
                     cards.append(_result(d, q, img, r * cols + c))
     elif mode == "multi":
-        # Match every outline, then keep the strongest matches greedily and drop
-        # anything overlapping a kept one. Mats, merged pairs and partial
-        # sub-rectangles match worse than a true card outline, so they lose.
-        snap = store.snapshot()
-        scored = []
-        for det in _detect(img, max_cards=24, nested=True):
-            card = detect.warp(img, det.quad)
-            cands = _match(card, snap, top_k)
-            if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
-                continue
-            q = det.quad
-            if not cands[0].geo_ok:
-                # sloppy or merged outline: let the homography find the real card
-                card, cands, q = _refine(img, card, cands, q, snap, top_k)
-            # plausible geometry first: a merged two-card outline can rack up
-            # art inliers but never maps cleanly onto one template
-            scored.append(((cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers), q, card, cands))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        kept = []
-        for key, q, card, cands in scored:
-            if all(_overlap(q, k[1]) < 0.3 for k in kept):
-                kept.append((key, q, card, cands))
-        for _, q, card, cands in sorted(kept, key=lambda t: (t[1][:, 1].mean(), t[1][:, 0].mean())):
-            d, oq = _decide(card, cands, q)
-            cards.append(_result(d, oq, img, None))
+        cards = [_result(d, oq, img, None) for d, oq in _multi_cards(img, top_k)]
     elif mode == "card":
         # Already a straightened card (the user set its corners in the app):
         # no detection, match the whole image as the card.

@@ -152,7 +152,7 @@ def test_scan_gibt_stempel_befund_weiter(client, provider_local, png_bytes):
 
 
 def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_local, png_bytes, monkeypatch):
-    """Geneigtes Raster: die Ecken der Seite gehen (gerundet, geprüft) an den matcher — nur bei der Mappe."""
+    """Geneigtes Raster: die Ecken gehen (gerundet, geprüft) an den matcher — bei Mappe und losen Karten."""
     seen: list[bytes] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -172,7 +172,9 @@ def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_loca
     body = post("binder", page)
     assert b'name="page"\r\n\r\n[[0.1235, 0.1], [0.9, 0.05], [0.95, 0.97], [0.08, 0.9]]' in seen[-1]
     assert body["candidates"][0]["raw"]["tcgdex_card_id"] == "sv03-125"
-    post("multi", page)                                        # nur die Mappe kennt ein Raster
+    post("multi", page)                                        # lose Karten mit Raster-Hilfe: auch
+    assert b'name="page"\r\n\r\n[[0.1235' in seen[-1]
+    post("single", page)                                       # eine Karte hat kein Raster
     assert b'name="page"' not in seen[-1]
     for bad in ("[[0, 0], [1, 0], [1, 1]]", "kaputt", "[[0, 0], [9, 0], [1, 1], [0, 1]]", "x" * 500):
         post("binder", bad)                                    # unbrauchbar → wie bisher ohne Ecken
