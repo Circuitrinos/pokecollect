@@ -441,6 +441,35 @@ def _plan_slots(db: Session, collection: Collection, payload: ScanCommitRequest)
 _CARD_ID_RE = re.compile(r"[\w.\-]{1,64}")
 
 
+FOIL_MAX_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/foil")
+async def scan_foil(file: UploadFile = File(...), card_id: str = Form(...)):
+    """
+    Reverse holo? Der Zuschnitt einer erkannten Karte gegen ihr Katalogbild
+    (matcher /foil, mit dem hochgeladenen Folien-Modell). Nie ein Fehler fürs
+    UI: ohne Modell, matcher oder Katalogbild gibt es eben keinen Hinweis.
+    → {"model": bool, "hint"?: bool, "score"?: float, …}
+    """
+    import httpx
+
+    from app.services import foil_check
+
+    if not _CARD_ID_RE.fullmatch(card_id or ""):
+        raise HTTPException(status_code=422, detail="Ungültige Karten-ID")
+    data = await file.read(FOIL_MAX_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Leere Datei")
+    if len(data) > FOIL_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Bild zu groß (max. 5 MB)")
+    try:
+        return await foil_check.check(card_id, data)
+    except httpx.HTTPError as exc:
+        log.info("Folien-Prüfung %s: matcher nicht erreichbar (%s)", card_id, exc)
+        return {"model": False}
+
+
 @router.post("/outline")
 async def scan_outline(file: UploadFile = File(...), quad: str = Form(""), card_id: str = Form(""),
                        db: Session = Depends(get_db)):

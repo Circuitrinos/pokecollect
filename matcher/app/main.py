@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 import json
 
-from . import detect, embedding, frame, learn, matcher, numocr, recrop, stamp, timing
+from . import detect, embedding, foil, frame, learn, matcher, numocr, recrop, stamp, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -652,6 +652,63 @@ def _stamp_request(data: bytes, hint: list | None) -> dict:
     if r is None:
         return {"quad": None, "score": None, "ok": False, "template": True}
     return {**r, "ok": r["score"] >= stamp.MIN_SCORE, "sure": r["score"] >= stamp.SURE_SCORE, "template": True}
+
+
+@app.post("/foil")
+async def foil_check(file: UploadFile = File(...), ref: UploadFile = File(...)) -> dict:
+    """
+    Reverse holo? A straightened card photo against the card's plain catalog
+    image (app/foil.py). Without a model (tools/foil_eval.py --save, then
+    PUT /foil/model) only {"model": false}.
+    """
+    photo, reference = await file.read(), await ref.read()
+    if not photo or not reference or len(photo) > MAX_BYTES or len(reference) > MAX_BYTES:
+        raise HTTPException(400, "empty or oversized image")
+    return await run_in_threadpool(_foil_request, photo, reference)
+
+
+def _foil_request(photo: bytes, reference: bytes) -> dict:
+    model = foil.load_model()
+    if model is None:
+        return {"model": False}
+    img, ref = foil.decode(photo), foil.decode(reference)
+    if img is None or ref is None:
+        raise HTTPException(400, "unreadable image")
+    with _match_lock, timing.phase("foil"):
+        m = foil.measure(img, ref)
+    if m is None:
+        return {"model": True, "aligned": False}
+    return {"model": True, "aligned": True, **m, **foil.judge(model, m["art"], m["frame"])}
+
+
+@app.get("/foil/model")
+def foil_model() -> dict:
+    m = foil.load_model()
+    if m is None:
+        return {"exists": False}
+    return {"exists": True, **{k: m.get(k) for k in ("precision", "recall", "threshold", "trained_on", "saved_at")}}
+
+
+@app.put("/foil/model")
+async def put_foil_model(file: UploadFile = File(...)) -> dict:
+    """Model file from tools/foil_eval.py --save (the app's admin page uploads it)."""
+    try:
+        m = json.loads((await file.read()).decode("utf-8"))
+        m["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        foil.save_model(m)
+    except (ValueError, UnicodeDecodeError, TypeError) as exc:
+        raise HTTPException(422, f"not a foil model: {exc}") from None
+    return foil_model()
+
+
+@app.delete("/foil/model")
+def delete_foil_model() -> dict:
+    try:
+        foil.MODEL_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    foil._cache.clear()
+    return {"exists": False}
 
 
 @app.get("/stamp/template")

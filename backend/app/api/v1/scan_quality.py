@@ -11,6 +11,7 @@ POST /scan-quality/stamps/template   Vorlage neu lernen (markierte + übrige Pri
 """
 
 import json
+import logging
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -50,6 +51,7 @@ def _valid_quad(raw: str):
         return None
     return pts
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/scan-quality", tags=["scan-quality"], dependencies=[Depends(require_admin)])
 
 
@@ -147,6 +149,44 @@ async def stamp_template():
 
     try:
         return await stamp_finder.status()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+
+
+@router.get("/foil/model")
+async def foil_model():
+    """Reverse-Holo-Modell im Bild-Abgleich (aus matcher/tools/foil_eval.py --save)."""
+    from app.services import foil_check
+
+    try:
+        return await foil_check.model_status()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+
+
+@router.put("/foil/model")
+async def put_foil_model(file: UploadFile = File(...)):
+    """foil_model.json hochladen — ab dann fragt der Scan bei normalen Karten „Reverse Holo?"."""
+    from app.services import foil_check
+
+    data = await file.read(256 * 1024 + 1)
+    if not data or len(data) > 256 * 1024:
+        raise HTTPException(status_code=400, detail="Keine gültige Modelldatei")
+    try:
+        return await foil_check.put_model(data)
+    except ValueError as e:
+        log.info("Folien-Modell abgelehnt: %s", e)
+        raise HTTPException(status_code=422, detail="Keine gültige Modelldatei")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
+
+
+@router.delete("/foil/model")
+async def delete_foil_model():
+    from app.services import foil_check
+
+    try:
+        return await foil_check.delete_model()
     except httpx.HTTPError:
         raise HTTPException(status_code=503, detail="Bild-Abgleich nicht erreichbar")
 

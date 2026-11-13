@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import {
-  Collection, DeckSummary, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
+  Collection, DeckSummary, FoilCheck, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
   cardApi, collectionApi, deckApi, scanApi,
   ScanAlternative, scanDraftApi, DraftSaved,
 } from "@/lib/api";
@@ -37,6 +37,7 @@ type EditableCandidate = ScanCandidate & {
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — angehakt (von Hand oder vom Stempel-Fund)
   prizePackSet?: boolean;   // von Hand gesetzt: ein neuer Stempel-Befund ändert es nicht mehr
+  foil?: Pick<FoilCheck, "hint" | "score"> | null;   // Reverse holo? (undefined = noch nicht geprüft)
   firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
   condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
   copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
@@ -801,7 +802,7 @@ export default function ScanPage() {
     try {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
-      patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u,
+      patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u, foil: undefined,
         usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true }));
       void rematch(key, f);
     } catch { /* Entzerrung optional */ }
@@ -1142,6 +1143,37 @@ export default function ScanPage() {
     setStep("setup");
     window.scrollTo({ top: 0 });
   };
+
+  // Reverse holo? — mit einem Folien-Modell im Bild-Abgleich wird jede normale Karte,
+  // die es als Reverse Holo gibt, einmal geprüft: im Hintergrund, eine nach der anderen.
+  const foilModelRef = useRef<boolean | null>(null);     // false = kein Modell → nicht mehr fragen
+  const foilKeyRef = useRef<string | null>(null);         // läuft gerade
+  const [foilTick, setFoilTick] = useState(0);
+  useEffect(() => {
+    if (step !== "review" || foilModelRef.current === false || foilKeyRef.current) return;
+    const next = candidates.find((c) => {
+      const f = String((c.suggested as Record<string, unknown>)?.folierung ?? "") || "Normal";
+      return c.foil === undefined && !c.saved && !c.variantOf && !!c.cropUrl && !!c.match?.tcgdex_card_id
+        && f === "Normal" && c.match?.variants_reverse !== false;
+    });
+    if (!next) return;
+    foilKeyRef.current = next.key;
+    void (async () => {
+      try {
+        const crop = await (await fetch(next.cropUrl as string)).blob();
+        const r = await scanApi.foil(crop, next.match?.tcgdex_card_id as string);
+        if (!r.data.model) { foilModelRef.current = false; return; }
+        foilModelRef.current = true;
+        patchCand(next.key, (cc) => ({ ...cc, foil: r.data.aligned ? { hint: !!r.data.hint, score: r.data.score ?? 0 } : null }));
+      } catch {
+        patchCand(next.key, (cc) => ({ ...cc, foil: null }));
+      } finally {
+        foilKeyRef.current = null;
+        setFoilTick((n) => n + 1);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates, step, foilTick]);
 
   // „Später bestätigen": diese Prüfung bleibt als offener Scan liegen, gleich das
   // nächste Foto — viele Karten am Stück scannen, alles später unter „Offene Scans".
@@ -1594,51 +1626,69 @@ export default function ScanPage() {
                 )}
 
                 <div className="flex flex-col sm:flex-row gap-3">
-                  {/* Bild – eigenes Foto (Zuschnitt) oder TCGdex-Treffer, je nach Wahl. */}
-                  <div className="w-32 mx-auto sm:mx-0 sm:w-36 shrink-0">
-                    {(() => {
-                      const own = c.cropUrl ?? (mode === "single" ? sourceUrl : null);
-                      const big = c.usePhoto ? (own ?? catalogImg ?? null)
-                                             : (catalogImg ?? own ?? null);
-                      return big ? (
-                        <a href={big} target="_blank" rel="noreferrer" title={t.scan_view_large} className="relative block">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={big} alt="" className="w-full rounded hover:opacity-90"
-                            onError={() => {
-                              // Bild in dieser Sprache gibt es nicht → zurück zur gelieferten Fassung
-                              if (c.imageLang && big === catalogImg) {
-                                toast(t.image_lang_missing, { icon: "🖼" });
-                                patchCand(c.key, (cc) => ({ ...cc, imageLang: null }));
-                              }
-                            }} />
-                          {c.rematching && (
-                            <span className="absolute inset-0 flex items-center justify-center rounded bg-black/60 text-xs text-white animate-pulse">
-                              {t.scan_rechecking}
-                            </span>
+                  {/* Bilder: das Foto (Zuschnitt) UND der Katalog-Treffer nebeneinander — das
+                      Foto hilft beim Prüfen der Ecken, auch wenn das Katalogbild das Kartenbild wird */}
+                  {(() => {
+                    const own = c.cropUrl ?? (mode === "single" ? sourceUrl : null);
+                    const both = !!own && !!catalogImg;
+                    const tile = (src: string, kind: "photo" | "catalog") => {
+                      const chosen = both && (kind === "photo" ? c.usePhoto : !c.usePhoto);
+                      return (
+                        <div className={both ? "w-28 sm:w-32" : "w-32 sm:w-36"} data-testid={`scan-img-${kind}`}>
+                          <a href={src} target="_blank" rel="noreferrer" title={t.scan_view_large}
+                            className={`relative block rounded ${chosen ? "ring-2 ring-pokemon-blue" : ""}`}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={src} alt="" className="w-full rounded hover:opacity-90"
+                              onError={() => {
+                                // Bild in dieser Sprache gibt es nicht → zurück zur gelieferten Fassung
+                                if (kind === "catalog" && c.imageLang) {
+                                  toast(t.image_lang_missing, { icon: "🖼" });
+                                  patchCand(c.key, (cc) => ({ ...cc, imageLang: null }));
+                                }
+                              }} />
+                            {c.rematching && kind === "photo" && (
+                              <span className="absolute inset-0 flex items-center justify-center rounded bg-black/60 text-xs text-white animate-pulse">
+                                {t.scan_rechecking}
+                              </span>
+                            )}
+                          </a>
+                          {both && (
+                            <div className={`mt-0.5 text-center text-[10px] ${chosen ? "text-pokemon-blue" : "text-gray-500"}`}>
+                              {kind === "photo" ? t.scan_img_photo : t.scan_img_catalog}{chosen ? ` · ${t.scan_img_used}` : ""}
+                            </div>
                           )}
-                        </a>
-                      ) : (
-                        <div className="aspect-[63/88] bg-gray-800 rounded flex items-center justify-center text-gray-600 text-xs">?</div>
+                        </div>
                       );
-                    })()}
-                    <div className="mt-1 text-center text-[10px] text-gray-500">
-                      {t.scan_confidence}: {Math.round(c.confidence * 100)}%
-                    </div>
-                    {(c.cropUrl || (mode === "single" && sourceUrl)) && catalogImg && (
-                      <label className="mt-1 flex items-center justify-center gap-1 text-[10px] text-gray-300">
-                        <input type="checkbox" checked={c.usePhoto} onChange={() => toggleUsePhoto(idx)} />
-                        {t.scan_use_photo}
-                      </label>
-                    )}
-                    {sourceUrl && (
-                      <button type="button"
-                        onClick={() => setEditorIdx(idx)}
-                        className="mt-1 w-full text-[10px] text-pokemon-blue hover:underline"
-                      >
-                        ✥ {t.scan_edit_corners}
-                      </button>
-                    )}
-                  </div>
+                    };
+                    return (
+                      <div className="mx-auto shrink-0 sm:mx-0">
+                        <div className="flex justify-center gap-2">
+                          {own && tile(own, "photo")}
+                          {catalogImg && tile(catalogImg, "catalog")}
+                          {!own && !catalogImg && (
+                            <div className="aspect-[63/88] w-32 bg-gray-800 rounded flex items-center justify-center text-gray-600 text-xs">?</div>
+                          )}
+                        </div>
+                        <div className="mt-1 text-center text-[10px] text-gray-500">
+                          {t.scan_confidence}: {Math.round(c.confidence * 100)}%
+                        </div>
+                        {both && (
+                          <label className="mt-1 flex items-center justify-center gap-1 text-[10px] text-gray-300">
+                            <input type="checkbox" checked={c.usePhoto} onChange={() => toggleUsePhoto(idx)} />
+                            {t.scan_use_photo}
+                          </label>
+                        )}
+                        {sourceUrl && (
+                          <button type="button"
+                            onClick={() => setEditorIdx(idx)}
+                            className="mt-1 w-full text-[10px] text-pokemon-blue hover:underline"
+                          >
+                            ✥ {t.scan_edit_corners}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Felder */}
                   <div className="flex-1 min-w-0 space-y-1.5">
@@ -1694,6 +1744,15 @@ export default function ScanPage() {
                         </select>
                       )}
                     </div>
+                    {c.foil?.hint && String(s.folierung ?? "") !== "Reverse Holo" && (
+                      // Folien-Modell: der Rahmen glänzt wie bei einer Reverse Holo — antippen setzt es
+                      <button type="button" data-testid="scan-foil-hint"
+                        onClick={() => { updateField(idx, "folierung", "Reverse Holo"); }}
+                        title={t.scan_foil_hint_title((c.foil.score ?? 0).toFixed(1))}
+                        className="w-full rounded border border-purple-500/60 bg-purple-950/40 px-2 py-1 text-left text-xs text-purple-200 hover:bg-purple-900/40">
+                        ✨ {t.scan_foil_hint} <span className="text-purple-300/80">— {t.scan_foil_set}</span>
+                      </button>
+                    )}
                     <div className="grid grid-cols-2 gap-1.5 items-start">
                       {/* Folierung – alle Möglichkeiten; laut Karte mögliche zuerst */}
                       <select

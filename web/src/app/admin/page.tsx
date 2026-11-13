@@ -8,6 +8,7 @@ import { useI18n } from "@/lib/i18n";
 import { apiErrorText } from "@/lib/uiLang";
 import WeakScans from "@/components/admin/WeakScans";
 import StampMarks from "@/components/admin/StampMarks";
+import FoilModel from "@/components/admin/FoilModel";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { Field, INPUT, Section, Toggle, triggerBlobDownload, useSettingsEditor } from "@/components/settings/SettingsUI";
 
@@ -400,6 +401,10 @@ export default function AdminPage() {
 
       <Section title={`🎯 ${t.stamps_title}`}>
         <StampMarks />
+      </Section>
+
+      <Section title={`✨ ${t.foil_model_title}`}>
+        <FoilModel />
       </Section>
 
       <Section title={`📚 ${t.settings_section_catalog}`}>

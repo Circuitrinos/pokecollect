@@ -40,9 +40,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-W, H = 630, 880
-# Art box of a modern card (fractions of the card) — rough, era-dependent
-ART = (0.08, 0.11, 0.92, 0.55)
+# the image work is shared with the scan's reverse-holo check (app/foil.py)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.foil import W, H, align, decode, difference, match_light, regions  # noqa: E402,F401
 
 
 class Dataset:
@@ -64,83 +64,6 @@ class Dataset:
     def labels(self) -> list[dict]:
         raw = self.read("labels.jsonl") or b""
         return [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-
-
-def decode(data: bytes | None) -> np.ndarray | None:
-    if not data:
-        return None
-    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-    return None if img is None else cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
-
-
-_orb = cv2.ORB_create(nfeatures=3000)
-_bf = cv2.BFMatcher(cv2.NORM_HAMMING)
-
-
-def align(photo: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray | None, int]:
-    """Warp the photo onto the reference (homography from ORB matches). → (warped, inliers)."""
-    g1, g2 = cv2.cvtColor(photo, cv2.COLOR_BGR2GRAY), cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
-    k1, d1 = _orb.detectAndCompute(g1, None)
-    k2, d2 = _orb.detectAndCompute(g2, None)
-    if d1 is None or d2 is None or len(k1) < 8 or len(k2) < 8:
-        return None, 0
-    good = [m for m, n in (p for p in _bf.knnMatch(d1, d2, k=2) if len(p) == 2) if m.distance < 0.75 * n.distance]
-    if len(good) < 12:
-        return None, len(good)
-    src = np.float32([k1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst = np.float32([k2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    hom, mask = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
-    inl = int(mask.sum()) if mask is not None else 0
-    if hom is None or inl < 12:
-        return None, inl
-    # Sub-pixel refinement (ECC): leftover misalignment shows up as bright edges
-    try:
-        hom = hom.astype(np.float32)
-        _, hom = cv2.findTransformECC(cv2.GaussianBlur(g2, (5, 5), 0), cv2.GaussianBlur(g1, (5, 5), 0),
-                                      np.linalg.inv(hom).astype(np.float32), cv2.MOTION_HOMOGRAPHY,
-                                      (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-5), None, 5)
-        warped = cv2.warpPerspective(photo, hom, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-                                     borderMode=cv2.BORDER_REPLICATE)
-    except cv2.error:
-        warped = cv2.warpPerspective(photo, hom, (W, H), borderMode=cv2.BORDER_REPLICATE)
-    return warped, inl
-
-
-def match_light(photo: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """Per-channel mean/std of the photo (Lab) set to the reference's — glare stays, lighting goes."""
-    a = cv2.cvtColor(photo, cv2.COLOR_BGR2LAB).astype(np.float32)
-    b = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB).astype(np.float32)
-    for ch in range(3):
-        sa, sb = a[..., ch].std() or 1.0, b[..., ch].std()
-        a[..., ch] = (a[..., ch] - a[..., ch].mean()) * (sb / sa) + b[..., ch].mean()
-    return cv2.cvtColor(np.clip(a, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
-
-
-def difference(photo: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """
-    Colour difference (Lab distance), 0..255, where the print is flat: both
-    images get the same softness first, and differences on the reference's
-    edges (text, outlines — left over from alignment and blur) are damped, so
-    what remains is mostly foil texture and glare.
-    """
-    a = cv2.cvtColor(cv2.GaussianBlur(photo, (0, 0), 1.4), cv2.COLOR_BGR2LAB).astype(np.float32)
-    b = cv2.cvtColor(cv2.GaussianBlur(ref, (0, 0), 1.4), cv2.COLOR_BGR2LAB).astype(np.float32)
-    d = np.sqrt(((a - b) ** 2).sum(axis=2))
-    g = cv2.cvtColor(cv2.GaussianBlur(ref, (0, 0), 1.4), cv2.COLOR_BGR2GRAY).astype(np.float32)
-    edge = cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
-    edge = cv2.dilate(edge, np.ones((7, 7), np.uint8))
-    d = d / (1.0 + edge / 20.0)
-    return np.clip(d * 3.0, 0, 255).astype(np.uint8)
-
-
-def regions(diff: np.ndarray) -> tuple[float, float]:
-    """Mean difference inside the art box and in the frame around it (card border trimmed)."""
-    x0, y0, x1, y1 = (int(ART[0] * W), int(ART[1] * H), int(ART[2] * W), int(ART[3] * H))
-    art = diff[y0:y1, x0:x1]
-    inner = diff[int(0.04 * H):int(0.96 * H), int(0.05 * W):int(0.95 * W)].astype(np.float64)
-    frame_sum = inner.sum() - art.astype(np.float64).sum()
-    frame_n = inner.size - art.size
-    return float(art.mean()), float(frame_sum / max(1, frame_n))
 
 
 def sheet(photo: np.ndarray, ref: np.ndarray, diff: np.ndarray) -> np.ndarray:

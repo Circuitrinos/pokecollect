@@ -4,7 +4,7 @@ Can the foil difference tell Reverse Holo / Holo / Normal apart — on cards it
 has never seen?
 
   python holo_diff.py pokecollect-scans-<date>.zip --out holo_diff --pairs
-  python foil_eval.py holo_diff
+  python foil_eval.py holo_diff [--save foil_model.json] [--precision 0.8]
 
 Reads holo_diff's index.csv (one row per scanned card: how much the photo
 differs from the plain catalog image inside the art box and in the frame
@@ -20,11 +20,19 @@ neither — if the photo caught the light.
 
 The verdict says whether a simple rule is enough for a suggestion in the scan,
 or whether it takes a model trained on the difference images themselves.
-Only numpy is needed.
+
+--save writes the model trained on all your cards, set to ask "reverse holo?"
+only where --precision of those questions (out-of-fold) were right. Upload it
+in the app (Settings → Admin → Play! stamps & foil → Reverse holo model): the
+scan then asks for plain cards whose print exists as reverse holo.
+Needs numpy; with --save also the matcher's app/ next to tools/ (for the
+feature definition shared with the scan).
 """
 from __future__ import annotations
 
+import argparse
 import csv
+import json
 import sys
 import zlib
 from collections import defaultdict
@@ -53,9 +61,19 @@ def load(path: Path) -> list[dict]:
     return out
 
 
+try:   # the scan computes the same numbers (app/foil.py); standalone copy otherwise
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from app.foil import FEATURES, features as _features  # noqa: E402
+except ImportError:
+    FEATURES = ["log_art", "log_frame", "log_frame_art"]
+
+    def _features(art: float, frame: float) -> list[float]:
+        a, f = max(float(art), 0.1), max(float(frame), 0.1)
+        return [float(np.log(a)), float(np.log(f)), float(np.log(f / a))]
+
+
 def features(r: dict) -> list[float]:
-    a, f = max(r["art"], 0.1), max(r["frame"], 0.1)
-    return [np.log(a), np.log(f), np.log(f / a)]
+    return _features(r["art"], r["frame"])
 
 
 def auc(pos: np.ndarray, neg: np.ndarray) -> float:
@@ -170,10 +188,40 @@ def show_conf(conf: np.ndarray, classes: list[str]) -> None:
               + f"   {conf[i, i] / max(1, conf[i].sum()):.0%} right")
 
 
+def save_model(cat: list[dict], path: Path, precision: float) -> None:
+    """Normal vs Reverse Holo on all cards; ask only above the score where `precision` of the asks were right."""
+    data = [r for r in cat if r["foiling"] in ("Normal", "Reverse Holo")]
+    x = np.array([features(r) for r in data])
+    y = np.array([1 if r["foiling"] == "Reverse Holo" else 0 for r in data])
+    mu, sd = x.mean(0), x.std(0) + 1e-9
+    w = fit_logreg((x - mu) / sd, y, 2)
+    oof = oof_scores(cat, "Reverse Holo", "Normal")
+    if oof is None:
+        sys.exit("too few reverse holos to save a model")
+    score, is_pos = oof
+    order = np.argsort(-score)
+    hits = np.cumsum(is_pos[order])
+    ok = np.where(hits / np.arange(1, len(order) + 1) >= precision)[0]
+    if not len(ok):
+        sys.exit(f"no threshold reaches {precision:.0%} precision — nothing saved")
+    i = ok.max()
+    model = {"version": 1, "kind": "reverse_holo_vs_normal", "features": FEATURES,
+             "mu": mu.round(5).tolist(), "sd": sd.round(5).tolist(), "w": w.round(5).tolist(),
+             "threshold": round(float(score[order[i]]), 4), "precision": round(float(hits[i] / (i + 1)), 3),
+             "recall": round(float(hits[i] / is_pos.sum()), 3),
+             "trained_on": {"Normal": int((y == 0).sum()), "Reverse Holo": int((y == 1).sum())}}
+    path.write_text(json.dumps(model, indent=1))
+    print(f"\nSaved {path}: asks \"reverse holo?\" above {model['threshold']:.2f} — on unseen cards "
+          f"{model['precision']:.0%} of the asks were right and {model['recall']:.0%} of reverse holos were asked.")
+
+
 def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit(__doc__)
-    rows = load(Path(sys.argv[1]))
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("holo_diff", help="holo_diff.py's --out folder (or its index.csv)")
+    ap.add_argument("--save", type=Path, help="write the model for the scan (foil_model.json)")
+    ap.add_argument("--precision", type=float, default=0.8, help="share of right asks the model aims for")
+    args = ap.parse_args()
+    rows = load(Path(args.holo_diff))
     cat = [r for r in rows if r["kind"] == "vs_catalog"]
     counts = defaultdict(int)
     for r in cat:
@@ -248,6 +296,8 @@ def main() -> None:
         print(f"   {score:.0%}: these numbers are not enough (too many plain cards would be flagged) — the foil "
               "has to be learned from the "
               "difference images (holo_cluster.py features or a small CNN), with more photos under varied light")
+    if args.save:
+        save_model(cat, args.save, args.precision)
 
 
 if __name__ == "__main__":

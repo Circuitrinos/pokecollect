@@ -28,10 +28,10 @@ W, H = 460, 643                              # card size everything runs at
 BOX = (0.17, 0.09)                           # stamp size (card fractions) before a template exists
 ZONES = ((0.0, 0.28, 0.34, 0.68), (0.66, 0.28, 1.0, 0.68))   # x0, y0, x1, y1: left / right of the art
 SCALES = np.arange(0.84, 1.20, 0.04)
-# stamps score ~0.9+, other artwork ≤ ~0.65; tools/stamp_eval.py measures both on
-# the scan dataset and suggests values for these two (env, without a rebuild)
-MIN_SCORE = float(os.getenv("STAMP_MIN_SCORE", "0.75"))    # "looks like a stamp": shown as a hint
-SURE_SCORE = float(os.getenv("STAMP_SURE_SCORE", "0.85"))  # sure enough to tick Prize Pack in the scan
+# tools/stamp_eval.py on 57 marked stamps / 899 cards without one: found stamps scored
+# ≥ 0.80 (most ≥ 0.90), cards without a stamp ≤ 0.63 — so 0.75 ticks with room to spare
+MIN_SCORE = float(os.getenv("STAMP_MIN_SCORE", "0.65"))    # "looks like a stamp": shown as a hint
+SURE_SCORE = float(os.getenv("STAMP_SURE_SCORE", "0.75"))  # sure enough to tick Prize Pack in the scan
 MARGIN = 0.35                                # crop margin around a sample, of the stamp size
 
 
@@ -101,7 +101,8 @@ def find(card: np.ndarray, hint: list | None = None, path: Path = TEMPLATE_PATH)
     t, meta = tpl
     g = gray(card)
     size = (float(meta["w"]), float(meta["h"]))
-    zones = list(ZONES)
+    # the two usual places, plus where the learned stamps sat elsewhere (basic energy)
+    zones = list(ZONES) + [tuple(z) for z in meta.get("zones", [])]
     if hint:
         h = np.float32(hint)
         cx, cy = h[:, 0].mean(), h[:, 1].mean()
@@ -181,6 +182,40 @@ def _tighten(grays, boxes, use, full, size_px):
             for x0, y0, x1, y1 in boxes]
 
 
+def _inside(z, zone) -> bool:
+    return z[0] >= zone[0] and z[1] >= zone[1] and z[2] <= zone[2] and z[3] <= zone[3]
+
+
+def extra_zones(boxes: list[tuple[float, float, float, float]], min_samples: int = 2) -> list[list[float]]:
+    """
+    Places stamps sat outside the two usual zones (basic energy cards put it
+    elsewhere): stamps grouped by position, each group with a margin, as long
+    as at least `min_samples` stamps agree.
+    """
+    groups: list[list[tuple[float, float, float, float]]] = []
+    for b in boxes:
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        for gr in groups:
+            gx = np.mean([(x[0] + x[2]) / 2 for x in gr])
+            gy = np.mean([(x[1] + x[3]) / 2 for x in gr])
+            if abs(cx - gx) < 0.08 and abs(cy - gy) < 0.06:
+                gr.append(b)
+                break
+        else:
+            groups.append([b])
+    out = []
+    for gr in groups:
+        if len(gr) < min_samples:
+            continue
+        w = float(np.median([x[2] - x[0] for x in gr]))
+        h = float(np.median([x[3] - x[1] for x in gr]))
+        z = (max(0.0, min(x[0] for x in gr) - 0.6 * w), max(0.0, min(x[1] for x in gr) - 0.8 * h),
+             min(1.0, max(x[2] for x in gr) + 0.6 * w), min(1.0, max(x[3] for x in gr) + 0.8 * h))
+        if not any(_inside(z, zone) for zone in ZONES):
+            out.append([round(v, 4) for v in z])
+    return out
+
+
 def build(samples: list[tuple[np.ndarray, tuple[float, float, float, float], bool]],
           rounds: int = 4, keep: float = 0.35) -> tuple[np.ndarray, dict] | None:
     """
@@ -227,6 +262,7 @@ def build(samples: list[tuple[np.ndarray, tuple[float, float, float, float], boo
     size = (float(np.median([b[2] - b[0] for b, u in zip(boxes, use, strict=True) if u])),
             float(np.median([b[3] - b[1] for b, u in zip(boxes, use, strict=True) if u])))
     meta = {"w": round(size[0], 4), "h": round(size[1], 4), "samples": len(kept), "marked": sum(marked),
+            "zones": extra_zones([b for b, u in zip(boxes, use, strict=True) if u]),
             "found": [{"box": [round(v, 4) for v in b], "score": round(s, 3), "used": u}
                       for b, s, u in zip(boxes, scores, use, strict=True)]}
     return np.clip(mean, 0, 255).astype(np.uint8), meta

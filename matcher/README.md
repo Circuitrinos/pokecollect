@@ -164,19 +164,29 @@ a template learned from the other 26) stamps scored 0.87–0.96 apart from one
 heavy glare (0.52); 150 cards without a stamp stayed at or below 0.60.
 
 While scanning, every recognised card is checked for the stamp (`/match` →
-`stamp: {score, quad, ok, sure}`): `STAMP_SURE_SCORE` (default 0.85) ticks
-Prize Pack in the review, `STAMP_MIN_SCORE` (default 0.75) shows a "stamp?"
-hint. `tools/stamp_eval.py <scan dataset zip>` measures both on your own cards
+`stamp: {score, quad, ok, sure}`): `STAMP_SURE_SCORE` (default 0.75) ticks
+Prize Pack in the review, `STAMP_MIN_SCORE` (default 0.65) shows a "stamp?"
+hint. On 57 marked stamps / 899 cards without one, found stamps scored ≥ 0.80
+and cards without one ≤ 0.63. Basic energy cards carry the stamp outside the
+two usual places: the template remembers where at least two of its stamps sat
+(`zones` in the .json) and searches there too — learn it again after updating. `tools/stamp_eval.py <scan dataset zip>` measures both on your own cards
 (each marked stamp held out once, every card without Prize Pack as a false
 alarm check) and suggests values for the two variables.
 
 ### Foil (`tools/holo_diff.py`, `tools/foil_eval.py`)
 
-`holo_diff.py` aligns each scanned card to its plain catalog image and keeps
-the difference — mostly foil: a reverse holo lights up the frame, a holo the
-art. `foil_eval.py <holo_diff output>` tests how well those numbers tell
-Normal / Holo / Reverse Holo apart on cards they were not fitted on (folds by
-card) and how many "reverse holo?" hints would be right.
+`app/foil.py` aligns a scanned card to its plain catalog image and keeps the
+difference — mostly foil: a reverse holo lights up the frame, a holo the art.
+`holo_diff.py` runs it over the scan dataset; `foil_eval.py <holo_diff output>`
+tests how well those numbers tell Normal / Holo / Reverse Holo apart on cards
+they were not fitted on (folds by card) and how many "reverse holo?" hints would
+be right; `--save foil_model.json` writes the model (asking only where 80 % of
+the asks were right, `--precision`). Uploaded in the app (Admin → Reverse holo
+detection, → `PUT /foil/model`), the scan review checks each plain card whose
+print exists as reverse holo (`POST /foil`: crop + catalog image → score, hint)
+and offers "Reverse holo? — tap to set". On 382 Normal / 85 Reverse Holo scans:
+85 % balanced accuracy on unseen cards; at 4 in 5 asks right it asks about half
+of the reverse holos.
 
 ### Learning from scans
 

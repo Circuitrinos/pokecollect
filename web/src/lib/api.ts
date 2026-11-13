@@ -627,6 +627,13 @@ export type StampItem = {
 };
 export interface StampSuggestion { quad: number[][] | null; score: number | null; ok: boolean; template: boolean }
 export interface StampTemplate { exists: boolean; samples?: number; marked?: number; built_at?: string | null }
+// Reverse-Holo-Modell im Bild-Abgleich (matcher/tools/foil_eval.py --save)
+export interface FoilModel {
+  exists: boolean; supported?: boolean; precision?: number; recall?: number; threshold?: number;
+  trained_on?: Record<string, number>; saved_at?: string | null;
+}
+// Ergebnis der Folien-Prüfung eines Scan-Zuschnitts
+export type FoilCheck = { model: boolean; reference?: boolean; aligned?: boolean; hint?: boolean; score?: number };
 export interface StampLearnResult { samples: number; marked: number; guessed: number; built_at: string }
 
 export type StampOverview = { counts: { photos: number; marked: number; unmarked: number }; items: StampItem[] };
@@ -648,6 +655,13 @@ export const scanQualityApi = {
   stamps: (marked = false) => api.get<StampOverview>("/scan-quality/stamps", { params: { marked } }),
   stampTemplate: () => api.get<StampTemplate>("/scan-quality/stamps/template"),
   learnStampTemplate: () => api.post<StampLearnResult>("/scan-quality/stamps/template"),
+  foilModel: () => api.get<FoilModel>("/scan-quality/foil/model"),
+  uploadFoilModel: (file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name || "foil_model.json");
+    return api.put<FoilModel>("/scan-quality/foil/model", form);
+  },
+  deleteFoilModel: () => api.delete<FoilModel>("/scan-quality/foil/model"),
   // Zuschnitt prüfen, ohne ihn zu speichern („Alle korrigieren")
   tryCrop: (cardId: number, file: Blob, quad: number[][]) => {
     const form = new FormData();
@@ -1075,6 +1089,13 @@ export const scanApi = {
     if (quad) form.append("quad", JSON.stringify(quad));
     if (cardId) form.append("card_id", cardId);
     return api.post<OutlineResult>("/scan/outline", form);
+  },
+  // Reverse holo? Zuschnitt einer erkannten Karte gegen ihr Katalogbild (mit Folien-Modell)
+  foil: (crop: Blob, cardId: string) => {
+    const form = new FormData();
+    form.append("file", crop, "crop.jpg");
+    form.append("card_id", cardId);
+    return api.post<FoilCheck>("/scan/foil", form);
   },
   // Live-Vorschau: Kartenumrisse im Kamerabild (normiert 0..1)
   detect: (frame: Blob) => {
