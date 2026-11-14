@@ -24,6 +24,12 @@ import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, type Quad } from "@/lib/tiltGrid";
 import { useTiltGrid } from "@/lib/useTiltGrid";
+import { useMotion } from "@/lib/useMotion";
+import { FrameJudge } from "@/lib/frameQuality";
+import {
+  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict,
+  type Level, type LiveState, type Verdict,
+} from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
 import { joinCardNr, splitCardNr } from "@/lib/cardNumber";
@@ -69,6 +75,7 @@ const LANGS = ["DE", "EN", "CN", "JP", "FR", "ES", "IT"];
 const TILT_KEY = "scan_tilt_grid";
 const MULTI_GRID_KEY = "scan_multi_grid";   // Raster-Hilfe bei losen Karten (localStorage)   // „Raster neigen" bleibt eingeschaltet (localStorage)
 const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: normales Raster, keine Ecken an den Server
+const LIVE_KEY = "scan_live";        // Live-Scan bleibt eingeschaltet (localStorage)
 
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
@@ -204,6 +211,13 @@ export default function ScanPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
+  // Live-Scan (nur mit dem Bild-Abgleich): Kamera an, Bilder werden laufend geprüft
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    try { setLive(localStorage.getItem(LIVE_KEY) === "1"); } catch { /* privat */ }
+  }, []);
+  const liveAvailable = status?.provider === "local";
+  const liveOn = live && liveAvailable && cameraOn && step === "setup";
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -301,7 +315,7 @@ export default function ScanPage() {
   // (available=false) einfach keine Umrisse; erneuter Versuch nach 5 s.
   useEffect(() => {
     setDetQuads(null);
-    if (!cameraOn || step !== "setup" || mode === "single") return;
+    if (!cameraOn || step !== "setup" || mode === "single" || liveOn) return;   // Live zeichnet seine eigenen Umrisse
     let stop = false;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
@@ -331,7 +345,7 @@ export default function ScanPage() {
       }
     })();
     return () => { stop = true; };
-  }, [cameraOn, step, mode]);
+  }, [cameraOn, step, mode, liveOn]);
 
   // Rahmen in Kartenform (Einzelkarte) bzw. Seitenform (Mappe); bei losen Karten nur mit Raster-Hilfe.
   const looseGrid = mode === "multi" ? parseGrid(multiGrid) : null;
@@ -378,7 +392,7 @@ export default function ScanPage() {
   useEffect(() => {
     setLockQuad(null);
     setLockSteady(false);
-    if (!cameraOn || lockAspect === null || step !== "setup") return;
+    if (!cameraOn || lockAspect === null || step !== "setup" || liveOn) return;   // Live nimmt selbst auf
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
@@ -419,7 +433,7 @@ export default function ScanPage() {
       }
     }, 140);
     return () => window.clearInterval(id);
-  }, [cameraOn, autoCapture, lockAspect, step]);
+  }, [cameraOn, autoCapture, lockAspect, step, liveOn]);
 
   const blobFromVideo = (): Promise<Blob | null> =>
     new Promise((resolve) => {
@@ -433,6 +447,165 @@ export default function ScanPage() {
       ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
       canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9);
     });
+
+  // ── Live-Scan ───────────────────────────────────────────────────────────
+  // Die Kamera läuft, der Bild-Abgleich prüft immer wieder ein ruhiges, scharfes
+  // Bild (nacheinander, nie parallel). Jede Karte sammelt Befunde über die Bilder
+  // (lib/liveScan): grün sicher, gelb wahrscheinlich, rot unklar. Bei der Mappe
+  // lässt der Abgleich sichere Fächer im nächsten Bild aus. Alle grün → Prüfseite.
+  const [liveState, setLiveState] = useState<LiveState>(emptyLive);
+  const liveRef = useRef<LiveState>(liveState);
+  const liveFramesRef = useRef(new Map<number, Blob>());   // geprüfte Bilder (eins davon wird das Foto)
+  const commitLive = (fn: (s: LiveState) => LiveState): LiveState => {
+    const next = fn(liveRef.current);
+    liveRef.current = next;
+    setLiveState(next);
+    return next;
+  };
+  type LiveChip = "hold" | "checking" | "paused" | null;
+  const [liveChip, setLiveChip] = useState<LiveChip>(null);
+  // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
+  // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
+  const lastDoneRef = useRef<string | null>(null);
+  const [livePick, setLivePick] = useState<string | null>(null);   // Karte, deren Treffer zur Wahl offen sind
+  const livePickRef = useRef<string | null>(null);
+  livePickRef.current = livePick;
+  const [livePicking, setLivePicking] = useState(false);
+  const motion = useMotion(liveOn);
+  const toggleLive = () => {
+    const on = !live;
+    setLive(on);
+    try { localStorage.setItem(LIVE_KEY, on ? "1" : "0"); } catch { /* privat */ }
+    if (on) void motion.ask();     // iOS gibt den Bewegungssensor nur nach einem Tipp frei
+  };
+  // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
+  const liveGrid = mode === "multi" ? multiGrid : mode === "binder" ? layout : "";
+  useEffect(() => {
+    liveFramesRef.current = new Map();
+    liveRef.current = emptyLive();
+    setLiveState(liveRef.current);
+    setLivePick(null);
+    setLiveChip(null);
+  }, [liveOn, mode, liveGrid]);
+  useEffect(() => { lastDoneRef.current = null; }, [mode, liveGrid]);
+  // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
+  const autoFinish = (st: LiveState): boolean => {
+    if (!allSure(st, mode)) return false;
+    if (signature(st) === lastDoneRef.current) return false;
+    finishLiveRef.current();
+    return true;
+  };
+  const autoFinishRef = useRef(autoFinish);
+  autoFinishRef.current = autoFinish;
+
+  const finishLive = () => {
+    const st = liveRef.current;
+    if (!st.tracks.length) { handleCaptureRef.current(); return; }   // noch nichts gefunden → normales Foto
+    const { frame, items } = finish(st, Array.from(liveFramesRef.current.keys()));
+    const photo = frame != null ? liveFramesRef.current.get(frame) : null;
+    if (!photo || !items.length) return;
+    lastDoneRef.current = signature(st);
+    liveFramesRef.current = new Map();
+    commitLive(() => emptyLive());
+    setLivePick(null);
+    openReviewRef.current(photo, items.map((i) => toEditableRef.current(i.cand, i.chosenId)));
+  };
+  const finishLiveRef = useRef(finishLive);
+  finishLiveRef.current = finishLive;
+
+  // Kandidat von Hand: die Karte gilt dann als sicher
+  const pickLive = async (key: string, alt: ScanAlternative, v: Verdict) => {
+    setLivePicking(true);
+    try {
+      const lang = (v.cand?.suggested as Record<string, unknown> | undefined)?.sprache as string | undefined;
+      const r = await scanApi.resolve({ tcgdex_card_id: alt.tcgdex_card_id, name: alt.name, language: lang ?? defaultLang });
+      const next = commitLive((st) => pick(st, key, alt.tcgdex_card_id, r.data));
+      setLivePick(null);
+      autoFinish(next);
+    } catch {
+      toast.error(t.scan_error);
+    } finally {
+      setLivePicking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!liveOn) return;
+    let stop = false;
+    const judge = new FrameJudge();
+    const small = document.createElement("canvas");
+    const sctx = small.getContext("2d", { willReadFrequently: true });
+    const full = document.createElement("canvas");
+    const fctx = full.getContext("2d");
+    if (!sctx || !fctx) return;
+    const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+    let chip: LiveChip = null;
+    const showChip = (c: LiveChip) => { if (c !== chip) { chip = c; setLiveChip(c); } };
+    const grid = mode === "multi" ? parseGrid(multiGrid) : null;
+    const { cols, rows } = grid ?? parseLayout(layout);
+    const useGrid = mode === "binder" || grid !== null;
+    (async () => {
+      while (!stop) {
+        // 1. auf ein ruhiges, scharfes Bild warten — Sensor (falls da) und Kamerabild;
+        //    nach ein paar Sekunden genügt ein ruhiges, zur Not irgendein Bild
+        const t0 = performance.now();
+        let v: HTMLVideoElement | null = null;
+        while (!stop) {
+          v = videoRef.current;
+          if (!v || !v.videoWidth || busyRef.current || livePickRef.current) { await sleep(250); continue; }
+          const k = 240 / Math.max(v.videoWidth, v.videoHeight);
+          const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+          if (small.width !== w || small.height !== h) { small.width = w; small.height = h; }
+          sctx.drawImage(v, 0, 0, w, h);
+          const q = judge.judge(toGray(sctx.getImageData(0, 0, w, h).data, w, h), w, h, performance.now());
+          const sensor = motion.still();
+          const calm = q.still && sensor !== false;
+          const waited = performance.now() - t0;
+          // ruhig und scharf; sonst bald das schärfste der letzten Bilder (sofern der Sensor nicht
+          // gerade Bewegung meldet); spätestens ein ruhiges bzw. irgendein Bild
+          if ((calm && q.sharp) || (waited > 1500 && q.sharp && sensor !== false)
+            || (waited > 3000 && (q.still || sensor === true)) || waited > 6000) break;
+          showChip(calm ? null : "hold");
+          await sleep(110);
+        }
+        if (stop || !v) break;
+        // 2. genau dieses Bild (max. 1600 px) an den Bild-Abgleich
+        const kf = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+        full.width = Math.round(v.videoWidth * kf);
+        full.height = Math.round(v.videoHeight * kf);
+        fctx.drawImage(v, 0, 0, full.width, full.height);
+        const vw = v.videoWidth, vh = v.videoHeight;
+        const tq = tiltQuadRef.current;
+        const page = useGrid && tq ? tq.map(([x, y]) => [x / vw, y / vh] as Pt) : null;
+        const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", 0.88));
+        if (!photo || stop) continue;
+        showChip("checking");
+        try {
+          const res = await scanApi.scan(photo, {
+            mode, rows: useGrid ? rows : 0, cols: useGrid ? cols : 0, default_language: defaultLang, page,
+            skip: mode === "binder" ? skipPockets(liveRef.current) : undefined, live: true,
+          });
+          if (stop) break;
+          if (res.data.engine !== "local") { showChip("paused"); await sleep(4000); continue; }
+          showChip(null);
+          const next = commitLive((st) => addFrame(st, res.data.candidates, mode));
+          const frames = liveFramesRef.current;
+          frames.set(next.frames, photo);
+          // behalten: die letzten Bilder und das, das gerade das beste Foto wäre
+          const keep = finish(next, Array.from(frames.keys())).frame;
+          for (const f of Array.from(frames.keys())) if (f <= next.frames - 6 && f !== keep) frames.delete(f);
+          if (autoFinishRef.current(next)) break;
+        } catch {
+          if (stop) break;
+          showChip("paused");
+          await sleep(2500);
+          continue;
+        }
+        await sleep(200);
+      }
+    })();
+    return () => { stop = true; };
+  }, [liveOn, mode, layout, multiGrid, defaultLang]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Scan-Entwurf ────────────────────────────────────────────────────────
   // Die Prüfseite liegt als Entwurf auf dem Server: Seite verlassen und später
@@ -714,6 +887,51 @@ export default function ScanPage() {
   const keepRef = useRef(keepUnrecognised);
   keepRef.current = keepUnrecognised;
 
+  // Treffer des Bild-Abgleichs → Eintrag der Prüfseite
+  const toEditable = (c: ScanCandidate, chosenId: string | null = null): EditableCandidate => ({
+    ...c,
+    include: !c.needs_choice,   // ohne eindeutigen Treffer erst nach der Auswahl übernehmen
+    // Erkannt → das saubere Katalogbild anzeigen; das Foto wird trotzdem
+    // gespeichert, damit der Bild-Abgleich daraus lernt. Ohne Treffer bleibt
+    // das Foto das einzige Bild.
+    usePhoto: !!(c.raw?.bbox || c.raw?.quad) && !c.match?.image_url,
+    cropUrl: null,
+    imPokedex: setPokedexRep,
+    prizePack: !!c.stamp?.sure,              // Play!-Stempel sicher gefunden → vorab angehakt
+    firstEdition: false,
+    condition: "",
+    copies: 1,
+    key: nextKey(),
+    imageLang: null,
+    chosenId,
+  });
+
+  // Prüfseite öffnen: dieses Foto (Quelle der Zuschnitte) und die gefundenen Karten
+  const openReview = (photo: Blob, list: EditableCandidate[]) => {
+    sourceBlobRef.current = photo;
+    setSourceUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(photo);
+    });
+    noneDetectedRef.current = false;
+    setCandidates(list);
+    setStep("review");
+    void startDraftRef.current(photo, list);
+    // Foto-Zuschnitte je Karte (aus der bbox) für Vorschau erzeugen
+    list.forEach(async (c) => {
+      if (!c.raw?.bbox && !c.raw?.quad) return;
+      try {
+        const f = await cropToCardPhoto(photo, { bbox: c.raw.bbox, quad: c.raw.quad, autoOrient: true });
+        const u = URL.createObjectURL(f);
+        patchCand(c.key, (cc) => ({ ...cc, cropUrl: u }));
+      } catch { /* Vorschau optional */ }
+    });
+  };
+  const openReviewRef = useRef(openReview);
+  openReviewRef.current = openReview;
+  const toEditableRef = useRef(toEditable);
+  toEditableRef.current = toEditable;
+
   const runScan = useCallback(async (rawBlob: Blob, page?: Pt[] | null) => {
     setBusy(true);
     let blob: Blob | null = null;
@@ -739,22 +957,7 @@ export default function ScanPage() {
         default_language: defaultLang,
         page: mode === "binder" || mode === "multi" ? page : null,
       });
-      const list: EditableCandidate[] = res.data.candidates.map((c) => ({
-        ...c,
-        include: !c.needs_choice,   // ohne eindeutigen Treffer erst nach der Auswahl übernehmen
-        // Erkannt → das saubere Katalogbild anzeigen; das Foto wird trotzdem
-        // gespeichert, damit der Bild-Abgleich daraus lernt. Ohne Treffer bleibt
-        // das Foto das einzige Bild.
-        usePhoto: !!(c.raw?.bbox || c.raw?.quad) && !c.match?.image_url,
-        cropUrl: null,
-        imPokedex: setPokedexRep,
-        prizePack: !!c.stamp?.sure,              // Play!-Stempel sicher gefunden → vorab angehakt
-        firstEdition: false,
-        condition: "",
-        copies: 1,
-        key: nextKey(),
-        imageLang: null,
-      }));
+      const list = res.data.candidates.map((c) => toEditableRef.current(c));
       const art = res.data.hinweis_art;
       if (art) {
         const msg =
@@ -772,27 +975,14 @@ export default function ScanPage() {
         await keepRef.current(blob, false);
         return;
       }
-      noneDetectedRef.current = false;
-      setCandidates(list);
-      setStep("review");
-      void startDraftRef.current(blob, list);
-      // Foto-Zuschnitte je Karte (aus der bbox) für Vorschau erzeugen
-      list.forEach(async (c) => {
-        const blob = sourceBlobRef.current;
-        if ((!c.raw?.bbox && !c.raw?.quad) || !blob) return;
-        try {
-          const f = await cropToCardPhoto(blob, { bbox: c.raw.bbox, quad: c.raw.quad, autoOrient: true });
-          const u = URL.createObjectURL(f);
-          patchCand(c.key, (cc) => ({ ...cc, cropUrl: u }));
-        } catch { /* Vorschau optional */ }
-      });
+      openReviewRef.current(blob, list);
     } catch {
       if (blob) await keepRef.current(blob, true);
       else toast.error(t.scan_error);
     } finally {
       setBusy(false);
     }
-  }, [layout, multiGrid, mode, t, setPokedexRep, defaultLang]);
+  }, [layout, multiGrid, mode, t, defaultLang]);
 
   const handleCapture = async () => {
     // geneigtes Raster: wo die Seite im Foto liegt (Anteile des Videobilds = des Fotos)
@@ -1375,13 +1565,85 @@ export default function ScanPage() {
                       rows={gridShown ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
                       tilted={tiltQuad} />
                   )}
-                  {vidSize && (() => {
+                  {vidSize && liveOn && (
+                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} onTap={(k) => setLivePick(k)} />
+                  )}
+                  {vidSize && liveOn && !busy && (() => {
+                    const n = counts(liveState);
+                    const total = n.green + n.yellow + n.red;
+                    const same = allSure(liveState, mode) && signature(liveState) === lastDoneRef.current;
+                    const text = liveChip === "paused" ? t.scan_live_paused : same ? t.scan_live_same
+                      : liveChip === "hold" ? t.scan_live_hold
+                      : liveChip === "checking" ? t.scan_live_checking : !total ? t.scan_live_looking : null;
+                    return (
+                      <div className="pointer-events-none absolute top-2 left-1/2 flex w-max max-w-[94%] -translate-x-1/2 flex-wrap items-center justify-center gap-x-2 rounded-2xl bg-black/60 px-3 py-1 text-center text-xs text-white"
+                        data-testid="scan-live-status">
+                        {total > 0 && (
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <span className="text-green-400" data-testid="scan-live-green">● {n.green}</span>
+                            <span className="text-yellow-300" data-testid="scan-live-yellow">● {n.yellow}</span>
+                            <span className="text-red-400" data-testid="scan-live-red">● {n.red}</span>
+                          </span>
+                        )}
+                        {text && <span>{text}</span>}
+                      </div>
+                    );
+                  })()}
+                  {vidSize && !(liveOn && !busy) && (() => {
                     const chip = busy ? t.scan_analyzing
                       : lockAspect !== null && autoCapture ? (waitingNext ? t.scan_cam_next : lockQuad ? t.scan_cam_hold : t.scan_cam_searching)
                       : detQuads ? t.scan_cam_found(detQuads.length) : null;
                     return chip && (
                       <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-3 py-1 text-xs text-white">
                         {chip}
+                      </div>
+                    );
+                  })()}
+                  {liveAvailable && step === "setup" && (
+                    <button type="button" onClick={toggleLive} aria-pressed={live} title={t.scan_live_toggle_hint}
+                      data-testid="scan-live"
+                      className={`absolute top-10 left-2 rounded-full px-3 py-1.5 text-xs text-white ${live
+                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                      <span className={live ? "text-green-300" : "text-gray-400"}>●</span> {t.scan_live}
+                    </button>
+                  )}
+                  {liveOn && livePick && (() => {
+                    const tr = liveState.tracks.find((x) => x.key === livePick);
+                    if (!tr) return null;
+                    const v = verdict(tr);
+                    const opts = choices(tr);
+                    return (
+                      <div className="absolute inset-x-2 bottom-2 z-10 max-h-[75%] overflow-auto rounded-lg bg-gray-900/95 p-2 text-white shadow-xl"
+                        data-testid="scan-live-pick">
+                        <div className="mb-2 flex items-center justify-between gap-2 text-sm">
+                          <span>
+                            {t.scan_live_pick_title}{" "}
+                            <span className="text-xs text-gray-400" data-testid="scan-live-why">· {t.scan_live_why(v.why)}</span>
+                          </span>
+                          <button type="button" onClick={() => setLivePick(null)} className="shrink-0 text-xs text-gray-300 hover:text-white">
+                            {t.scan_live_pick_close}
+                          </button>
+                        </div>
+                        {opts.length ? (
+                          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                            {opts.map((a) => (
+                              <button key={a.tcgdex_card_id} type="button" disabled={livePicking}
+                                onClick={() => void pickLive(tr.key, a, v)} data-testid="scan-live-choice"
+                                className={`rounded border p-1 text-left text-[11px] hover:border-white disabled:opacity-50 ${
+                                  a.tcgdex_card_id === v.id ? "border-pokemon-yellow" : "border-gray-700"}`}>
+                                {a.image_url && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={thumbUrl(a.image_url) ?? undefined} alt="" loading="lazy"
+                                    className="mb-1 aspect-[63/88] w-full rounded object-cover" />
+                                )}
+                                <span className="block truncate">{a.name}</span>
+                                <span className="block truncate text-gray-400">{[a.set_name, a.local_id].filter(Boolean).join(" · ")}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-400">{t.scan_live_pick_none}</p>
+                        )}
                       </div>
                     );
                   })()}
@@ -1402,17 +1664,25 @@ export default function ScanPage() {
                     </div>
                   )}
                   {/* Bedienung auf dem Bild (wie eine Kamera-App) – kein Scrollen nötig */}
-                  <div className="absolute inset-x-0 bottom-0 grid grid-cols-3 items-center bg-gradient-to-t from-black/75 to-transparent px-3 pb-3 pt-10">
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 grid grid-cols-3 items-center bg-gradient-to-t from-black/75 to-transparent px-3 pb-3 pt-10 [&>*]:pointer-events-auto">
                     <button type="button" onClick={stopCamera}
                       className="justify-self-start rounded-full bg-black/50 px-3 py-1.5 text-xs text-white hover:bg-black/70">
                       {t.scan_stop_camera}
                     </button>
+                    {liveOn ? (
+                      <button type="button" onClick={() => finishLive()} disabled={busy} aria-label={t.scan_live_done}
+                        title={t.scan_live_done} data-testid="scan-live-done"
+                        className="justify-self-center flex h-16 w-16 items-center justify-center rounded-full border-4 border-green-400 bg-green-500/30 text-2xl text-white shadow-lg transition hover:bg-green-500/50 active:scale-95 disabled:opacity-50">
+                        {busy ? <span className="block h-full w-full animate-pulse rounded-full bg-white/50" /> : "✓"}
+                      </button>
+                    ) : (
                     <button type="button" onClick={() => void handleCapture()} disabled={busy} aria-label={t.scan_capture}
                       title={t.scan_capture}
                       className="justify-self-center h-16 w-16 rounded-full border-4 border-white bg-white/25 shadow-lg transition hover:bg-white/40 active:scale-95 disabled:opacity-50">
                       {busy && <span className="block h-full w-full animate-pulse rounded-full bg-white/50" />}
                     </button>
-                    {lockAspect !== null ? (
+                    )}
+                    {lockAspect !== null && !liveOn ? (
                       <label className="justify-self-end flex items-center gap-1 rounded-full bg-black/50 px-3 py-1.5 text-xs text-white">
                         <input type="checkbox" checked={autoCapture} onChange={(e) => setAutoCapture(e.target.checked)} />
                         {t.scan_autocapture}
@@ -1421,7 +1691,7 @@ export default function ScanPage() {
                   </div>
                 </div>
                 <p className="text-center text-gray-500 text-xs">
-                  {mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
+                  {liveOn ? t.scan_live_hint : mode === "single" ? t.scan_cam_hint_card : mode === "binder" ? t.scan_cam_hint_page : t.scan_cam_hint_multi}
                   {gridShown && <span className="block">{tilt.state === "on" ? t.scan_tilt_on_hint : t.scan_tilt_hint}</span>}
                 </p>
               </div>
@@ -2054,6 +2324,42 @@ function TiltedGuide({ w, h, cols, rows, quad, found, steady, boxes }: {
  * wird unverzerrt in voller Breite gezeigt): Bereich außerhalb abgedunkelt,
  * bei der Mappe das Raster, und die gefundene Karte als grüne Kontur.
  */
+const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
+  green: { stroke: "#22c55e", fill: "rgba(34,197,94,0.18)" },
+  yellow: { stroke: "#facc15", fill: "rgba(250,204,21,0.16)" },
+  red: { stroke: "#ef4444", fill: "rgba(239,68,68,0.16)" },
+};
+
+/** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
+function LiveOverlay({ w, h, state, onTap }: { w: number; h: number; state: LiveState; onTap: (key: string) => void }) {
+  const fs = Math.max(w, h) * 0.024;
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+      data-testid="scan-live-overlay">
+      {state.tracks.map((tr) => {
+        const v = verdict(tr);
+        const c = LIVE_COLOURS[v.level];
+        const pts = tr.quad.map(([x, y]) => [x * w, y * h]);
+        const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
+        const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
+        const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
+        const name = raw.length > 16 ? `${raw.slice(0, 15)}…` : raw;
+        return (
+          <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why}
+            style={{ pointerEvents: "all", cursor: "pointer" }} onClick={() => onTap(tr.key)}>
+            <polygon points={pts.map(([x, y]) => `${x},${y}`).join(" ")} fill={c.fill} stroke={c.stroke}
+              strokeWidth={3} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            <text x={x0 + fs * 0.3} y={y0 + fs * 1.15} fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.75)"
+              strokeWidth={fs * 0.16} paintOrder="stroke" fontWeight={600}>
+              {v.level === "green" ? "✓ " : ""}{name}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 function CameraGuide({ w, h, aspect, cols, rows, quad, steady, boxes, tilted }: {
   w: number; h: number; aspect: number | null; cols: number; rows: number; quad: Pt[] | null; steady: boolean;
   boxes?: Pt[][] | null;   // vom Bild-Abgleich gefundene Karten (mehrere Karten / Mappe)

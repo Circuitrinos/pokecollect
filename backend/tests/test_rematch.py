@@ -275,6 +275,22 @@ def test_card_number_from_two_fields_is_stored_together(client):
     assert client.put(f"{API}/cards/{card['id']}", json={"karten_nr": "/132"}).json()["karten_nr"] is None
 
 
+def test_promo_numbers_with_letters_save_and_search(client):
+    ids = []
+    for nr in ("SWSH050", "HGSS01", "001/SV-P", "SVP 001"):
+        r = client.post(f"{API}/cards", json={"kartenname": "Rm promo", "karten_nr": nr})
+        assert r.status_code == 201, r.text
+        assert r.json()["karten_nr"] == nr
+        ids.append(r.json()["id"])
+    upd = client.put(f"{API}/cards/{ids[0]}", json={"karten_nr": "SWSH051"})
+    assert upd.status_code == 200 and upd.json()["karten_nr"] == "SWSH051"
+    found = client.get(f"{API}/cards", params={"search": "Rm_promo n:swsh051"}).json()
+    assert [c["id"] for c in found["items"]] == [ids[0]]
+    assert client.get(f"{API}/cards", params={"search": "Rm_promo n<100"}).status_code == 200
+    for i in ids:
+        client.delete(f"{API}/cards/{i}")
+
+
 def test_copies_share_the_scan_photo_and_placeholders_are_no_gaps(client, catalog, monkeypatch, tmp_path):
     from datetime import datetime, timedelta
 

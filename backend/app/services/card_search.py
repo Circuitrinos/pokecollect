@@ -373,4 +373,3 @@ def conditions(db: Session, text: str) -> tuple[list, Parsed]:
         cond = or_(*alts) if len(alts) > 1 else alts[0]
         conds.append(not_(func.coalesce(cond, false())) if t.neg else cond)
     return conds, parsed
-

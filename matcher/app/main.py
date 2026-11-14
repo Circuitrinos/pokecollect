@@ -1,7 +1,7 @@
 """
 PokéCollect card matcher — identifies cards by artwork.
 
-POST /match   photo (+ mode, rows, cols, page) -> per detected card: corners,
+POST /match   photo (+ mode, rows, cols, page, skip) -> per detected card: corners,
               top candidates (TCGdex ids), and whether the choice is clean
 POST /verify  saved scan photo + its card id (+ original, corners) -> how well
               it fits the card's catalog images, and better corners
@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -818,13 +819,16 @@ def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> 
 
 @app.post("/match")
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
-                rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form("")) -> dict:
+                rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form(""),
+                skip: str = Form("")) -> dict:
     """
     page (binder and multi mode, optional): the grid's four corners in the
     photo, JSON [[x, y], …] as fractions of width/height, top left first,
     clockwise — the app's tilted grid when the photo was taken at an angle
     (against glare). The photo is straightened by it first: a binder page is
     then split into pockets (rows × cols), loose cards are found anywhere.
+    skip (binder mode, optional): pockets to leave out, "0,4,5" — the live
+    scan already knows them, so a frame only spends time on the rest.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
@@ -832,9 +836,20 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
     corners = _page_corners(page) if mode in ("binder", "multi") else None
+    skipped = _skip_pockets(skip, rows * cols) if mode == "binder" else frozenset()
     # The work is CPU-bound: run it in a worker thread so /health keeps
     # answering (the backend's status check has a 2 s timeout).
-    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners)
+    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners, skipped)
+
+
+def _skip_pockets(skip: str, pockets: int) -> frozenset[int]:
+    """Pocket numbers from the form ("0,4,5"); anything else is ignored."""
+    out = set()
+    for part in skip.split(","):
+        part = part.strip()
+        if part.isdigit() and int(part) < pockets:
+            out.add(int(part))
+    return frozenset(out)
 
 
 def _page_corners(page: str) -> np.ndarray | None:
@@ -856,19 +871,21 @@ def _page_corners(page: str) -> np.ndarray | None:
     return q
 
 
-def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None) -> dict:
+def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
+                   skip: frozenset[int] = frozenset()) -> dict:
     t0 = time.perf_counter()
     with _match_lock:
         queued = time.perf_counter() - t0
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(400, "unreadable image")
-        res = _run_match(img, mode, rows, cols, top_k, page)
+        res = _run_match(img, mode, rows, cols, top_k, page, skip)
         state["matches"] += 1
     if queued >= 0.05:
         res["timing"]["queued"] = round(queued * 1000)
-    log.info("match %s %dx%d: %d card(s) in %d ms %s%s", mode, img.shape[1], img.shape[0],
+    log.info("match %s %dx%d: %d card(s) in %d ms %s%s%s", mode, img.shape[1], img.shape[0],
              len(res["cards"]), res["ms"], res["timing"],
+             f" ({len(skip)} pocket(s) skipped)" if skip else "",
              " (first since start)" if state["matches"] == 1 else "")
     return res
 
@@ -941,12 +958,14 @@ def _straighten_page(img: np.ndarray, page: np.ndarray, rows: int, cols: int):
     return out, (float(m), float(m), float(pw), float(ph)), H
 
 
-def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int) -> list[dict] | None:
+def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int,
+                         skip: frozenset[int] = frozenset()) -> list[dict] | None:
     """
     Binder page shot at an angle: straighten it, find the cards on it (anywhere,
     like loose cards — the grid the app guessed from the phone's tilt is only
     roughly on the page), put each in the pocket under its centre, search the
-    pockets still empty one by one, corners back into the photo.
+    pockets still empty one by one, corners back into the photo. Pockets in
+    skip are neither matched nor searched.
     """
     with timing.phase("page"):
         st = _straighten_page(img, page, rows, cols)
@@ -957,14 +976,21 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
     fh, fw = flat.shape[:2]
     cw, ch = pw / cols, ph / rows
     found: dict[int, tuple[matcher.Decision, np.ndarray]] = {}
-    for d, oq in _multi_cards(flat, top_k):
-        cx, cy = np.float32(oq).mean(axis=0)
+
+    def pocket(q: np.ndarray) -> int | None:
+        cx, cy = np.float32(q).mean(axis=0)
         r, c = int((cy - py) // ch), int((cx - px) // cw)
-        if 0 <= r < rows and 0 <= c < cols and r * cols + c not in found:
-            found[r * cols + c] = (d, np.float32(oq))
+        return r * cols + c if 0 <= r < rows and 0 <= c < cols else None
+
+    for d, oq in _multi_cards(flat, top_k, leave_out=(lambda q: pocket(q) in skip) if skip else None):
+        p = pocket(oq)
+        if p is not None and p not in found and p not in skip:
+            found[p] = (d, np.float32(oq))
     cards: list[dict] = []
     for r in range(rows):
         for c in range(cols):
+            if r * cols + c in skip:
+                continue
             if r * cols + c in found:
                 d, q = found[r * cols + c]
                 back = cv2.perspectiveTransform(q.reshape(-1, 1, 2), Hinv).reshape(-1, 2)
@@ -984,16 +1010,20 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
     return cards
 
 
-def _multi_cards(img: np.ndarray, top_k: int) -> list[tuple[matcher.Decision, np.ndarray]]:
+def _multi_cards(img: np.ndarray, top_k: int,
+                 leave_out: Callable[[np.ndarray], bool] | None = None) -> list[tuple[matcher.Decision, np.ndarray]]:
     """
     Loose cards anywhere: match every outline, then keep the strongest matches
     greedily and drop anything overlapping a kept one. Mats, merged pairs and
     partial sub-rectangles match worse than a true card outline, so they lose.
+    Outlines for which leave_out() says yes are not matched at all.
     → (decision, corners) in reading order.
     """
     snap = store.snapshot()
     scored = []
     for det in _detect(img, max_cards=24, nested=True):
+        if leave_out is not None and leave_out(det.quad):
+            continue
         card = detect.warp(img, det.quad)
         cands = _match(card, snap, top_k)
         if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
@@ -1055,14 +1085,15 @@ def _multi_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int,
             for d, oq in _multi_cards(view, top_k)]
 
 
-def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None) -> dict:
+def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
+               skip: frozenset[int] = frozenset()) -> dict:
     timing.start()
     t0 = time.perf_counter()
     h, w = img.shape[:2]
     cards: list[dict] = []
     straightened = None
     if mode == "binder" and rows > 0 and cols > 0 and page is not None:
-        straightened = _binder_straightened(img, page, rows, cols, top_k)
+        straightened = _binder_straightened(img, page, rows, cols, top_k, skip)
     elif mode == "multi" and page is not None:
         straightened = _multi_straightened(img, page, rows, cols, top_k)
 
@@ -1072,6 +1103,8 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
         ch, cw = h // rows, w // cols
         for r in range(rows):
             for c in range(cols):
+                if r * cols + c in skip:
+                    continue
                 x0, y0 = c * cw, r * ch
                 cell = img[y0:y0 + ch, x0:x0 + cw]
                 opts = [d.quad + [x0, y0] for d in _detect(cell, max_cards=2, nested=True)

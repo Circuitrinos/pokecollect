@@ -3,7 +3,7 @@ import { useId } from "react";
 import { PokemonSet } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
-import { joinCardNr, setTotal, splitCardNr } from "@/lib/cardNumber";
+import { isPromoSet, joinCardNr, setTotal, splitCardNr } from "@/lib/cardNumber";
 import RaritySelect from "@/components/RaritySelect";
 
 // Gemeinsame Feld-Bausteine für die Karten-Formulare (Neuanlage + Detail-Edit,
@@ -212,7 +212,7 @@ export function CardNrField({ value, onChange, validate, selectedSet, error, den
           value={number}
           onChange={(e) => setNumber(e.target.value)}
           onBlur={fillTotal}
-          placeholder={fromSet ? "001" : t.form_card_nr_placeholder_number}
+          placeholder={fromSet ? "001" : selectedSet && isPromoSet(selectedSet) ? "SWSH050" : t.form_card_nr_placeholder_number}
           aria-label={t.form_card_nr}
           data-testid="card-nr-number"
           className={`${inputCls(dense, !!error)} min-w-0 flex-1`}
@@ -230,11 +230,15 @@ export function CardNrField({ value, onChange, validate, selectedSet, error, den
           className={`${inputCls(dense, !!error)} !w-20 shrink-0`}
         />
       </div>
-      {selectedSet?.max_card_nr && !error && (
+      {selectedSet && !error && (isPromoSet(selectedSet) ? (
+        <p className={`text-gray-500 text-xs ${dense ? "mt-0.5" : "mt-1"}`} data-testid="card-nr-promo-hint">
+          {t.form_card_nr_hint_promo}
+        </p>
+      ) : selectedSet.max_card_nr ? (
         <p className={`text-gray-500 text-xs ${dense ? "mt-0.5" : "mt-1"}`}>
           {t.form_card_nr_hint(selectedSet.max_card_nr)}
         </p>
-      )}
+      ) : null)}
       {error && <p className={`text-red-400 text-xs ${dense ? "mt-0.5" : "mt-1"}`}>{error}</p>}
     </div>
   );

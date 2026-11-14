@@ -3,6 +3,7 @@ import { Dispatch, SetStateAction, useRef, useState } from "react";
 import { Card, PokemonSet, scanApi } from "@/lib/api";
 import { fetchPokemonNames } from "@/lib/pokedex";
 import { setCodeFromEdition } from "@/lib/utils";
+import { isCardNr } from "@/lib/cardNumber";
 import { useI18n } from "@/lib/i18n";
 
 // Gemeinsame Formular-Logik für Karten-Neuanlage (cards/new) und Detail-Edit
@@ -148,10 +149,10 @@ export function useCardForm<T extends CardFormShape>(
 
   const validateCardNr = (nr: string): boolean => {
     if (!nr || nr.startsWith("/")) { setCardNrError(null); return true; }   // nur Gesamtzahl = keine Nummer
-    // Akzeptiert nackte Nummer („041"), optional mit Buchstabe/Präfix und
-    // optionaler Gesamtzahl („041/109", „TG01/TG30"). Der Resolver ergänzt die
-    // Gesamtzahl — die volle NNN/MAX-Form wird NICHT mehr erzwungen (Issue #31).
-    if (!nr.match(/^[A-Za-z]{0,3}\d{1,4}[a-z]?(\/[A-Za-z]{0,3}\d{1,4})?$/)) {
+    // Akzeptiert nackte Nummer („041"), Präfixe und Promos („TG01/TG30", „SWSH050",
+    // „HGSS01", „001/SV-P"). Der Resolver ergänzt die Gesamtzahl — die volle
+    // NNN/MAX-Form wird NICHT mehr erzwungen (Issue #31).
+    if (!isCardNr(nr)) {
       setCardNrError(t.form_card_nr_bad);
       return false;
     }

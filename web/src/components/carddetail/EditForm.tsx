@@ -9,7 +9,7 @@ import RegulationBadge from "@/components/RegulationBadge";
 import SetPicker from "@/components/SetPicker";
 import { CardNrField, CurrencyField, DateField, PokedexNrField, SelectField, TextareaField, TextField } from "@/components/CardFormFields";
 import { useCardForm } from "@/lib/useCardForm";
-import { formatEur } from "@/lib/utils";
+import { formatEur, setCodeFromEdition } from "@/lib/utils";
 import { MARK_LETTERS } from "@/lib/regulation";
 import { useI18n } from "@/lib/i18n";
 import { splitCardNr } from "@/lib/cardNumber";
@@ -55,6 +55,9 @@ export default function EditForm({
     selectedSet, cardNrError, setCardNrError, nameLoading,
     noteManualEdit, handlePokedexNr, validateCardNr, handleSetChange,
   } = useCardForm(setForm);
+  // Das Set der Karte, solange keins neu gewählt wurde — für Gesamtzahl und Promo-Hinweis.
+  const editionCode = setCodeFromEdition((form as Record<string, unknown>).set_edition as string | null)?.toLowerCase();
+  const currentSet = selectedSet ?? (editionCode ? sets.find((s) => s.code.toLowerCase() === editionCode) ?? null : null);
 
   const handleSave = async () => {
     const nr = (form as Record<string, unknown>).karten_nr as string | undefined;
@@ -254,7 +257,7 @@ export default function EditForm({
             value={(form as Record<string, unknown>).karten_nr}
             onChange={(v) => { setForm((f) => ({ ...f, karten_nr: v })); setCardNrError(null); }}
             validate={validateCardNr}
-            selectedSet={selectedSet}
+            selectedSet={currentSet}
             error={cardNrError}
             dense
           />

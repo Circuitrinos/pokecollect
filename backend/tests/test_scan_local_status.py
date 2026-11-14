@@ -17,7 +17,7 @@ def provider_local(client, monkeypatch):
     client.put("/api/v1/settings", json={"scan_reader_provider": "local"})
     monkeypatch.setattr(settings, "matcher_url", "http://matcher.test")
 
-    async def fake_resolve(db, reads, default_lang="DE"):
+    async def fake_resolve(db, reads, default_lang="DE", **kw):
         return [ScanCandidate(position=r.position or 0, confidence=0.9, raw=r,
                               suggested={"kartenname": r.name or ""}) for r in reads]
     monkeypatch.setattr(scan_module, "resolve_reads", fake_resolve)
@@ -181,13 +181,77 @@ def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_loca
         assert b'name="page"' not in seen[-1]
 
 
+def test_live_scan_laesst_sichere_faecher_aus(client, provider_local, png_bytes, monkeypatch):
+    """Live-Scan: die schon sicheren Fächer gehen als skip an den matcher — nur bei der Mappe."""
+    seen: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.content)
+        return httpx.Response(200, json={"mode": "binder", "ms": 5, "cards": []})
+    monkeypatch.setattr(local_match, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    def post(mode: str, skip: str):
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                        data={"mode": mode, "rows": "3", "cols": "3", "skip": skip})
+        assert r.status_code == 200, r.text
+
+    post("binder", "5, 0,5,x,9,²,12345," + "9" * 5000)
+    assert b'name="skip"\r\n\r\n0,5\r\n' in seen[-1]
+    post("binder", "")
+    assert b'name="skip"' not in seen[-1]
+    post("multi", "0,1")                                       # lose Karten haben keine Fächer
+    assert b'name="skip"' not in seen[-1]
+
+
+def test_live_bild_ohne_bild_abgleich_ohne_ocr(client, provider_local, png_bytes, monkeypatch):
+    """Live-Bild, matcher lädt noch: keine OCR je Bild, nur der Hinweis — die App wartet."""
+    provider_local(503, {"detail": "matcher not ready: loading"})
+    monkeypatch.setattr(scan_module.ocr, "extract", lambda *a, **k: pytest.fail("OCR bei einem Live-Bild"))
+    r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")}, data={"mode": "binder", "live": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["engine"] == "none" and body["candidates"] == [] and body["hinweis_art"] == "bild_abgleich_startet"
+
+
+def test_live_bilder_laden_dieselbe_karte_nicht_jedes_mal(client, provider_local, png_bytes, monkeypatch):
+    """Live-Scan: dieselben Karten alle paar Sekunden — TCGdex nur beim ersten Bild; normale Scans immer frisch."""
+    from app.services import tcgdex
+    from app.services.scan import resolver
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_get_card(card_id, lang="en"):
+        calls.append((card_id, lang))
+        return tcgdex.TcgdexCard.model_validate({"id": card_id, "localId": "125", "name": "Glurak-ex"})
+    monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
+    monkeypatch.setattr(resolver, "_LIVE_CACHE", {})
+    monkeypatch.setattr(scan_module, "resolve_reads", resolver.resolve_reads)   # der echte Resolver
+    provider_local(200, {"mode": "single", "ms": 5, "cards": [{
+        "position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "auto": True, "confidence": 0.95,
+        "candidates": [{"card_id": "sv03-125", "name": "Charizard ex", "local_id": "125"}]}]})
+
+    def post(**extra):
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                        data={"mode": "single", **extra})
+        assert r.status_code == 200, r.text
+        return r.json()["candidates"][0]
+
+    first = post(live="1")
+    n = len(calls)
+    assert n >= 1 and first["match"]["tcgdex_card_id"] == "sv03-125"
+    again = post(live="1")
+    assert len(calls) == n and again["match"] == first["match"]       # aus dem Zwischenspeicher
+    post()
+    assert len(calls) == 2 * n                                         # ohne live: frisch geladen
+
+
 def test_nur_der_druck_offen_sperrt_nicht(client, provider_local, png_bytes, monkeypatch):
     """Unsicher nur beim Druck (alle starken Treffer heißen gleich, z. B. Ultra Ball-
     Nachdrucke mit derselben Grafik): bester vorgewählt, nicht „bitte wählen" —
     sonst endet es mit „Keine davon" und die Karte hat keinen Katalog-Druck."""
     from app.schemas.scan import ScanMatch
 
-    async def resolved(db, reads, default_lang="DE"):     # wie ein Scan mit erreichbarem TCGdex
+    async def resolved(db, reads, default_lang="DE", **kw):     # wie ein Scan mit erreichbarem TCGdex
         return [ScanCandidate(position=r.position or 0, confidence=0.9, raw=r, suggested={"kartenname": r.name or ""},
                               match=ScanMatch(tcgdex_card_id=r.tcgdex_card_id, name=r.name)) for r in reads]
 

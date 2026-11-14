@@ -112,11 +112,13 @@ def _stamp(raw) -> Optional[ScanStamp]:
 
 
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
-                  rows: int = 0, cols: int = 0, page: str | None = None) -> LocalResult:
+                  rows: int = 0, cols: int = 0, page: str | None = None, skip: str | None = None) -> LocalResult:
     t0 = time.perf_counter()
     form = {"mode": mode, "rows": str(rows), "cols": str(cols), "top_k": "5"}
     if page:   # Mappenseite schräg fotografiert: ihre Ecken (ältere Matcher ignorieren das Feld)
         form["page"] = page
+    if skip:   # Live-Scan: diese Fächer sind schon sicher (ältere Matcher gleichen sie trotzdem ab)
+        form["skip"] = skip
     try:
         async with _client() as client:
             r = await client.post(

@@ -23,7 +23,7 @@ def reader_openai(client, monkeypatch):
         "openai_model": "gpt-4o-mini",
     })
 
-    async def fake_resolve(db, reads, default_lang="DE"):
+    async def fake_resolve(db, reads, default_lang="DE", **kw):
         return [
             ScanCandidate(position=r.position or 0, confidence=0.9, raw=r,
                           suggested={"kartenname": r.name or ""})

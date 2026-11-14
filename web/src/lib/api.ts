@@ -1192,7 +1192,7 @@ export const scanApi = {
   models: (provider: string) =>
     api.get<ScanModelList>("/scan/models", { params: { provider } }),
   scan: (file: Blob, opts: { mode: ScanMode; rows?: number; cols?: number; default_language?: string;
-    page?: [number, number][] | null }) => {
+    page?: [number, number][] | null; skip?: number[]; live?: boolean }) => {
     const form = new FormData();
     form.append("file", file, "scan.jpg");
     form.append("mode", opts.mode);
@@ -1201,6 +1201,9 @@ export const scanApi = {
     form.append("default_language", opts.default_language ?? "DE");
     // Mappenseite schräg fotografiert: ihre Ecken (Anteile), damit der Bild-Abgleich sie entzerrt
     if (opts.page) form.append("page", JSON.stringify(opts.page.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)])));
+    // Live-Scan (Mappe): diese Fächer sind schon sicher, der Bild-Abgleich lässt sie aus
+    if (opts.skip?.length) form.append("skip", opts.skip.join(","));
+    if (opts.live) form.append("live", "1");   // Live-Bild: Kartendaten dürfen kurz aus dem Zwischenspeicher kommen
     return api.post<ScanResponse>("/scan", form);
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),

@@ -272,6 +272,13 @@ def _page_corners(page: str) -> str | None:
     return json.dumps(pts)
 
 
+def _skip_pockets(skip: str, pockets: int) -> str | None:
+    """Fächer für den Bild-Abgleich („0,4,5"): nur gültige Nummern, sortiert, ohne Doppelte."""
+    parts = (p.strip() for p in skip[:400].split(","))
+    nums = sorted({int(p) for p in parts if p.isascii() and p.isdigit() and len(p) < 4 and int(p) < pockets})
+    return ",".join(map(str, nums)) or None
+
+
 @router.post("", response_model=ScanResponse)
 async def scan(
     file: UploadFile = File(...),
@@ -280,6 +287,8 @@ async def scan(
     cols: int = Form(0),
     default_language: str = Form("DE"),
     page: str = Form(""),
+    skip: str = Form(""),
+    live: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     """
@@ -292,6 +301,10 @@ async def scan(
       das geneigte Raster der App bei einem schräg aufgenommenen Foto; der
       Bild-Abgleich entzerrt das Foto damit (Mappe: danach in Fächer teilen,
       lose Karten: danach überall suchen).
+    - skip (nur mode=binder, Bild-Abgleich): Fächer, die der Live-Scan schon
+      sicher kennt („0,4,5") — der Abgleich lässt sie aus, das Bild ist schneller fertig.
+    - live: ein Bild des Live-Scans — die Karten-Daten kommen kurz aus einem
+      Zwischenspeicher (dieselben Karten folgen alle paar Sekunden wieder).
     """
     data = await file.read()
     if not data:
@@ -319,7 +332,8 @@ async def scan(
     if provider == "local":
         result = await local_match.extract(
             data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
-            page=_page_corners(page) if mode in ("binder", "multi") else None)
+            page=_page_corners(page) if mode in ("binder", "multi") else None,
+            skip=_skip_pockets(skip, rows * cols) if mode == "binder" else None)
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
         else:
@@ -362,7 +376,9 @@ async def scan(
             hinweis_art = result.fehler_art
             hinweis = _READER_HINWEIS.get(result.fehler_art)
             limit_erreicht = result.fehler_art == vlm.FEHLER_RATE
-    if reads is None:
+    if reads is None and live:
+        reads = []      # Live-Bild: keine langsame OCR je Bild — die App wartet, bis der Bild-Abgleich da ist
+    elif reads is None:
         reads = ocr.extract(data, mode=reader_mode, rows=rows, cols=cols)
         engine = "ocr"
 
@@ -402,10 +418,10 @@ async def scan(
     # echten Bildmaße, die nur der Aufrufer hier hat.
     reads = crop_hints.sanitize_crop_hints(reads, data, mode=reader_mode)
 
-    candidates = await resolve_reads(db, reads, default_lang=default_language)
+    candidates = await resolve_reads(db, reads, default_lang=default_language, cached=live)
     t_end = time.perf_counter()
-    log.info("Scan %s über %s: %d Karte(n) in %d ms (Erkennung %d ms, Auflösung/TCGdex %d ms)",
-             mode, engine, len(candidates), round((t_end - t0) * 1000),
+    log.info("Scan %s%s über %s: %d Karte(n) in %d ms (Erkennung %d ms, Auflösung/TCGdex %d ms)",
+             mode, " (live)" if live else "", engine, len(candidates), round((t_end - t0) * 1000),
              round((t_read - t0) * 1000), round((t_end - t_read) * 1000))
     # Bild-Abgleich: Alternativen + „bitte wählen" an die Kandidaten hängen
     # (Zuordnung über das Read-Objekt; resolve_reads sortiert um).

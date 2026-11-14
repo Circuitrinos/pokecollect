@@ -18,8 +18,25 @@ export function joinCardNr(number: string, total: string): string {
   return t ? `${n}/${t}` : n;
 }
 
-/** Gesamtzahl, die das Set aufdruckt (für Vorschlag/Platzhalter), z. B. „132". */
-export function setTotal(set: { card_count_official?: number | null; max_card_nr?: number | null } | null | undefined): string {
-  const n = set?.card_count_official ?? set?.max_card_nr ?? null;
+// Ein Teil der Nummer (vor oder nach dem „/"): Ziffern und Buchstaben, dazu was auf
+// Karten vorkommt — Black-Star-Promos „SWSH050", „HGSS01", „SVP 001", japanische
+// Promos „001/SV-P", Unown „!" und „?". Andere Zeichen sind Tippfehler.
+const PART = /^[A-Za-z0-9!?](?:[A-Za-z0-9 .!?-]{0,14}[A-Za-z0-9!?])?$/;
+
+/** Sieht wie eine aufgedruckte Kartennummer aus? „041", „041/109", „TG05/TG30", „SWSH050". */
+export function isCardNr(nr: string): boolean {
+  const parts = nr.trim().split("/");
+  if (parts.length > 2) return false;
+  return parts.every((p, i) => PART.test(p.trim()) || (i === 1 && p.trim() === ""));
+}
+
+export const isPromoSet = (set: { name?: string | null; name_en?: string | null }) =>
+  [set.name, set.name_en].some((n) => !!n && n.toLowerCase().includes("promo"));
+
+/** Gesamtzahl, die das Set aufdruckt (für Vorschlag/Platzhalter), z. B. „132".
+ *  Promo-Sets drucken keine Gesamtzahl. */
+export function setTotal(set: { name?: string | null; name_en?: string | null; card_count_official?: number | null; max_card_nr?: number | null } | null | undefined): string {
+  if (!set || isPromoSet(set)) return "";
+  const n = set.card_count_official ?? set.max_card_nr ?? null;
   return n ? String(n).padStart(3, "0") : "";
 }

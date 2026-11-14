@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from contextvars import ContextVar
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -18,6 +20,31 @@ from app.models.pokemon_set import PokemonSet
 from app.schemas.scan import ScanCandidate, ScanMatch, ScanRawRead
 from app.services import tcgdex
 from app.services.set_sync import PTCGO_TO_SETID
+
+# Live-Scan: dieselben Karten kommen alle ein, zwei Sekunden wieder — deren
+# TCGdex-Daten kurz merken, statt jedes Bild alle Karten neu zu laden. Nur für
+# Live-Bilder (resolve_reads(cached=True)); normale Scans fragen immer frisch.
+_LIVE_CACHE: dict[tuple[str, str], tuple[float, Optional[tcgdex.TcgdexCard]]] = {}
+_LIVE_TTL = 600.0        # s, gefundene Karten
+_LIVE_TTL_MISS = 60.0    # s, nicht gefunden
+_LIVE_MAX = 2000
+_cached: ContextVar[bool] = ContextVar("scan_live_cache", default=False)
+
+
+async def _get_card(card_id: str, lang: str):
+    if not _cached.get():
+        return await tcgdex.get_card(card_id, lang)
+    key, now = (card_id, lang), time.monotonic()
+    hit = _LIVE_CACHE.get(key)
+    if hit and hit[0] > now:
+        return hit[1].model_copy(deep=True) if hit[1] is not None else None
+    card = await tcgdex.get_card(card_id, lang)
+    if len(_LIVE_CACHE) >= _LIVE_MAX:
+        for k in sorted(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])[: _LIVE_MAX // 4]:
+            _LIVE_CACHE.pop(k, None)
+    _LIVE_CACHE[key] = (now + (_LIVE_TTL if card is not None else _LIVE_TTL_MISS), card)
+    return card.model_copy(deep=True) if card is not None else None
+
 
 log = logging.getLogger(__name__)
 
@@ -258,7 +285,7 @@ async def _english_card(tc, lang: str):
     """Liefert die englische Variante (für englischen Namen + Seltenheit)."""
     if lang == "en":
         return tc
-    return await tcgdex.get_card(tc.id, "en")
+    return await _get_card(tc.id, "en")
 
 
 async def _dex_from_results(results: list[dict]) -> tuple[Optional[int], Optional[str]]:
@@ -271,7 +298,7 @@ async def _dex_from_results(results: list[dict]) -> tuple[Optional[int], Optiona
         cid = r.get("id")
         if not cid:
             continue
-        sib = await tcgdex.get_card(cid, "en")
+        sib = await _get_card(cid, "en")
         if sib and sib.dex_id is not None:
             return sib.dex_id, sib.name
     return None, None
@@ -295,9 +322,9 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     # englische Fassung (dieselbe TCGdex-ID).
     via_card_id = False
     if read.tcgdex_card_id:
-        tc = await tcgdex.get_card(read.tcgdex_card_id, tcg_lang)
+        tc = await _get_card(read.tcgdex_card_id, tcg_lang)
         if tc is None and tcg_lang != "en":
-            tc = await tcgdex.get_card(read.tcgdex_card_id, "en")
+            tc = await _get_card(read.tcgdex_card_id, "en")
         if tc is not None:
             via_number = via_card_id = True
             if tc.set and tc.set.id:
@@ -351,7 +378,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         if chosen is None and len(results) == 1:
             chosen = results[0]
         if chosen and chosen.get("id"):
-            tc = await tcgdex.get_card(chosen["id"], tcg_lang)
+            tc = await _get_card(chosen["id"], tcg_lang)
             via_search = True
             if tc and tc.set and tc.set.id:
                 set_id = tc.set.id
@@ -492,7 +519,17 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     )
 
 
-async def resolve_reads(db: Session, reads: list[ScanRawRead], default_lang: str = "DE") -> list[ScanCandidate]:
+async def resolve_reads(db: Session, reads: list[ScanRawRead], default_lang: str = "DE",
+                        cached: bool = False) -> list[ScanCandidate]:
+    """cached: Live-Scan-Bild — TCGdex-Karten aus dem kurzen Zwischenspeicher (_get_card)."""
+    token = _cached.set(cached)
+    try:
+        return await _resolve_reads(db, reads, default_lang)
+    finally:
+        _cached.reset(token)
+
+
+async def _resolve_reads(db: Session, reads: list[ScanRawRead], default_lang: str) -> list[ScanCandidate]:
     candidates: list[ScanCandidate] = []
     for read in reads:
         try:
