@@ -88,6 +88,19 @@ class ScanCandidate(BaseModel):
     # die anderen Drucke stehen zur Wahl, Speichern ist nicht gesperrt.
     print_choice: bool = False
     stamp: Optional[ScanStamp] = None     # nur Bild-Abgleich mit gelernter Stempel-Vorlage
+    # Live-Scan mit Seitenkarte: die Ecken der Karte auf der Karte der Seite
+    # (dem ersten Bild der Sitzung, Anteile 0..1) — so zählt eine Nahaufnahme für ihr Fach.
+    map_quad: Optional[list[list[float]]] = None
+
+
+class ScanLiveMap(BaseModel):
+    """Live-Scan: wo dieses Bild auf der Seitenkarte liegt (matcher/pagemap.py)."""
+    id: str
+    located: bool = False
+    unknown: bool = False                  # Karte weg (abgelaufen, matcher neu gestartet) → von vorn
+    whole: bool = False                    # ganze Seite im Bild (sonst Nahaufnahme)
+    area: Optional[float] = None           # Anteil der Seitenkarte, den das Bild zeigt
+    h: Optional[list[list[float]]] = None  # 3×3, Bild-Anteile → Karten-Anteile
 
 
 class ScanResponse(BaseModel):
@@ -106,6 +119,7 @@ class ScanResponse(BaseModel):
         "tageslimit", "rate_limit", "key_ungueltig", "gemini_fehler", "reader_fehler",
         "bild_abgleich_startet",
     ]] = None
+    live_map: Optional[ScanLiveMap] = None  # nur Live-Scan mit Seitenkarte (Bild-Abgleich)
 
 
 # ── Commit (bestätigte Karten ablegen) ───────────────────────────────────────

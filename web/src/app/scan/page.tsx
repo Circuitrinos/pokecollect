@@ -27,7 +27,7 @@ import { useTiltGrid } from "@/lib/useTiltGrid";
 import { useMotion } from "@/lib/useMotion";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
-  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict,
+  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict, viewQuad,
   type Level, type LiveState, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -462,7 +462,7 @@ export default function ScanPage() {
     setLiveState(next);
     return next;
   };
-  type LiveChip = "hold" | "checking" | "paused" | null;
+  type LiveChip = "hold" | "checking" | "paused" | "lost" | null;
   const [liveChip, setLiveChip] = useState<LiveChip>(null);
   // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
   // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
@@ -581,14 +581,24 @@ export default function ScanPage() {
         if (!photo || stop) continue;
         showChip("checking");
         try {
+          const before = liveRef.current;
           const res = await scanApi.scan(photo, {
             mode, rows: useGrid ? rows : 0, cols: useGrid ? cols : 0, default_language: defaultLang, page,
-            skip: mode === "binder" ? skipPockets(liveRef.current) : undefined, live: true,
+            skip: mode === "binder" ? skipPockets(before) : undefined, live: true,
+            // Seitenkarte: das erste Bild mit Karten wird sie, jedes weitere wird darauf eingeordnet
+            map: mode === "single" ? null : before.mapId ?? "new",
           });
           if (stop) break;
           if (res.data.engine !== "local") { showChip("paused"); await sleep(4000); continue; }
+          const where = res.data.live_map;
+          if (where?.unknown) {       // Seitenkarte weg (matcher neu gestartet): diese Seite von vorn
+            liveFramesRef.current = new Map();
+            commitLive(() => emptyLive());
+            continue;
+          }
+          const next = commitLive((st) => addFrame(st, res.data.candidates, mode, { map: where, cols, rows }));
+          if (next.lost) { showChip("lost"); await sleep(300); continue; }
           showChip(null);
-          const next = commitLive((st) => addFrame(st, res.data.candidates, mode));
           const frames = liveFramesRef.current;
           frames.set(next.frames, photo);
           // behalten: die letzten Bilder und das, das gerade das beste Foto wäre
@@ -1572,7 +1582,8 @@ export default function ScanPage() {
                     const n = counts(liveState);
                     const total = n.green + n.yellow + n.red;
                     const same = allSure(liveState, mode) && signature(liveState) === lastDoneRef.current;
-                    const text = liveChip === "paused" ? t.scan_live_paused : same ? t.scan_live_same
+                    const text = liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
+                      : same ? t.scan_live_same
                       : liveChip === "hold" ? t.scan_live_hold
                       : liveChip === "checking" ? t.scan_live_checking : !total ? t.scan_live_looking : null;
                     return (
@@ -2339,7 +2350,7 @@ function LiveOverlay({ w, h, state, onTap }: { w: number; h: number; state: Live
       {state.tracks.map((tr) => {
         const v = verdict(tr);
         const c = LIVE_COLOURS[v.level];
-        const pts = tr.quad.map(([x, y]) => [x * w, y * h]);
+        const pts = viewQuad(state, tr).map(([x, y]) => [x * w, y * h]);
         const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");

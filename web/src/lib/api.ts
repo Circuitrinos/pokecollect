@@ -903,6 +903,8 @@ export type ScanCandidate = {
   print_choice?: boolean;   // unsicher nur beim Druck (gleichnamige Treffer): bester vorgewählt
   // Play!-Stempel (Prize Pack) auf der erkannten Karte: ok = Hinweis, sure = vorab angehakt
   stamp?: { score: number; quad: number[][]; ok: boolean; sure: boolean } | null;
+  // Live-Scan mit Seitenkarte: Ecken der Karte auf der Seitenkarte (Anteile)
+  map_quad?: number[][] | null;
 };
 
 export type ScanAlternative = {
@@ -924,6 +926,9 @@ export type ScanResponse = {
   limit_erreicht?: boolean;  // ein Limit (Tages- oder Rate-Limit) griff → Server fiel auf OCR zurück
   hinweis?: string | null;
   hinweis_art?: GeminiHinweisArt | null;  // maschinenlesbare Fallback-Ursache (Issue #21)
+  // Live-Scan: wo dieses Bild auf der Seitenkarte liegt
+  live_map?: { id: string; located: boolean; unknown?: boolean; whole?: boolean; area?: number | null;
+    h?: number[][] | null } | null;
 };
 
 export type ScanStatus = {
@@ -1192,7 +1197,7 @@ export const scanApi = {
   models: (provider: string) =>
     api.get<ScanModelList>("/scan/models", { params: { provider } }),
   scan: (file: Blob, opts: { mode: ScanMode; rows?: number; cols?: number; default_language?: string;
-    page?: [number, number][] | null; skip?: number[]; live?: boolean }) => {
+    page?: [number, number][] | null; skip?: number[]; live?: boolean; map?: string | null }) => {
     const form = new FormData();
     form.append("file", file, "scan.jpg");
     form.append("mode", opts.mode);
@@ -1204,6 +1209,7 @@ export const scanApi = {
     // Live-Scan (Mappe): diese Fächer sind schon sicher, der Bild-Abgleich lässt sie aus
     if (opts.skip?.length) form.append("skip", opts.skip.join(","));
     if (opts.live) form.append("live", "1");   // Live-Bild: Kartendaten dürfen kurz aus dem Zwischenspeicher kommen
+    if (opts.live && opts.map) form.append("map", opts.map);   // Seitenkarte: „new" oder ihre ID
     return api.post<ScanResponse>("/scan", form);
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),

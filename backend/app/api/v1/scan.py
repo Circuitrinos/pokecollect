@@ -272,6 +272,12 @@ def _page_corners(page: str) -> str | None:
     return json.dumps(pts)
 
 
+def _map_ref(value: str) -> str | None:
+    """Seitenkarte: „new" oder eine ID des matchers (hex), sonst keine."""
+    v = value.strip()
+    return v if v == "new" or (0 < len(v) <= 64 and all(ch in "0123456789abcdef" for ch in v)) else None
+
+
 def _skip_pockets(skip: str, pockets: int) -> str | None:
     """Fächer für den Bild-Abgleich („0,4,5"): nur gültige Nummern, sortiert, ohne Doppelte."""
     parts = (p.strip() for p in skip[:400].split(","))
@@ -289,6 +295,7 @@ async def scan(
     page: str = Form(""),
     skip: str = Form(""),
     live: bool = Form(False),
+    live_map: str = Form("", alias="map"),
     db: Session = Depends(get_db),
 ):
     """
@@ -305,6 +312,9 @@ async def scan(
       sicher kennt („0,4,5") — der Abgleich lässt sie aus, das Bild ist schneller fertig.
     - live: ein Bild des Live-Scans — die Karten-Daten kommen kurz aus einem
       Zwischenspeicher (dieselben Karten folgen alle paar Sekunden wieder).
+    - map (Live-Scan, Mappe/lose Karten, Bild-Abgleich): „new" macht dieses Bild
+      zur Seitenkarte, eine ID ordnet es darauf ein — auch eine Nahaufnahme weniger
+      Karten; jede Karte bekommt dann ihre Ecken auf der Seitenkarte (map_quad).
     """
     data = await file.read()
     if not data:
@@ -329,13 +339,16 @@ async def scan(
     # die Karte; bei fehlendem Key/hartem Fehler/„ocr" greift die lokale OCR.
     provider, reader_key, reader_model, reader_base = _reader_config(db)
     local_extras: dict[int, local_match.LocalExtra] = {}
+    live_map_info = None
     if provider == "local":
         result = await local_match.extract(
             data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
             page=_page_corners(page) if mode in ("binder", "multi") else None,
-            skip=_skip_pockets(skip, rows * cols) if mode == "binder" else None)
+            skip=_skip_pockets(skip, rows * cols) if mode == "binder" else None,
+            live_map=_map_ref(live_map) if live and mode in ("binder", "multi") else None)
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
+            live_map_info = result.live_map
         else:
             hinweis_art = result.fehler_art
             hinweis = ("Bild-Abgleich startet noch – Erkennung über lokale OCR."
@@ -431,13 +444,14 @@ async def scan(
             c.alternatives = extra.alternatives
             c.needs_choice = extra.needs_choice
             c.stamp = extra.stamp
+            c.map_quad = extra.map_quad
             if extra.needs_choice:  # kein eindeutiger Treffer → ehrliche, niedrige Sicherheit
                 c.confidence = min(c.confidence, extra.confidence)
                 if c.match is not None and _only_the_print_is_open(extra.alternatives):
                     c.needs_choice, c.print_choice = False, True
     return ScanResponse(
         engine=engine, mode=mode, candidates=candidates,
-        limit_erreicht=limit_erreicht, hinweis=hinweis, hinweis_art=hinweis_art,
+        limit_erreicht=limit_erreicht, hinweis=hinweis, hinweis_art=hinweis_art, live_map=live_map_info,
     )
 
 

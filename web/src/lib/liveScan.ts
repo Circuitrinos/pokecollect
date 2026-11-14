@@ -2,9 +2,38 @@
 // scharfes Bild. Jede Karte (Mappe: jedes Fach) sammelt dabei Befunde über
 // mehrere Bilder — grün, sobald sie sicher ist, gelb bei einer wahrscheinlichen
 // Karte, rot ohne brauchbaren Treffer oder bei widersprüchlichen Bildern.
+// Mappe und lose Karten: das erste Bild mit Karten wird die Seitenkarte; jedes
+// weitere Bild — auch eine Nahaufnahme weniger Karten — ordnet der Bild-Abgleich
+// darauf ein (matcher/pagemap.py), so zählt eine Nahaufnahme für ihr Fach.
+// Alle Umrisse der Karten liegen in Anteilen dieser Seitenkarte vor.
 // Reine Logik ohne React/DOM, damit sie sich für sich prüfen lässt.
 
 import type { ScanAlternative, ScanCandidate, ScanMode } from "./api";
+
+export type Mat3 = number[][];
+/** Wo ein Bild auf der Seitenkarte liegt (Antwort des Bild-Abgleichs). */
+export type LiveMapInfo = { id: string; located: boolean; unknown?: boolean; whole?: boolean; area?: number | null; h?: Mat3 | null };
+
+const IDENTITY: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+export function invert3(m: Mat3): Mat3 | null {
+  const [[a, b, c], [d, e, f], [g, h, i]] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (!det || !Number.isFinite(det)) return null;
+  return [
+    [A / det, -(b * i - c * h) / det, (b * f - c * e) / det],
+    [B / det, (a * i - c * g) / det, -(a * f - c * d) / det],
+    [C / det, -(a * h - b * g) / det, (a * e - b * d) / det],
+  ];
+}
+
+export function applyH(m: Mat3, q: number[][]): number[][] {
+  return q.map(([x, y]) => {
+    const w = m[2][0] * x + m[2][1] * y + m[2][2];
+    return [(m[0][0] * x + m[0][1] * y + m[0][2]) / w, (m[1][0] * x + m[1][1] * y + m[1][2]) / w];
+  });
+}
 
 export type Level = "red" | "yellow" | "green";
 /** Warum die Farbe so ist (für den Hinweis am Rahmen). */
@@ -18,7 +47,9 @@ export type LiveObs = {
   close: boolean;           // wahrscheinliche Karte, aber nicht sicher
   art: number;              // Artwork-Treffer des besten Kandidaten
   rival: number;            // … und des besten anderen
-  quad: number[][] | null;  // Umriss im Bild (Anteile)
+  quad: number[][] | null;  // Umriss auf der Seitenkarte (Anteile)
+  vq: number[][] | null;    // Umriss in diesem Bild
+  zoom: number;             // wie nah: 1 = ganze Seite, 2 = doppelt so groß
   cand: ScanCandidate;
 };
 
@@ -36,25 +67,29 @@ export type LiveState = {
   tracks: LiveTrack[];
   lastNew: number;          // Bild, in dem zuletzt eine neue Karte auftauchte
   seq: number;
+  mapId: string | null;     // Seitenkarte beim Bild-Abgleich
+  view: Mat3 | null;        // letztes Bild → Seitenkarte (für die Rahmen im Kamerabild)
+  frameH: Record<number, Mat3>;   // je geprüftem Bild: Bild → Seitenkarte
+  lost: number;             // so viele Bilder hintereinander nicht auf der Seitenkarte gefunden
 };
 
 export type Verdict = { level: Level; why: Why; id: string | null; cand: ScanCandidate | null };
 
-export const emptyLive = (): LiveState => ({ frames: 0, tracks: [], lastNew: 0, seq: 0 });
+export const emptyLive = (): LiveState => ({ frames: 0, tracks: [], lastNew: 0, seq: 0, mapId: null, view: null, frameH: {}, lost: 0 });
 
 const CLOSE_CONF = 0.4;     // „close" liefert 0.45, „weak" 0.25 (matcher/decide)
 const AGREE_MIN_ART = 20;   // mehrere unsichere Bilder zusammen: so viele Artwork-Treffer …
 const AGREE_LEAD = 1.6;     // … und so viel Vorsprung vor dem besten anderen
 const MAX_KEEP_OBS = 12;    // je Karte die letzten Befunde
 const DROP_AFTER = 3;       // einmal gesehen, nicht sicher, seit so vielen Bildern weg → Fehlfund
+const CLOSE_ZOOM = 1.5;     // ab hier eine Nahaufnahme: ihr sicherer Befund zählt doppelt
 
 const centre = (q: number[][]): [number, number] =>
   [q.reduce((a, p) => a + p[0], 0) / q.length, q.reduce((a, p) => a + p[1], 0) / q.length];
 
-const size = (q: number[][]): number => {
-  const xs = q.map((p) => p[0]), ys = q.map((p) => p[1]);
-  return (Math.max(...xs) - Math.min(...xs) + Math.max(...ys) - Math.min(...ys)) / 2;
-};
+const width = (q: number[][]): number => Math.max(...q.map((p) => p[0])) - Math.min(...q.map((p) => p[0]));
+const height = (q: number[][]): number => Math.max(...q.map((p) => p[1])) - Math.min(...q.map((p) => p[1]));
+const size = (q: number[][]): number => (width(q) + height(q)) / 2;
 
 export function bboxOf(q: number[][]): number[] {
   const xs = q.map((p) => p[0]), ys = q.map((p) => p[1]);
@@ -68,7 +103,7 @@ const quadOf = (c: ScanCandidate): number[][] | null => {
   return b?.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null;
 };
 
-export function obsOf(c: ScanCandidate, frame: number): LiveObs {
+export function obsOf(c: ScanCandidate, frame: number, h: Mat3 | null = null, zoom = 1): LiveObs {
   const id = c.match?.tcgdex_card_id ?? c.raw?.tcgdex_card_id ?? null;
   const alts: ScanAlternative[] = c.alternatives ?? [];
   const mine = alts.find((a) => a.tcgdex_card_id === id) ?? alts[0];
@@ -77,16 +112,47 @@ export function obsOf(c: ScanCandidate, frame: number): LiveObs {
   const sure = !!id && !c.needs_choice && !c.print_choice;
   const printOpen = !!id && !c.needs_choice && !!c.print_choice;
   const close = !!id && !sure && !printOpen && (c.confidence ?? 0) >= CLOSE_CONF;
-  return { frame, id, sure, printOpen, close, art, rival, quad: quadOf(c), cand: c };
+  const vq = quadOf(c);
+  const quad = c.map_quad?.length === 4 ? c.map_quad : vq && h ? applyH(h, vq) : vq;
+  return { frame, id, sure, printOpen, close, art, rival, quad, vq, zoom, cand: c };
 }
 
-/** Befunde eines geprüften Bilds den Karten zuordnen (Mappe: nach Fach, sonst nach Lage). */
-export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMode): LiveState {
+/** Fach unter einem Punkt der Seitenkarte, geschätzt aus den Fächern, die schon bekannt sind. */
+export function estimatePocket(tracks: LiveTrack[], pt: [number, number], cols: number, rows: number): number | null {
+  const known = tracks.filter((t) => t.position != null);
+  if (!known.length || cols < 1 || rows < 1) return null;
+  const fit = (pts: { i: number; v: number }[], pitch: number): { a: number; b: number } => {
+    const n = pts.length, mi = pts.reduce((s, p) => s + p.i, 0) / n, mv = pts.reduce((s, p) => s + p.v, 0) / n;
+    const vi = pts.reduce((s, p) => s + (p.i - mi) ** 2, 0);
+    const b = vi > 0 ? pts.reduce((s, p) => s + (p.i - mi) * (p.v - mv), 0) / vi : pitch;
+    return { a: mv - b * mi, b };
+  };
+  const xs = known.map((t) => ({ i: (t.position as number) % cols, v: centre(t.quad)[0] }));
+  const ys = known.map((t) => ({ i: Math.floor((t.position as number) / cols), v: centre(t.quad)[1] }));
+  const w = known.reduce((s, t) => s + width(t.quad), 0) / known.length;
+  const h = known.reduce((s, t) => s + height(t.quad), 0) / known.length;
+  const fx = fit(xs, w * 1.08), fy = fit(ys, h * 1.06);
+  if (!fx.b || !fy.b) return null;
+  const col = Math.round((pt[0] - fx.a) / fx.b), row = Math.round((pt[1] - fy.a) / fy.b);
+  return col >= 0 && col < cols && row >= 0 && row < rows ? row * cols + col : null;
+}
+
+export type FrameOpts = { map?: LiveMapInfo | null; cols?: number; rows?: number };
+
+/**
+ * Befunde eines geprüften Bilds den Karten zuordnen (Mappe: nach Fach, sonst nach
+ * Lage auf der Seitenkarte). Ein Bild, das nicht auf der Seitenkarte liegt, zählt nicht.
+ */
+export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMode, opts: FrameOpts = {}): LiveState {
+  const map = mode === "single" ? null : opts.map ?? null;
+  if (map && state.mapId && map.id === state.mapId && !map.located) return { ...state, lost: state.lost + 1 };
   const frame = state.frames + 1;
+  const h = map?.located && map.h ? map.h : IDENTITY;
+  const zoom = map?.located && map.area ? Math.max(1, 1 / Math.sqrt(map.area)) : 1;
   let seq = state.seq;
   let lastNew = state.lastNew;
   const tracks = state.tracks.map((t) => ({ ...t }));
-  const obs = (mode === "single" ? cands.slice(0, 1) : cands).map((c) => obsOf(c, frame)).filter((o) => o.quad);
+  const obs = (mode === "single" ? cands.slice(0, 1) : cands).map((c) => obsOf(c, frame, h, zoom)).filter((o) => o.quad);
   const add = (t: LiveTrack, o: LiveObs) => {
     t.obs = [...t.obs, o].slice(-MAX_KEEP_OBS);
     t.quad = o.quad!;
@@ -108,8 +174,9 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
       loose.push(o);
     }
   }
-  // Lose Karten: nächster Umriss, solange die Mitte weniger als eine halbe Karte daneben liegt
-  const free = tracks.filter((t) => t.position == null && t.seen !== frame);
+  // Lose Karten und Nahaufnahmen: nächster Umriss auf der Seitenkarte, solange die
+  // Mitte weniger als eine halbe Karte daneben liegt (Mappe: auch Fächer mit Nummer)
+  const free = tracks.filter((t) => (mode === "binder" || t.position == null) && t.seen !== frame);
   const pairs: { o: LiveObs; t: LiveTrack; d: number }[] = [];
   for (const o of loose) {
     const [x, y] = centre(o.quad!);
@@ -126,18 +193,39 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
     usedO.add(o); usedT.add(t);
     add(t, o);
   }
-  for (const o of loose) if (!usedO.has(o)) fresh(o, null);
+  for (const o of loose) {
+    if (usedO.has(o)) continue;
+    // Mappe: Nahaufnahme einer Karte, die noch keinen Rahmen hat → Fach aus dem Raster schätzen
+    const pos = mode === "binder" ? estimatePocket(tracks, centre(o.quad!), opts.cols ?? 0, opts.rows ?? 0) : null;
+    const t = pos != null ? tracks.find((x) => x.position === pos && x.seen !== frame) : undefined;
+    if (t) add(t, o); else fresh(o, pos);
+  }
   // Fehlfunde (ein einziges Mal gesehen, nicht sicher, seitdem weg) fallen wieder heraus
   const kept = tracks.filter((t) => t.picked || t.obs.length > 1 || frame - t.seen < DROP_AFTER
     || verdict(t).level === "green");
-  return { frames: frame, tracks: kept, lastNew, seq };
+  return {
+    frames: frame, tracks: kept, lastNew, seq,
+    mapId: map?.located ? map.id : state.mapId,
+    view: h, frameH: { ...state.frameH, [frame]: h }, lost: 0,
+  };
+}
+
+/** Rahmen einer Karte im aktuellen Kamerabild (von der Seitenkarte zurückgerechnet). */
+export function viewQuad(state: LiveState, t: LiveTrack): number[][] {
+  if (t.seen === state.frames) {
+    const o = t.obs.find((x) => x.frame === t.seen);
+    if (o?.vq) return o.vq;
+  }
+  const inv = state.view ? invert3(state.view) : null;
+  return inv ? applyH(inv, t.quad) : t.quad;
 }
 
 const latest = (list: LiveObs[]) => list.reduce<LiveObs | null>((a, o) => (!a || o.frame >= a.frame ? o : a), null);
 
-function votes(list: LiveObs[]): [string, number][] {
+/** Stimmen je Karte; weighted: eine sichere Nahaufnahme zählt doppelt. */
+function votes(list: LiveObs[], weighted = false): [string, number][] {
   const m = new Map<string, number>();
-  for (const o of list) if (o.id) m.set(o.id, (m.get(o.id) ?? 0) + 1);
+  for (const o of list) if (o.id) m.set(o.id, (m.get(o.id) ?? 0) + (weighted && o.zoom >= CLOSE_ZOOM ? 2 : 1));
   return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
 }
 
@@ -146,7 +234,7 @@ export function verdict(t: LiveTrack): Verdict {
   if (t.picked) return { level: "green", why: "picked", id: t.picked.id, cand: t.picked.cand };
   const sure = t.obs.filter((o) => o.sure);
   if (sure.length) {
-    const v = votes(sure);
+    const v = votes(sure, true);
     const [id, n] = v[0];
     const second = v[1]?.[1] ?? 0;
     const cand = latest(sure.filter((o) => o.id === id))!.cand;
@@ -241,7 +329,9 @@ export function finish(state: LiveState, frames: number[]): { frame: number | nu
     const v = verdicts.get(t.key)!;
     const last = latest(t.obs)!;
     const inBase = base != null ? t.obs.find((o) => o.frame === base) ?? null : null;
-    const quad = inBase?.quad ?? t.quad;
+    // Umriss in genau diesem Foto: dort gesehen, sonst von der Seitenkarte hineingerechnet
+    const toBase = base != null && state.frameH[base] ? invert3(state.frameH[base]) : null;
+    const quad = inBase?.vq ?? (toBase ? applyH(toBase, t.quad) : t.quad);
     const from = v.cand && !t.picked ? v.cand : last.cand;
     let cand: ScanCandidate = {
       ...from,

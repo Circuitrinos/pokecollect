@@ -203,6 +203,43 @@ def test_live_scan_laesst_sichere_faecher_aus(client, provider_local, png_bytes,
     assert b'name="skip"' not in seen[-1]
 
 
+def test_live_scan_seitenkarte(client, provider_local, png_bytes, monkeypatch):
+    """Live-Scan: „new" legt die Seitenkarte an, eine ID ordnet das Bild ein — map_quad je Karte kommt durch."""
+    seen: list[bytes] = []
+    reply: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.content)
+        return httpx.Response(200, json=reply)
+    monkeypatch.setattr(local_match, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    def post(mode="binder", **data):
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                        data={"mode": mode, "rows": "3", "cols": "3", **data})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    q = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]
+    reply.update({"mode": "binder", "ms": 5, "cards": [{
+        "position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "map_quad": q, "auto": True,
+        "confidence": 0.95, "candidates": [{"card_id": "sv03-125", "name": "Charizard ex", "local_id": "125"}]}],
+        "map": {"id": "ab12cd", "located": True, "whole": False, "area": 0.08, "inliers": 72,
+                "h": [[0.33, 0, 0.36], [0, 0.24, 0.38], [0, 0, 1]]}})
+    body = post(live="1", map="new")
+    assert b'name="map"\r\n\r\nnew\r\n' in seen[-1]
+    assert body["live_map"]["id"] == "ab12cd" and body["live_map"]["whole"] is False
+    assert body["candidates"][0]["map_quad"] == q
+    post(live="1", map="ab12cd")
+    assert b'name="map"\r\n\r\nab12cd\r\n' in seen[-1]
+    for extra in ({"map": "ab12cd"}, {"live": "1", "map": "../etc"}):   # ohne live / keine gültige ID
+        post(**extra)
+        assert b'name="map"' not in seen[-1]
+    post("single", live="1", map="new")                                  # eine Karte braucht keine Seitenkarte
+    assert b'name="map"' not in seen[-1]
+    reply["map"] = {"located": True}                                     # kaputt → einfach keine Angabe
+    assert post(live="1", map="ab12cd")["live_map"] is None
+
+
 def test_live_bild_ohne_bild_abgleich_ohne_ocr(client, provider_local, png_bytes, monkeypatch):
     """Live-Bild, matcher lädt noch: keine OCR je Bild, nur der Hinweis — die App wartet."""
     provider_local(503, {"detail": "matcher not ready: loading"})

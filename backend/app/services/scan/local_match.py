@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 
-from app.schemas.scan import ScanAlternative, ScanRawRead, ScanStamp
+from app.schemas.scan import ScanAlternative, ScanLiveMap, ScanRawRead, ScanStamp
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class LocalExtra:
     needs_choice: bool = False
     confidence: float = 0.0
     stamp: Optional[ScanStamp] = None
+    map_quad: Optional[list[list[float]]] = None
 
 
 @dataclass
@@ -38,6 +39,7 @@ class LocalResult:
     reads: Optional[list[ScanRawRead]] = None
     extras: dict[int, LocalExtra] = field(default_factory=dict)  # id(read) -> extra
     fehler_art: Optional[str] = None
+    live_map: Optional[ScanLiveMap] = None
 
 
 def _client() -> httpx.AsyncClient:
@@ -111,14 +113,35 @@ def _stamp(raw) -> Optional[ScanStamp]:
         return None
 
 
+def _quad(raw) -> Optional[list[list[float]]]:
+    """Vier Ecken [[x, y], …] als Anteile, sonst None."""
+    try:
+        q = [[float(p[0]), float(p[1])] for p in raw]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    return q if len(q) == 4 and all(abs(v) < 10 for p in q for v in p) else None
+
+
+def _live_map(raw) -> Optional[ScanLiveMap]:
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+        return None
+    try:
+        return ScanLiveMap.model_validate(raw)
+    except ValueError:
+        return None
+
+
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
-                  rows: int = 0, cols: int = 0, page: str | None = None, skip: str | None = None) -> LocalResult:
+                  rows: int = 0, cols: int = 0, page: str | None = None, skip: str | None = None,
+                  live_map: str | None = None) -> LocalResult:
     t0 = time.perf_counter()
     form = {"mode": mode, "rows": str(rows), "cols": str(cols), "top_k": "5"}
     if page:   # Mappenseite schräg fotografiert: ihre Ecken (ältere Matcher ignorieren das Feld)
         form["page"] = page
     if skip:   # Live-Scan: diese Fächer sind schon sicher (ältere Matcher gleichen sie trotzdem ab)
         form["skip"] = skip
+    if live_map:   # Live-Scan: Seitenkarte anlegen („new") bzw. das Bild darauf einordnen
+        form["map"] = live_map
     try:
         async with _client() as client:
             r = await client.post(
@@ -165,5 +188,6 @@ async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: st
             needs_choice=not card.get("auto", False),
             confidence=float(card.get("confidence") or 0.0),
             stamp=_stamp(card.get("stamp")),
+            map_quad=_quad(card.get("map_quad")) if card.get("map_quad") else None,
         )
-    return LocalResult(reads=reads, extras=extras)
+    return LocalResult(reads=reads, extras=extras, live_map=_live_map(body.get("map")))

@@ -1,7 +1,7 @@
 """
 PokéCollect card matcher — identifies cards by artwork.
 
-POST /match   photo (+ mode, rows, cols, page, skip) -> per detected card: corners,
+POST /match   photo (+ mode, rows, cols, page, skip, map) -> per detected card: corners,
               top candidates (TCGdex ids), and whether the choice is clean
 POST /verify  saved scan photo + its card id (+ original, corners) -> how well
               it fits the card's catalog images, and better corners
@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 import json
 
-from . import detect, embedding, foil, frame, learn, matcher, numocr, recrop, stamp, timing
+from . import detect, embedding, foil, frame, learn, matcher, numocr, pagemap, recrop, stamp, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -820,7 +820,7 @@ def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> 
 @app.post("/match")
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
                 rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form(""),
-                skip: str = Form("")) -> dict:
+                skip: str = Form(""), map_req: str = Form("", alias="map")) -> dict:
     """
     page (binder and multi mode, optional): the grid's four corners in the
     photo, JSON [[x, y], …] as fractions of width/height, top left first,
@@ -829,6 +829,11 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     then split into pockets (rows × cols), loose cards are found anywhere.
     skip (binder mode, optional): pockets to leave out, "0,4,5" — the live
     scan already knows them, so a frame only spends time on the rest.
+    map (binder and multi mode, optional, live scan): "new" keeps this frame as
+    the page map (pagemap.py) when it shows cards → "map": {"id": …}; an id
+    places this frame on that map — also a close-up of a few cards — and gives
+    every card its corners on the map ("map_quad"). A close-up is searched like
+    loose cards (no pockets in view); a frame that can't be placed gets no cards.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
@@ -837,9 +842,11 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
         raise HTTPException(400, "empty or oversized image")
     corners = _page_corners(page) if mode in ("binder", "multi") else None
     skipped = _skip_pockets(skip, rows * cols) if mode == "binder" else frozenset()
+    map_req = map_req.strip()[:64] if mode in ("binder", "multi") else ""
     # The work is CPU-bound: run it in a worker thread so /health keeps
     # answering (the backend's status check has a 2 s timeout).
-    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners, skipped)
+    return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners, skipped,
+                                   map_req)
 
 
 def _skip_pockets(skip: str, pockets: int) -> frozenset[int]:
@@ -872,20 +879,24 @@ def _page_corners(page: str) -> np.ndarray | None:
 
 
 def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
-                   skip: frozenset[int] = frozenset()) -> dict:
+                   skip: frozenset[int] = frozenset(), map_req: str = "") -> dict:
     t0 = time.perf_counter()
     with _match_lock:
         queued = time.perf_counter() - t0
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(400, "unreadable image")
-        res = _run_match(img, mode, rows, cols, top_k, page, skip)
+        res = (_match_on_map(img, mode, rows, cols, top_k, page, skip, map_req) if map_req
+               else _run_match(img, mode, rows, cols, top_k, page, skip))
         state["matches"] += 1
     if queued >= 0.05:
         res["timing"]["queued"] = round(queued * 1000)
-    log.info("match %s %dx%d: %d card(s) in %d ms %s%s%s", mode, img.shape[1], img.shape[0],
+    where = res.get("map") or {}
+    log.info("match %s %dx%d: %d card(s) in %d ms %s%s%s%s", mode, img.shape[1], img.shape[0],
              len(res["cards"]), res["ms"], res["timing"],
              f" ({len(skip)} pocket(s) skipped)" if skip else "",
+             (" (close-up on the page map)" if where.get("located") and not where.get("whole")
+              else " (not on the page map)" if map_req and not where.get("located") else ""),
              " (first since start)" if state["matches"] == 1 else "")
     return res
 
@@ -1083,6 +1094,42 @@ def _multi_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int,
     back = np.linalg.inv(Hv)
     return [_result(d, cv2.perspectiveTransform(np.float32(oq).reshape(-1, 1, 2), back).reshape(-1, 2), img, None)
             for d, oq in _multi_cards(view, top_k)]
+
+
+_IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None,
+                  skip: frozenset[int], map_req: str) -> dict:
+    """Live scan with a page map (see /match): keep the map, or place the frame on it first."""
+    if map_req == "new":
+        res = _run_match(img, mode, rows, cols, top_k, page, skip)
+        map_id = pagemap.store(img) if res["cards"] else None
+        if map_id:
+            res["map"] = {"id": map_id, "located": True, "whole": True, "area": 1.0, "h": _IDENTITY}
+            for c in res["cards"]:
+                c["map_quad"] = c["quad"]
+        return res
+    m = pagemap.get(map_req)
+    if m is None:       # expired or the matcher restarted: the app starts the page over
+        return {"mode": mode, "cards": [], "ms": 0, "timing": {}, "map": {"id": map_req, "located": False, "unknown": True}}
+    t0 = time.perf_counter()
+    loc = pagemap.locate(img, m)
+    t_loc = time.perf_counter() - t0
+    if loc is None:
+        return {"mode": mode, "cards": [], "ms": round(t_loc * 1000), "timing": {"locate": round(t_loc * 1000)},
+                "map": {"id": map_req, "located": False}}
+    if loc.whole:       # the whole page (or table) in view: as usual
+        res = _run_match(img, mode, rows, cols, top_k, page, skip)
+    else:               # close-up: cards anywhere in the frame, no pockets
+        res = _run_match(img, "multi", 0, 0, top_k, None)
+    res["ms"] += round(t_loc * 1000)
+    res["timing"]["locate"] = round(t_loc * 1000)
+    for c in res["cards"]:
+        c["map_quad"] = pagemap.project(c["quad"], loc.h)
+    res["map"] = {"id": map_req, "located": True, "whole": loc.whole, "area": round(loc.area, 4),
+                  "inliers": loc.inliers, "h": [[round(float(v), 6) for v in row] for row in loc.h]}
+    return res
 
 
 def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
