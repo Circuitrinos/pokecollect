@@ -1,7 +1,8 @@
 # Build PokéCollect images on every push to the `english` branch and publish
 # them to GitHub Container Registry:
-#   ghcr.io/<owner>/pokecollect-{api,web,matcher}:latest     (moves with the branch)
-#   ghcr.io/<owner>/pokecollect-{api,web,matcher}:sha-<sha>  (fixed, for rollbacks)
+#   ghcr.io/<owner>/pokecollect-{api,web,matcher,trainer}:latest     (moves with the branch)
+#   ghcr.io/<owner>/pokecollect-{api,web,matcher,trainer}:sha-<sha>  (fixed, for rollbacks)
+# trainer = the matcher's code + CPU PyTorch for the optional nightly student training.
 # Save as .github/workflows/images.yml in the fork.
 name: images
 
@@ -35,6 +36,9 @@ jobs:
             context: web
           - name: matcher
             context: matcher
+          - name: trainer
+            context: matcher
+            file: matcher/Dockerfile.trainer
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +56,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file || format('{0}/Dockerfile', matrix.context) }}
           platforms: linux/amd64
           push: true
           tags: |

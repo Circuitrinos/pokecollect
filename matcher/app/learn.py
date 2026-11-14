@@ -11,7 +11,10 @@ their card:
   - a DINOv2 embedding, so the shortlist finds the card even when the catalog
     image looks different from the physical card.
 
-Nothing is trained; the photos are simply indexed next to the catalog images.
+Nothing is trained here; the photos are simply indexed next to the catalog
+images. Each cached embedding records which model made it (the DINOv2 teacher
+or a student, embedding.py): when the photo model changes, the photos are
+embedded again on the next sync (downloaded again, ~1-2 minutes for a thousand).
 Photos are fetched from the api's /images route (same compose network).
 Per-photo features are cached in DATA_DIR/learned/, so a restart doesn't
 re-download anything, and a card whose id changes or that is deleted drops out
@@ -35,6 +38,7 @@ import psycopg2
 
 from . import features
 from .catalog import CatalogCard
+from .embedding import TEACHER_ID
 from .store import Store, load_segment, save_segment
 
 log = logging.getLogger(__name__)
@@ -67,13 +71,19 @@ class Learner:
         self.store, self.shortlist, self.database_url = store, shortlist, database_url
         self._wake = threading.Event()
         self._lock = threading.Lock()
+        self._stale: set[str] = set()       # cached photos embedded by another model than the photo model now
         self.status = {"enabled": LEARN, "photos": 0, "cards": 0, "added": 0, "removed": 0,
-                       "failed": 0, "last_sync": None, "error": None}
+                       "failed": 0, "last_sync": None, "error": None, "stale": 0}
 
     # ── public ───────────────────────────────────────────────────────────────
     def poke(self) -> None:
         """New scan photo saved: sync soon instead of at the next interval."""
         self._wake.set()
+
+    def model_changed(self, catalog: dict[str, CatalogCard]) -> None:
+        """The photo model was swapped: use only photos it embedded, the rest again soon."""
+        with self._lock:
+            self._publish(catalog)
 
     def load_cached(self, catalog: dict[str, CatalogCard]) -> None:
         """At startup: index what earlier syncs cached, without any network."""
@@ -114,18 +124,27 @@ class Learner:
                     p.unlink(missing_ok=True)
                     removed += 1
             todo = [(k, v) for k, v in want.items() if k not in have]
+            again = [(k, want[k]) for k in sorted(self._stale) if k in want and k in have]
             added = failed = 0
+            if again:
+                log.info("Embedding %d learned scan photo(s) again for the photo model %s",
+                         len(again), self.shortlist.query_id)
             if todo:
                 log.info("Learning from %d new scan photo(s)", len(todo))
+            todo += again
+            redo, redone = {k for k, _ in again}, 0
+            if todo:
                 with httpx.Client(timeout=20) as http:
                     for k, (row_id, card_id, path) in todo:
-                        if self._learn_one(http, k, row_id, card_id, path):
-                            added += 1
-                        else:
+                        if not self._learn_one(http, k, row_id, card_id, path):
                             failed += 1
+                        elif k in redo:
+                            redone += 1
+                        else:
+                            added += 1
             self.status.update(added=self.status["added"] + added, removed=self.status["removed"] + removed,
                                failed=failed, last_sync=datetime.now(timezone.utc).isoformat(), error=None)
-            if added or removed or self.store_missing():
+            if added or removed or redone or self.store_missing():
                 self._publish(catalog)
 
     def _drop_changed(self, have: dict[str, Path], want: dict) -> dict[str, Path]:
@@ -168,27 +187,32 @@ class Learner:
         f = features.extract(img) if img is not None else None
         if f is None:
             return False
-        emb = np.zeros(0, np.float16)
+        emb, model = np.zeros(0, np.float16), None
         if self.shortlist.engine is not None:
-            emb = self.shortlist.photo_embedding(img).astype(np.float16)
+            vec, model = self.shortlist.photo_embedding(img)
+            emb = vec.astype(np.float16)
         h, w = img.shape[:2]
         tmp = LEARN_DIR / f"{key}.tmp.npz"
         np.savez(tmp, des=f.des, kp=f.kp_xy, phash=np.uint64(f.phash), hist=f.hist, emb=emb,
                  meta=json.dumps({"source": "scan", "card_id": card_id, "row": row_id, "w": w, "h": h,
-                                  "etag": r.headers.get("etag")}))
+                                  "etag": r.headers.get("etag"), "emb_model": model}))
         tmp.replace(LEARN_DIR / f"{key}.npz")
         return True
 
     def _publish(self, catalog: dict[str, CatalogCard]) -> None:
         """Rebuild the learned segment + embeddings from the cache and swap them in."""
         feats, metas, ids, vecs = [], [], [], []
+        model = self.shortlist.query_id
+        stale: set[str] = set()
         for p in sorted(LEARN_DIR.glob("r*.npz")):
             try:
                 with np.load(p) as z:
                     meta = json.loads(str(z["meta"]))
                     feats.append(features.Features(kp_xy=z["kp"], des=z["des"], phash=int(z["phash"]),
                                                    hist=z["hist"]))
-                    if z["emb"].size:
+                    if self.shortlist.engine is not None and (meta.get("emb_model") or TEACHER_ID) != model:
+                        stale.add(p.stem)            # embedded by another model: again on the next sync
+                    elif z["emb"].size:
                         ids.append(meta["card_id"])
                         vecs.append(z["emb"].astype(np.float32))
                 metas.append(meta)
@@ -204,7 +228,10 @@ class Learner:
         else:
             self.store.replace(SEGMENT, None)
         mat = np.stack(vecs) if vecs else np.zeros((0, 0), np.float32)
-        self.shortlist.set_learned(ids, mat)
-        self.status.update(photos=len(feats), cards=len({m["card_id"] for m in metas}))
+        self.shortlist.set_learned(ids, mat, model)
+        before, self._stale = self._stale, stale
+        self.status.update(photos=len(feats), cards=len({m["card_id"] for m in metas}), stale=len(stale))
+        if stale and stale != before:
+            self.poke()                          # embed them again soon (not again and again if a download fails)
         if feats:
             log.info("Learned references: %d scan photo(s) of %d card(s)", len(feats), self.status["cards"])

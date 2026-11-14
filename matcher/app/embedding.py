@@ -22,8 +22,19 @@ nearest scan photos of other cards). Measured with embed_experiment on 914
 scan crops: top-1 72 % -> 92 %, true card in the shortlist 98.1 % -> 99.7 %;
 on 783 detector crops 74 % -> 90 % and 96.2 % -> 98.9 %.
 
+Photo queries (EMBED_QUERY_MODEL, default /data/student.onnx when present): a
+small student network (tools/distill_student.py) taught to map a card photo
+straight to DINOv2's vector of that card's catalog image. It replaces the
+teacher only for photos — scan queries and the learned scan photos — so the
+catalog index stays the teacher's. ~6× less CPU per photo; the domain
+correction stays off for it (it learned the photo look itself; on the check
+it made the student slightly worse). The file is watched: a new student
+(the nightly trainer, or a copy) is swapped in without a restart, and the
+learned photos are embedded again for it in the background.
+
 Files in DATA_DIR (/data):
   dinov2_vits14_cls.onnx  the model (export_matcher.py on a PC with PyTorch)
+  student.onnx            optional photo model (tools/distill_student.py)
   dinov2_catalog.npz      catalog embeddings computed on that PC (optional
                           bootstrap; read once, then merged into emb/)
   emb/catalog_emb.npz     the matcher's own copy, extended in the background
@@ -31,6 +42,7 @@ Files in DATA_DIR (/data):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -64,6 +76,9 @@ DOMAIN_MIN_PHOTOS = int(os.getenv("EMBED_DOMAIN_MIN_PHOTOS", "50"))
 HUB_K = int(os.getenv("EMBED_HUB_K", "10"))
 MIN_COVERAGE = float(os.getenv("EMBED_MIN_COVERAGE", "0.98"))
 THREADS = int(os.getenv("EMBED_THREADS", "0"))        # 0 = onnxruntime default
+QUERY_MODEL_PATH = Path(os.getenv("EMBED_QUERY_MODEL", str(DATA_DIR / "student.onnx")))
+QUERY_DOMAIN = os.getenv("EMBED_QUERY_DOMAIN", "0") == "1"   # domain correction for the student too
+TEACHER_ID = "teacher"                                    # learned photos embedded by the teacher
 IN_W, IN_H = 224, 308
 PAD = 12                                              # detect.warp's white border
 BACKFILL_CHUNK = 64
@@ -82,27 +97,32 @@ def autolevel(img: np.ndarray) -> np.ndarray:
     return np.dstack([cv2.LUT(img[..., c], lut[:, c].astype(np.uint8)) for c in range(3)])
 
 
-def prep(img: np.ndarray) -> np.ndarray:
-    """BGR image -> (3, 308, 224) float32 RGB in [0,1]; the model normalises itself."""
-    x = cv2.cvtColor(cv2.resize(img, (IN_W, IN_H), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
+def prep(img: np.ndarray, size: tuple[int, int] = (IN_W, IN_H)) -> np.ndarray:
+    """BGR image -> (3, h, w) float32 RGB in [0,1] (default 308×224); the model normalises itself."""
+    x = cv2.cvtColor(cv2.resize(img, size, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
     return np.ascontiguousarray(x.transpose(2, 0, 1), dtype=np.float32) / 255.0
 
 
 # ── model ────────────────────────────────────────────────────────────────────
 
 class Engine:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, ident: str = TEACHER_ID):
         import onnxruntime as ort
         so = ort.SessionOptions()
         if THREADS > 0:
             so.intra_op_num_threads = THREADS
         self.sess = ort.InferenceSession(str(path), sess_options=so, providers=["CPUExecutionProvider"])
-        self.input = self.sess.get_inputs()[0].name
+        inp = self.sess.get_inputs()[0]
+        self.input = inp.name
+        hw = inp.shape[2:]                  # fixed (h, w) from the export; else the teacher's size
+        self.size = (int(hw[1]), int(hw[0])) if len(hw) == 2 and all(isinstance(v, int) for v in hw) \
+            else (IN_W, IN_H)
+        self.ident = ident
         self._lock = threading.Lock()       # one inference at a time; it uses all cores anyway
-        self.dim = int(self.embed([np.zeros((IN_H, IN_W, 3), np.uint8)]).shape[1])
+        self.dim = int(self.embed([np.zeros((self.size[1], self.size[0], 3), np.uint8)]).shape[1])
 
     def embed(self, imgs: list[np.ndarray]) -> np.ndarray:
-        x = np.stack([prep(i) for i in imgs])
+        x = np.stack([prep(i, self.size) for i in imgs])
         t = time.perf_counter()
         with self._lock:
             timing.add("embed_wait", time.perf_counter() - t)   # e.g. behind a backfill batch
@@ -219,21 +239,43 @@ class EmbIndex:
 
 # ── service ──────────────────────────────────────────────────────────────────
 
+def file_stamp(path: Path) -> tuple[float, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime, st.st_size)
+
+
+def file_ident(path: Path) -> str:
+    """Short content hash: names the model the learned photos were embedded with."""
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return "student-" + h.hexdigest()[:12]
+
+
 class Shortlist:
     """The model + index + background backfill, as one object for main.py."""
 
     def __init__(self) -> None:
         self.engine: Engine | None = None
+        self.query_engine: Engine | None = None     # the student for photos (None: the teacher does it)
+        self._q_seen: tuple[float, int] | None = None
+        self._q_pending: tuple[float, int] | None = None
         self.index = EmbIndex()
         # embeddings of users' confirmed scan photos (learn.py), several per card allowed
         self._learned: tuple[list[str], np.ndarray] = ([], np.zeros((0, 0), np.float32))
         self._learned_ver = 0
+        self._learned_model = TEACHER_ID
         self._domain: Domain | None = None
         self._domain_lock = threading.Lock()
         self.coverage = 0.0
         self.status = {"active": False, "model": str(MODEL_PATH), "error": None, "cards": 0,
                        "coverage": 0.0, "backfill": {"running": False, "todo": 0, "done": 0, "failed": 0,
-                                                     "last_run": None}}
+                                                     "last_run": None},
+                       "photos": {"model": "teacher", "path": str(QUERY_MODEL_PATH), "error": None}}
 
     def load(self) -> None:
         if not MODEL_PATH.exists():
@@ -253,7 +295,71 @@ class Shortlist:
             log.exception("Embedding model failed to load; staying pHash only")
             self.engine = None
             self.status["error"] = str(exc)
+        if self.engine is not None:
+            self.reload_query()
         self._update_status()
+
+    # ── photo model (student) ──────────────────────────────────────────────────
+    @property
+    def query_id(self) -> str:
+        """Which model embeds photos now: TEACHER_ID or the student's content hash."""
+        q = self.query_engine
+        return q.ident if q is not None else TEACHER_ID
+
+    def _photo_engine(self) -> Engine | None:
+        return self.query_engine or self.engine
+
+    def reload_query(self) -> bool:
+        """
+        (Re)load the student when its file appeared, changed or went away; True
+        if the photo model changed. A file still being written (stamp different
+        from the last look) waits for the next call; a bad or mismatched file
+        keeps whatever was in use.
+        """
+        if self.engine is None:
+            return False
+        stamp = file_stamp(QUERY_MODEL_PATH)
+        if stamp == self._q_seen:
+            return False
+        ph = self.status["photos"]
+        if stamp is None:
+            self._q_seen = self._q_pending = None
+            if self.query_engine is None:
+                return False
+            self.query_engine = None
+            ph.update(model="teacher", error=None, size=None, loaded=None)
+            log.info("Photo model %s removed: photos go through DINOv2 again", QUERY_MODEL_PATH.name)
+            return True
+        if self.query_engine is not None and stamp != self._q_pending:
+            self._q_pending = stamp              # changed since the last look: let the copy finish
+            return False
+        self._q_seen, self._q_pending = stamp, None
+        t = time.perf_counter()
+        try:
+            eng = Engine(QUERY_MODEL_PATH, file_ident(QUERY_MODEL_PATH))
+        except Exception as exc:  # noqa: BLE001 — any unreadable/odd model file: keep the current one
+            log.warning("Photo model %s not usable (%s); keeping %s", QUERY_MODEL_PATH.name, exc, self.query_id)
+            ph["error"] = str(exc)
+            return False
+        if eng.dim != self.engine.dim:
+            msg = f"{eng.dim}-dim output, the catalog index is {self.engine.dim}-dim"
+            log.warning("Photo model %s doesn't fit (%s); keeping %s", QUERY_MODEL_PATH.name, msg, self.query_id)
+            ph["error"] = msg
+            return False
+        if self.query_engine is not None and eng.ident == self.query_engine.ident:
+            return False                         # touched, same content
+        probe = [np.zeros((eng.size[1], eng.size[0], 3), np.uint8)] * 2
+        eng.embed(probe)                         # warm up the 2-image batch like the teacher's
+        t1 = time.perf_counter()
+        eng.embed(probe)
+        ms = (time.perf_counter() - t1) * 500
+        self.query_engine = eng
+        ph.update(model=eng.ident, error=None, size=list(eng.size),
+                  loaded=datetime.now(timezone.utc).isoformat(), ms_per_photo=round(ms, 1))
+        log.info("Photo model: %s (%s, %d×%d, %.0f ms per photo, loaded in %.1fs)%s", QUERY_MODEL_PATH.name,
+                 eng.ident, eng.size[0], eng.size[1], ms, time.perf_counter() - t,
+                 "" if QUERY_DOMAIN else "; domain correction off for it")
+        return True
 
     @property
     def active(self) -> bool:
@@ -279,7 +385,8 @@ class Shortlist:
         upright in its crop — one image), "down" (upside down: the crop turned
         round), "both" (unknown: both, as query()). → (k, D) per card.
         """
-        if self.engine is None:
+        eng = self._photo_engine()
+        if eng is None:
             return None
         imgs: list[np.ndarray] = []
         spans: list[tuple[int, int]] = []
@@ -295,30 +402,41 @@ class Shortlist:
             spans.append((start, len(imgs)))
         if not imgs:
             return []
-        out = self.engine.embed(imgs)
+        out = eng.embed(imgs)
         return [out[a:b] for a, b in spans]
 
-    def photo_embedding(self, card_bgr: np.ndarray) -> np.ndarray:
-        """Embedding of a straightened scan photo, prepared like a query (upright only)."""
-        return self.engine.embed([autolevel(card_bgr)])[0]   # the app's crop has no white border
+    def photo_embedding(self, card_bgr: np.ndarray) -> tuple[np.ndarray, str]:
+        """Embedding of a straightened scan photo, prepared like a query (upright only),
+        and which model made it (photos of a different model can't be compared)."""
+        eng = self._photo_engine()
+        return eng.embed([autolevel(card_bgr)])[0], eng.ident   # the app's crop has no white border
 
-    def set_learned(self, ids: list[str], mat: np.ndarray) -> None:
+    def set_learned(self, ids: list[str], mat: np.ndarray, model: str | None = None) -> None:
+        """Learned photo vectors and which model embedded them (default: the photo model now).
+        They're only used while that is still the photo model — after a swap they wait
+        for the learner to embed the photos again."""
         self._learned = (list(ids), mat.astype(np.float32) if mat.size else np.zeros((0, 0), np.float32))
+        self._learned_model = model or self.query_id
         self._learned_ver += 1
         self.status["learned_photos"] = len(ids)
 
+    def _learned_now(self) -> tuple[list[str], np.ndarray]:
+        if self._learned_model != self.query_id:
+            return [], np.zeros((0, 0), np.float32)
+        return self._learned
+
     def domain(self) -> Domain | None:
         """The domain correction for the current catalog index and learned photos (rebuilt when either grows)."""
-        if not DOMAIN:
+        if not DOMAIN or (self.query_engine is not None and not QUERY_DOMAIN):
             return None
         snap = self.index.snapshot()
-        key = (len(snap.ids), self._learned_ver)
+        key = (len(snap.ids), self._learned_ver, self.query_id)
         d = self._domain
         if d is not None and d.key == key:
             return d if d.ids else None     # "not enough photos" for this key: no correction
         with self._domain_lock:
             if self._domain is None or self._domain.key != key:
-                l_ids, l_mat = self._learned
+                l_ids, l_mat = self._learned_now()
                 t = time.perf_counter()
                 built = build_domain(snap, l_ids, l_mat, key)
                 # remember "not enough photos" for this key too, so it isn't rebuilt per query
@@ -348,8 +466,8 @@ class Shortlist:
 
     def _pick(self, q: np.ndarray) -> tuple[list[str], int]:
         ids = self.index.top(q, EMBED_TOP, self.domain())
-        l_ids, l_mat = self._learned
-        if l_ids:
+        l_ids, l_mat = self._learned_now()
+        if l_ids and l_mat.shape[1] == q.shape[1]:
             s = (q @ l_mat.T).max(axis=0)
             for i in np.argsort(-s)[:LEARNED_TOP]:
                 if s[i] >= LEARNED_MIN_SIM and l_ids[i] not in ids:

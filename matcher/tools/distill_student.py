@@ -296,7 +296,7 @@ def cmd_train(a) -> None:
     have = {c for c, f in index.items() if (a.images / f).exists()}
     train_cards = [(c, pos[c]) for c in ids if c in have and not held_out_card(c)]
     if a.max_cards:
-        rng = np.random.default_rng(1)
+        rng = np.random.default_rng(a.subset_seed)
         train_cards = [train_cards[i] for i in sorted(rng.permutation(len(train_cards))[:a.max_cards])]
     scans = Scans(a.scans) if a.scans else None
     scan_rows = [r for r in scans.usable(set(ids)) if not held_out_photo(r["original"])
@@ -305,12 +305,16 @@ def cmd_train(a) -> None:
     print(f"training on {len(train_cards)} catalog cards and {len(scan_rows)} scan photos (×{repeat}); "
           f"{sum(held_out_card(c) for c in ids)} cards and 1 in {SCAN_HOLDOUT} scan photos kept out for `check`")
     dev = torch.device(a.device if a.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
+    if a.threads:
+        torch.set_num_threads(a.threads)
     size = tuple(int(v) for v in a.size.lower().split("x"))
-    model = build_student(T.shape[1], a.arch, not a.no_pretrained).to(dev)
+    ck = torch.load(a.resume, map_location=dev, weights_only=False) if a.resume else None
+    if ck is not None:                   # the checkpoint's own network and input size; its weights replace ImageNet's
+        a.arch, size = ck.get("arch", a.arch), tuple(ck.get("size", size))
+    model = build_student(T.shape[1], a.arch, not a.no_pretrained and ck is None).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     start = 0
-    if a.resume:
-        ck = torch.load(a.resume, map_location=dev, weights_only=False)
+    if ck is not None:
         model.load_state_dict(ck["model"])
         if "opt" in ck and not a.fresh_optimizer:
             opt.load_state_dict(ck["opt"])
@@ -398,71 +402,105 @@ def _ranks(Q: np.ndarray, T: np.ndarray, right: list[np.ndarray], domain=None) -
         S = S / (np.linalg.norm(Q - domain.mu_photo, axis=1, keepdims=True) + 1e-9) - domain.penalty
     else:
         S = Q @ T.T
+    S = np.nan_to_num(S, nan=-np.inf)        # a broken model (NaN out) must not count as right
     out = []
     for s, r in zip(S, right):
-        out.append(int((s > s[r].max()).sum()))
+        best = s[r].max()
+        out.append(int((s > best).sum()) if np.isfinite(best) else len(s))
     return np.array(out)
 
 
-def cmd_check(a) -> None:
-    from app.embedding import EmbSnapshot, build_domain
-    ids, T = load_targets(a.targets)
-    student_path = a.student or (a.run / "student.onnx")
-    scans = Scans(a.scans)
+def check_split(ids: list[str], scans: Scans) -> tuple[list[dict], list[dict]]:
+    """Held-out scan photos (for measuring) and the rest (training; domain correction)."""
     rows = scans.usable(set(ids))
     test = [r for r in rows if held_out_photo(r["original"]) or held_out_card(r["card_id"])]
-    train = [r for r in rows if r not in test]
-    if a.max_photos:
-        test = test[:a.max_photos]
-    if not test:
-        raise SystemExit("no held-out scan photos — export a scan dataset with more photos")
+    return test, [r for r in rows if r not in test]
+
+
+def measure(models: dict[str, Path], ids: list[str], T: np.ndarray, scans: Scans, test: list[dict],
+            train: list[dict], threads: int = 0, max_domain: int = 2000, speed_runs: int = 20,
+            domain_for=lambda name: True) -> dict:
+    """
+    Each model on the held-out photos: rank of the right card (or a same-art
+    reprint) without and with the domain correction, and CPU ms per picture.
+    → {name: {"ms_per_picture", "plain": ranks, "domain": ranks | None, "embed_s"}}
+    """
+    from app.embedding import EmbSnapshot, build_domain
     pos = {c: i for i, c in enumerate(ids)}
     same = [np.flatnonzero(T @ T[pos[r["card_id"]]] > SAME_ART) for r in test]
-    new = np.array([held_out_card(r["card_id"]) for r in test])
-    print(f"{len(test)} held-out scan photos ({int(new.sum())} of cards the student never trained on), "
-          f"catalog {len(ids)} cards")
+    crops = [scans.read(r["crop"]) for r in test]
     res = {}
-    for name, path in (("teacher", a.teacher), ("student", student_path)):
-        eng = Onnx(path, a.threads)
-        crops = [scans.read(r["crop"]) for r in test]
+    for name, path in models.items():
+        eng = Onnx(path, threads)
         t0 = time.perf_counter()
         Q = np.concatenate([eng.embed(crops[k:k + 16]) for k in range(0, len(crops), 16)])
         # time as the matcher uses it: one card, upright + upside down
         probe = crops[0]
         eng.embed([probe, probe])
         t1 = time.perf_counter()
-        for _ in range(a.speed_runs):
+        for _ in range(speed_runs):
             eng.embed([probe, cv2.rotate(probe, cv2.ROTATE_180)])
-        ms = (time.perf_counter() - t1) * 1000 / a.speed_runs / 2
+        ms = (time.perf_counter() - t1) * 1000 / max(1, speed_runs) / 2
         dom = None
-        if len(train) >= 50:
-            P = np.concatenate([eng.embed([scans.read(r["crop"]) for r in train[k:k + 16]])
-                                for k in range(0, min(len(train), a.max_domain), 16)])
-            dom = build_domain(EmbSnapshot(ids, T), [r["card_id"] for r in train[:a.max_domain]], P)
-        plain = _ranks(Q, T, same)
-        corr = _ranks(Q, T, same, dom) if dom is not None else None
-        res[name] = {"ms_per_picture": round(ms, 1), "plain": plain, "domain": corr,
+        if len(train) >= 50 and domain_for(name):
+            rows = train[:max_domain]
+            P = np.concatenate([eng.embed([scans.read(r["crop"]) for r in rows[k:k + 16]])
+                                for k in range(0, len(rows), 16)])
+            dom = build_domain(EmbSnapshot(ids, T), [r["card_id"] for r in rows], P)
+        res[name] = {"ms_per_picture": round(ms, 1), "plain": _ranks(Q, T, same),
+                     "domain": _ranks(Q, T, same, dom) if dom is not None else None,
                      "embed_s": round(time.perf_counter() - t0, 1)}
+    return res
 
-    def rec(r, mask=None):
-        r = r if mask is None else r[mask]
-        return {f"top{k}": round(100 * float((r < k).mean()), 1) if len(r) else None for k in (1, 5, 30)}
 
-    report = {}
-    print(f"\n{'':10s}{'ms/picture':>11s}   {'all held-out photos (1st / top 5 / top 30)':>44s}   "
-          f"{'cards never trained on':>24s}")
+def recall(r: np.ndarray, mask: np.ndarray | None = None) -> dict:
+    r = r if mask is None else r[mask]
+    return {f"top{k}": round(100 * float((r < k).mean()), 1) if len(r) else None for k in (1, 5, 30)}
+
+
+def report_of(res: dict, new: np.ndarray) -> dict:
+    """{"<name>_plain" / "<name>_domain": {"all": recall, "new_cards": recall, "ms_per_picture"}}"""
+    out = {}
     for name, r in res.items():
         for how in ("plain", "domain"):
-            if r[how] is None:
-                continue
-            al, nw = rec(r[how]), rec(r[how], new)
-            report[f"{name}_{how}"] = {"all": al, "new_cards": nw, "ms_per_picture": r["ms_per_picture"]}
-            fmt = lambda d: " / ".join("-" if v is None else f"{v:5.1f}%" for v in d.values())
-            label = f"{name}{' +domain' if how == 'domain' else ''}"
-            print(f"{label:16s}{r['ms_per_picture']:5.1f}   {fmt(al):>44s}   {fmt(nw):>24s}")
-    best = lambda name: max((report[k]["all"] for k in report if k.startswith(name)),
-                            key=lambda d: (d["top30"] or 0, d["top1"] or 0))
-    t, s = best("teacher"), best("student")
+            if r[how] is not None:
+                out[f"{name}_{how}"] = {"all": recall(r[how]), "new_cards": recall(r[how], new),
+                                        "ms_per_picture": r["ms_per_picture"]}
+    return out
+
+
+def print_report(report: dict) -> None:
+    print(f"\n{'':10s}{'ms/picture':>11s}   {'all held-out photos (1st / top 5 / top 30)':>44s}   "
+          f"{'cards never trained on':>24s}")
+    fmt = lambda d: " / ".join("-" if v is None else f"{v:5.1f}%" for v in d.values())
+    for key, r in report.items():
+        name, how = key.rsplit("_", 1)
+        label = f"{name}{' +domain' if how == 'domain' else ''}"
+        print(f"{label:16s}{r['ms_per_picture']:5.1f}   {fmt(r['all']):>44s}   {fmt(r['new_cards']):>24s}")
+
+
+def best_of(report: dict, name: str) -> dict:
+    return max((report[k]["all"] for k in report if k.rsplit("_", 1)[0] == name),
+               key=lambda d: (d["top30"] or 0, d["top1"] or 0))
+
+
+def cmd_check(a) -> None:
+    ids, T = load_targets(a.targets)
+    student_path = a.student or (a.run / "student.onnx")
+    scans = Scans(a.scans)
+    test, train = check_split(ids, scans)
+    if a.max_photos:
+        test = test[:a.max_photos]
+    if not test:
+        raise SystemExit("no held-out scan photos — export a scan dataset with more photos")
+    new = np.array([held_out_card(r["card_id"]) for r in test])
+    print(f"{len(test)} held-out scan photos ({int(new.sum())} of cards the student never trained on), "
+          f"catalog {len(ids)} cards")
+    res = measure({"teacher": a.teacher, "student": student_path}, ids, T, scans, test, train,
+                  a.threads, a.max_domain, a.speed_runs)
+    report = report_of(res, new)
+    print_report(report)
+    t, s = best_of(report, "teacher"), best_of(report, "student")
     ok = s["top30"] >= t["top30"] - a.max_drop_top30 and s["top1"] >= t["top1"] - a.max_drop_top1
     speed = res["teacher"]["ms_per_picture"] / max(0.1, res["student"]["ms_per_picture"])
     verdict = (f"PASS: the student keeps the shortlist ({s['top30']}% vs {t['top30']}% in the top 30) "
@@ -503,6 +541,8 @@ def main() -> None:
     t.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 2))
     t.add_argument("--device", default="auto")
     t.add_argument("--max-cards", type=int, default=0, help="train on a random subset (quick try)")
+    t.add_argument("--subset-seed", type=int, default=1, help="which random subset --max-cards takes")
+    t.add_argument("--threads", type=int, default=0, help="CPU threads for PyTorch (0 = its default)")
     t.add_argument("--resume", type=Path)
     t.add_argument("--fresh-optimizer", action="store_true")
     t.add_argument("--no-pretrained", action="store_true", help="start from random weights (offline)")

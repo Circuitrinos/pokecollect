@@ -83,6 +83,7 @@ state: dict = {"status": "loading", "phase": "starting", "error": None, "mapping
 _match_lock = threading.Lock()   # one photo at a time; each match already uses every core
 _detect_lock = threading.Lock()  # live preview: one frame at a time, extra frames are dropped
 DETECT_MAX_SIDE = 1280
+QUERY_RELOAD_S = float(os.getenv("EMBED_QUERY_RELOAD_S", "60"))   # how often to look for a new student
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
 shortlist = embedding.Shortlist()
@@ -132,21 +133,22 @@ def _startup() -> None:
         t = time.monotonic()
         shortlist.load()
         shortlist.update_coverage(store.known_card_ids())
-        log.info("Startup: shortlist %s (%s)", "DINOv2 + pHash" if shortlist.active else "pHash", _since(t))
+        log.info("Startup: shortlist %s (%s)", _shortlist_name(), _since(t))
         learner.load_cached(catalog)
         if WARMUP:
             state["phase"] = "warm-up"
             state["warmup_ms"] = _warm_up()
         state.update(status="ready", phase=None, ready_after_s=round(time.monotonic() - _T0, 1))
         log.info("Ready after %.1fs: %s (+%d from earlier extension runs), shortlist: %s",
-                 state["ready_after_s"], store.stats(), n_ext,
-                 "DINOv2 + pHash" if shortlist.active else "pHash")
+                 state["ready_after_s"], store.stats(), n_ext, _shortlist_name())
     except Exception as exc:
         log.exception("Startup failed")
         state.update(status="error", phase=None, error=str(exc))
         return
     if learn.LEARN:
         threading.Thread(target=_learn_loop, name="learn", daemon=True).start()
+    if shortlist.engine is not None and QUERY_RELOAD_S > 0:
+        threading.Thread(target=_photo_model_loop, name="photo-model", daemon=True).start()
     if not (EXTEND or shortlist.engine is not None):
         return
     _lower_priority()
@@ -159,6 +161,25 @@ def _startup() -> None:
         shortlist.backfill(catalog, store.known_card_ids())   # embed cards that have none yet
         time.sleep(REFRESH_HOURS * 3600)
         catalog = _load_catalog_with_retry()
+
+
+def _shortlist_name() -> str:
+    if not shortlist.active:
+        return "pHash"
+    q = shortlist.query_engine
+    return "DINOv2 + pHash" + (f", photos via {q.ident}" if q is not None else "")
+
+
+def _photo_model_loop() -> None:
+    """Watch the student file (embedding.QUERY_MODEL_PATH): a new one — the nightly
+    trainer's or a copy — is swapped in without a restart."""
+    while True:
+        time.sleep(QUERY_RELOAD_S)
+        try:
+            if shortlist.reload_query():
+                learner.model_changed(catalog)
+        except Exception:
+            log.exception("Photo model check failed")
 
 
 def _learn_loop() -> None:
@@ -1602,7 +1623,8 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
         cards.append(_result(d, q, img, None))
 
     res = {"mode": mode, "cards": cards, "ms": round((time.perf_counter() - t0) * 1000),
-           "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}
+           "timing": timing.take(), "shortlist": ("student" if shortlist.query_engine is not None else "dinov2")
+           if shortlist.active else "phash"}
     if straightened is not None:
         res["page"] = "straightened"
     if getattr(_quick, "known", None):

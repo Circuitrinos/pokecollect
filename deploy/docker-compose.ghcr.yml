@@ -76,6 +76,31 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Optional: nightly student training on the CPU (matcher/README.md, "Nightly
+  # training on the NAS"). Continues from run/student.pt of the first training
+  # on a PC — put that file into the trainer folder. Writes the matcher's
+  # student.onnx only when the new student is at least as good.
+  trainer:
+    image: ghcr.io/circuitrinos/pokecollect-trainer:latest
+    pull_policy: always
+    user: "3010:3010"
+    environment:
+      DATABASE_URL: 'postgresql://pokecollect:CHANGE_DB_PASSWORD@db:5432/pokecollect'
+      TZ: America/Los_Angeles
+      TRAIN_AT: "03:30"
+      TRAIN_THREADS: "4"
+    volumes:
+      - /path/to/pokecollect/trainer:/data
+      - /path/to/pokecollect/matcher:/matcher
+      - /path/to/pokecollect/logs:/app/logs
+    cpus: 4
+    mem_limit: 6g
+    shm_size: 1gb        # PyTorch's data loader passes batches through /dev/shm
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   db:
     image: postgres:16.3-alpine
     user: "3010:3010"
