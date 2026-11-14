@@ -161,3 +161,20 @@ def test_debug_level_writes_its_own_file(fresh_logsetup, monkeypatch):
         root.setLevel(before)
         for name in mod.QUIET:
             logging.getLogger(name).setLevel(logging.NOTSET)
+
+
+def test_deleted_log_file_comes_back(fresh_logsetup):
+    """Logs von Hand gelöscht, während der Dienst läuft: der nächste Eintrag legt die Datei neu an."""
+    mod, d = fresh_logsetup
+    mod.setup("gonesvc")
+    logging.getLogger("app.z").warning("vorher")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    (d / "gonesvc.log").unlink()
+    (d / "gonesvc-errors.log").rename(d / "alt-errors.log")
+    logging.getLogger("app.z").warning("nachher")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert "nachher" in (d / "gonesvc.log").read_text() and "vorher" not in (d / "gonesvc.log").read_text()
+    assert "nachher" in (d / "gonesvc-errors.log").read_text()
+    assert "nachher" not in (d / "alt-errors.log").read_text()

@@ -38,8 +38,42 @@ class _NotTwice(logging.Filter):
         return not (record.name.startswith("uvicorn") and getattr(exc, "_pokecollect_logged", False))
 
 
+class _ReopeningHandler(RotatingFileHandler):
+    """Rotierend — und wird die Datei gelöscht oder verschoben (Logs von Hand
+    aufgeräumt), legt der nächste Eintrag sie neu an, statt still in die
+    gelöschte Datei weiterzuschreiben (wie WatchedFileHandler)."""
+
+    _ident: tuple[int, int] | None = None
+
+    def _open(self):
+        stream = super()._open()
+        try:
+            st = os.fstat(stream.fileno())
+            self._ident = (st.st_dev, st.st_ino)
+        except OSError:
+            self._ident = None
+        return stream
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self.stream is not None:
+            try:
+                st = os.stat(self.baseFilename)
+                gone = (st.st_dev, st.st_ino) != self._ident
+            except FileNotFoundError:
+                gone = True
+            except OSError:
+                gone = False
+            if gone:
+                try:
+                    self.stream.close()
+                except OSError:
+                    pass
+                self.stream = None          # wird beim Schreiben neu geöffnet (delay)
+        super().emit(record)
+
+
 def _handler(path: Path, level: int) -> RotatingFileHandler:
-    h = RotatingFileHandler(path, maxBytes=MAX_BYTES, backupCount=BACKUPS, encoding="utf-8", delay=True)
+    h = _ReopeningHandler(path, maxBytes=MAX_BYTES, backupCount=BACKUPS, encoding="utf-8", delay=True)
     h.setLevel(level)
     h.setFormatter(logging.Formatter(FORMAT))
     h.addFilter(_NotTwice())
