@@ -60,6 +60,39 @@ Optional. Without `dinov2_vits14_cls.onnx` the matcher works exactly as before.
 CPU cost: two inferences (0° and 180°) per card outline, roughly 30–80 ms each on a
 desktop-class CPU; the ORB stage gets much cheaper in return (≈40 candidates instead of 300).
 
+Live scan: a card a frame found is remembered on the page map (its outline and
+best candidates); the next frames of the same page check it again on its own
+outline against just those candidates — no image model, no outline search. Only
+squares where that fails (a card swapped, an empty pocket) go the full way.
+
+### Student model (`tools/distill_student.py`)
+
+A small network (MobileNetV3) taught by DINOv2 to turn a card photo into DINOv2's
+vector of that card's catalog image — roughly 10× less CPU per photo, and the
+catalog index stays as it is. Trained on a PC with a GPU from data on the NAS:
+
+| File | From |
+|---|---|
+| `catalog_emb.npz` | `/data/emb/catalog_emb.npz` (the teacher's catalog vectors) |
+| `dinov2_vits14_cls.onnx` | `/data` (the teacher, for the check) |
+| `catalog.csv` | `card_id,image_url` from the `tcgdex_catalog` table |
+| scans ZIP | Settings → *Scan dataset (ZIP)* |
+
+```
+pip install numpy opencv-python-headless onnxruntime httpx onnx   # + PyTorch/torchvision with CUDA (pytorch.org)
+python matcher/tools/distill_student.py fetch --catalog catalog.csv --targets catalog_emb.npz --images images
+python matcher/tools/distill_student.py train --images images --targets catalog_emb.npz --scans scans.zip --out run
+python matcher/tools/distill_student.py check --run run --teacher dinov2_vits14_cls.onnx --targets catalog_emb.npz --scans scans.zip
+```
+
+`train` keeps one scan photo in five and one card in ten out of training, always
+the same ones; `check` measures teacher and student on them (right card 1st, in
+the top 5, in the top 30 = the shortlist, with and without the domain correction;
+separately for cards the student never saw) and the CPU time per photo, and says
+PASS when the student keeps the shortlist. `train --resume run/student.pt
+--epochs 3` continues a run with newer scans. `--max-cards 3000` makes a quick
+first try. The matcher doesn't use the student yet.
+
 ## Environment
 
 | Var | Default | |

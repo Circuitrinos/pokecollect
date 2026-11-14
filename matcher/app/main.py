@@ -920,9 +920,11 @@ def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, pag
     if queued >= 0.05:
         res["timing"]["queued"] = round(queued * 1000)
     where = res.get("map") or {}
-    log.info("match %s %dx%d: %d card(s) in %d ms %s%s%s%s", mode, img.shape[1], img.shape[0],
+    log.info("match %s %dx%d: %d card(s) in %d ms %s%s%s%s%s", mode, img.shape[1], img.shape[0],
              len(res["cards"]), res["ms"], res["timing"],
              f" ({len(skip)} pocket(s) skipped)" if skip else "",
+             (" ({checked} known card(s) checked again, {settled} settled without the image model)".format(**res["known"])
+              if res.get("known", {}).get("checked") else ""),
              (" (close-up on the page map)" if where.get("located") and not where.get("whole")
               else " (not on the page map)" if map_req and not where.get("located") else ""),
              " (first since start)" if state["matches"] == 1 else "")
@@ -1181,6 +1183,7 @@ _cell_pool = ThreadPoolExecutor(max_workers=max(2, os.cpu_count() or 4), thread_
 class _Guess:
     quad: np.ndarray     # in the straightened page
     way: str             # how the card lies in its crop, for the image model: "up", "down", "both" (unknown)
+    ids: list[str] | None = None    # a card an earlier frame found here: check only these, no image model
 
 
 def _card_shaped(q: np.ndarray) -> bool:
@@ -1235,8 +1238,39 @@ def _grid_guesses(flat: np.ndarray, grid: tuple[float, float, float, float], row
     return out
 
 
+def _known_guesses(known: list, img_shape, H: np.ndarray, grid: tuple[float, float, float, float],
+                   rows: int, cols: int, todo: dict[int, list[_Guess]]) -> int:
+    """
+    Cards earlier frames found (corners in this photo as fractions, their best
+    ids) go first in their square: the outline is the card's own, the check
+    needs no image model. → how many squares got one.
+    """
+    px, py, pw, ph = grid
+    cw, ch = pw / cols, ph / rows
+    h, w = img_shape[:2]
+    closest: dict[int, tuple[float, _Guess]] = {}
+    for quad, ids in known or []:
+        try:
+            q = cv2.perspectiveTransform((np.float32(quad) * np.float32([w, h])).reshape(-1, 1, 2), H).reshape(4, 2)
+        except cv2.error:
+            continue
+        if not np.all(np.isfinite(q)):
+            continue
+        cx, cy = q.mean(axis=0)
+        r, c = int((cy - py) // ch), int((cx - px) // cw)
+        sq = r * cols + c
+        if not (0 <= r < rows and 0 <= c < cols) or sq not in todo:
+            continue
+        off = abs(cx - px - (c + 0.5) * cw) / cw + abs(cy - py - (r + 0.5) * ch) / ch
+        if sq not in closest or off < closest[sq][0]:
+            closest[sq] = (off, _Guess(np.float32(q), "known", list(ids)))
+    for sq, (_, g) in closest.items():
+        todo[sq].insert(0, g)
+    return len(closest)
+
+
 def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int,
-                skip: frozenset[int], mode: str) -> list[dict] | None:
+                skip: frozenset[int], mode: str, known: list | None = None) -> list[dict] | None:
     """
     Live frame of a grid whose corners the app knows (it follows the page with
     the camera): every square on its own, all squares at once. Round by round,
@@ -1247,6 +1281,9 @@ def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: 
     outline its next guess. Only the card's upright side is embedded where the
     guess knows it (half the model time). Squares in skip (already sure) are
     left out. No number reading (live, whole page). Binder: position = pocket.
+    known (pagemap.known): cards earlier frames of this page found — their
+    square checks just those few cards on the card's own outline first, without
+    the image model; the same card again settles the square.
     → cards with corners in the photo, or None when the grid isn't usable.
     """
     with timing.phase("page"):
@@ -1256,19 +1293,42 @@ def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: 
     flat, grid, H = st
     Hinv = np.linalg.inv(H)
     squares = [i for i in range(rows * cols) if i not in skip]
-    with timing.phase("detect"):
-        todo = _grid_guesses(flat, grid, rows, cols, squares)
+    todo: dict[int, list[_Guess]] = {i: [] for i in squares}
+    n_known = _known_guesses(known, img.shape, H, grid, rows, cols, todo)
+    settled = 0
+    done: set[int] = set()
+    detected = False
     snap = store.snapshot()
     best: dict[int, tuple] = {}       # square → (key, quad, crop, cands)
     used = dict.fromkeys(todo, 0)
-    open_sq = [i for i in todo if todo[i]]
-    while open_sq:
+    open_sq = [i for i in squares if todo[i]]          # first the remembered cards (if any)
+    while True:
+        if not open_sq:
+            if detected:
+                break
+            # outlines only for the squares the remembered cards didn't settle (often none)
+            rest = [i for i in squares if i not in done and used[i] < LIVE_TRIES]
+            if not rest:
+                break
+            with timing.phase("detect"):
+                more = _grid_guesses(flat, grid, rows, cols, rest)
+            detected = True
+            for i in rest:
+                todo[i] += more[i]
+            open_sq = [i for i in rest if todo[i]]
+            if not open_sq:
+                break
         now = [(i, todo[i].pop(0)) for i in open_sq]
         crops = [detect.warp(flat, g.quad) for _, g in now]
         for i, _ in now:
             used[i] += 1
-        with timing.phase("embed"):
-            sls = shortlist.shortlist_many(crops, [g.way for _, g in now])
+        model = [k for k, (_, g) in enumerate(now) if g.ids is None]
+        sls: list = [(g.ids, 0) for _, g in now]          # known card: just its ids, no pHash, no model
+        if model:
+            with timing.phase("embed"):
+                for k, sl in zip(model, shortlist.shortlist_many([crops[k] for k in model],
+                                                                 [now[k][1].way for k in model])):
+                    sls[k] = sl
         with timing.phase("match"):
             found = list(_cell_pool.map(lambda crop, sl: matcher.match_card(crop, snap, top_k=top_k, shortlist=sl),
                                         crops, sls))
@@ -1279,6 +1339,16 @@ def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: 
                 best[i] = (key, g.quad, crop, cands)
             if matcher.art_clear(cands):
                 todo[i] = []
+                done.add(i)
+                settled += g.ids is not None
+                continue
+            if g.ids is not None and cands and cands[0].geo_ok and cands[0].art_inliers >= matcher.MIN_ART \
+                    and cands[0].card_id in g.ids:
+                # the same card as before, still a same-art reprint question: the image model
+                # can't settle that either (moving closer reads the number) — done here
+                todo[i] = []
+                done.add(i)
+                settled += 1
                 continue
             if cands and cands[0].inliers >= matcher.MIN_GOOD:
                 # sloppy outline: the matched card's own outline next (like _refine)
@@ -1318,8 +1388,10 @@ def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: 
                       used.get(i, 0), f"{c[0].card_id} art {c[0].art_inliers}/{c[0].inliers}" if c else "nothing")
     with timing.phase("stamp"):
         cards = list(_cell_pool.map(lambda t: _result(t[0], t[1], img, t[2]), decided))
-    log.debug("live grid %dx%d: %d square(s) searched, %d skipped, %d outline(s) tried, %d card(s)", cols, rows,
-              len(squares), len(skip), sum(used.values()), len(cards))
+    log.debug("live grid %dx%d: %d square(s) searched, %d skipped, %d outline(s) tried, %d card(s); "
+              "%d known card(s) checked again, %d settled without the image model", cols, rows,
+              len(squares), len(skip), sum(used.values()), len(cards), n_known, settled)
+    _quick.known = {"checked": n_known, "settled": settled}
     return cards
 
 
@@ -1327,12 +1399,19 @@ _IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 _quick = threading.local()   # live scan, whole page in view: skip the number OCR (seconds per frame)
 
 
-def _run_quick(*args) -> dict:
+def _run_quick(*args, **kw) -> dict:
     _quick.on = True
     try:
-        return _run_match(*args)
+        return _run_match(*args, **kw)
     finally:
         _quick.on = False
+
+
+def _remember(map_id: str, cards: list[dict]) -> None:
+    """The cards of a frame on its page map, for the next frames (pagemap.known)."""
+    pagemap.remember(map_id, [(c["map_quad"], [x["card_id"] for x in c["candidates"]]) for c in cards
+                              if c.get("map_quad") and c.get("candidates")
+                              and c["candidates"][0].get("inliers", 0) >= matcher.MIN_GOOD])
 
 
 def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None,
@@ -1347,6 +1426,7 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
             res["map"] = {"id": map_id, "located": True, "whole": True, "area": 1.0, "h": _IDENTITY}
             for c in res["cards"]:
                 c["map_quad"] = c["quad"]
+            _remember(map_id, res["cards"])
         return res
     m = pagemap.get(map_req)
     if m is None:       # expired or the matcher restarted: the app starts the page over
@@ -1361,29 +1441,32 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
                 "map": {"id": map_req, "located": False}}
     log.debug("page map %s: placed, %d inliers, covers %.3f of the map → %s", map_req, loc.inliers, loc.area,
               "whole page" if loc.whole else "close-up")
-    if loc.whole:       # the whole page (or table) in view: as usual, without the slow number reading
-        res = _run_quick(img, mode, rows, cols, top_k, page, skip)
+    if loc.whole:       # the whole page (or table) in view: as usual, without the slow number reading;
+        # cards earlier frames found are checked again first, without the image model
+        res = _run_quick(img, mode, rows, cols, top_k, page, skip, known=pagemap.known(map_req, loc.h))
     else:               # close-up: cards anywhere in the frame, no pockets; numbers are read here
         res = _run_match(img, "multi", 0, 0, top_k, None)
     res["ms"] += round(t_loc * 1000)
     res["timing"]["locate"] = round(t_loc * 1000)
     for c in res["cards"]:
         c["map_quad"] = pagemap.project(c["quad"], loc.h)
+    _remember(map_req, res["cards"])
     res["map"] = {"id": map_req, "located": True, "whole": loc.whole, "area": round(loc.area, 4),
                   "inliers": loc.inliers, "h": [[round(float(v), 6) for v in row] for row in loc.h]}
     return res
 
 
 def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
-               skip: frozenset[int] = frozenset()) -> dict:
+               skip: frozenset[int] = frozenset(), known: list | None = None) -> dict:
     timing.start()
+    _quick.known = None
     t0 = time.perf_counter()
     h, w = img.shape[:2]
     cards: list[dict] = []
     straightened = None
     grid = rows > 0 and cols > 0 and page is not None
     if grid and mode in ("binder", "multi") and getattr(_quick, "on", False):
-        straightened = _live_cells(img, page, rows, cols, top_k, skip, mode)   # live: square by square, all at once
+        straightened = _live_cells(img, page, rows, cols, top_k, skip, mode, known)   # live: square by square
     if straightened is None and mode == "binder" and grid:
         straightened = _binder_straightened(img, page, rows, cols, top_k, skip)
     elif straightened is None and mode == "multi" and page is not None:
@@ -1424,4 +1507,6 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
            "timing": timing.take(), "shortlist": "dinov2" if shortlist.active else "phash"}
     if straightened is not None:
         res["page"] = "straightened"
+    if getattr(_quick, "known", None):
+        res["known"], _quick.known = _quick.known, None
     return res

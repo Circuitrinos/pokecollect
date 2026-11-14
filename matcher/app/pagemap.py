@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -33,12 +33,19 @@ log = logging.getLogger("matcher.pagemap")
 
 
 @dataclass
+class Seen:
+    quad: np.ndarray    # 4×2 corners on the map (fractions)
+    ids: list[str]      # its best candidates from the last frame that saw it, best first
+
+
+@dataclass
 class PageMap:
     xy: np.ndarray      # (N, 2) keypoints in pixels of the scaled map
     des: np.ndarray     # (N, 32) ORB descriptors
     w: int
     h: int
     used: float
+    seen: list[Seen] = field(default_factory=list)   # cards earlier frames found on this page
 
 
 @dataclass
@@ -143,6 +150,47 @@ def project(quad, H: np.ndarray) -> list[list[float]] | None:
     if not np.all(np.isfinite(out)):
         return None
     return [[round(float(x), 4), round(float(y), 4)] for x, y in out]
+
+
+MAX_SEEN = 64           # cards remembered per page
+
+
+def remember(map_id: str, cards: list[tuple[list, list[str]]]) -> None:
+    """
+    Cards a frame found, with their corners on the map: kept so the next frames
+    can check them again without the image model (see known()). A card where one
+    is already remembered replaces it.
+    """
+    with _lock:
+        m = _maps.get(map_id)
+        if m is None:
+            return
+        for quad, ids in cards:
+            q = np.float32(quad).reshape(4, 2)
+            if not ids or not np.all(np.isfinite(q)):
+                continue
+            c = q.mean(axis=0)
+            size = min(np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[3] - q[0]))
+            m.seen = [s for s in m.seen if np.linalg.norm(s.quad.mean(axis=0) - c) > 0.4 * size]
+            m.seen.append(Seen(q, list(ids)[:5]))
+        del m.seen[:-MAX_SEEN]
+
+
+def known(map_id: str, h: np.ndarray) -> list[tuple[list[list[float]], list[str]]]:
+    """The remembered cards in a frame that lies on the map by h (frame → map): (corners in the frame, ids)."""
+    m = get(map_id)
+    if m is None or not m.seen:
+        return []
+    try:
+        back = np.linalg.inv(h)
+    except np.linalg.LinAlgError:
+        return []
+    out = []
+    for s in m.seen:
+        q = project(s.quad, back)
+        if q is not None:
+            out.append((q, s.ids))
+    return out
 
 
 def clear() -> None:
