@@ -7,9 +7,11 @@ wie der Set-Sync und füllt den Bestätigungs-Dialog vor.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
+import unicodedata
 from contextvars import ContextVar
 from typing import Optional
 
@@ -29,21 +31,65 @@ _LIVE_TTL = 600.0        # s, gefundene Karten
 _LIVE_TTL_MISS = 60.0    # s, nicht gefunden
 _LIVE_MAX = 2000
 _cached: ContextVar[bool] = ContextVar("scan_live_cache", default=False)
+# Innerhalb EINER Scan-Anfrage: schon geladene Karten (resolve_reads lädt sie vorab gleichzeitig)
+_request_cards: ContextVar[Optional[dict]] = ContextVar("scan_request_cards", default=None)
+_PREFETCH_PARALLEL = 6
+
+
+def _copy(card):
+    return card.model_copy(deep=True) if card is not None else None
 
 
 async def _get_card(card_id: str, lang: str):
+    key = (card_id, lang)
+    req = _request_cards.get()
+    if req is not None and key in req:
+        return _copy(req[key])
     if not _cached.get():
-        return await tcgdex.get_card(card_id, lang)
-    key, now = (card_id, lang), time.monotonic()
-    hit = _LIVE_CACHE.get(key)
-    if hit and hit[0] > now:
-        return hit[1].model_copy(deep=True) if hit[1] is not None else None
-    card = await tcgdex.get_card(card_id, lang)
-    if len(_LIVE_CACHE) >= _LIVE_MAX:
-        for k in sorted(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])[: _LIVE_MAX // 4]:
-            _LIVE_CACHE.pop(k, None)
-    _LIVE_CACHE[key] = (now + (_LIVE_TTL if card is not None else _LIVE_TTL_MISS), card)
-    return card.model_copy(deep=True) if card is not None else None
+        card = await tcgdex.get_card(card_id, lang)
+    else:
+        now = time.monotonic()
+        hit = _LIVE_CACHE.get(key)
+        if hit and hit[0] > now:
+            card = hit[1]
+        else:
+            card = await tcgdex.get_card(card_id, lang)
+            if len(_LIVE_CACHE) >= _LIVE_MAX:
+                for k in sorted(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])[: _LIVE_MAX // 4]:
+                    _LIVE_CACHE.pop(k, None)
+            _LIVE_CACHE[key] = (now + (_LIVE_TTL if card is not None else _LIVE_TTL_MISS), card)
+    if req is not None:
+        req[key] = card
+    return _copy(card)
+
+
+async def _prefetch(reads: list[ScanRawRead], default_lang: str) -> None:
+    """Karten mit bekannter ID (Bild-Abgleich) gleichzeitig laden statt nacheinander —
+    bei einer Seite mit 16 Karten macht das aus Sekunden je Karte eine Wartezeit."""
+    keys = {(r.tcgdex_card_id, tcgdex.normalize_lang((r.language or default_lang or "DE").upper()))
+            for r in reads if r.tcgdex_card_id}
+    if len(keys) < 2:
+        return
+    gate = asyncio.Semaphore(_PREFETCH_PARALLEL)
+
+    async def one(card_id: str, lang: str) -> None:
+        async with gate:
+            await _get_card(card_id, lang)
+    await asyncio.gather(*(one(c, lang) for c, lang in keys), return_exceptions=True)
+
+
+def _is_pokemon(tc) -> Optional[bool]:
+    """Pokémon-Karte? Trainer und Energien haben keine Pokédex-Nummer — dort lohnt
+    keine Suche über Schwesterkarten. None = unklar (dann wie bisher suchen)."""
+    if tc.trainerType or tc.energyType:
+        return False
+    if tc.stage:
+        return True
+    cat = unicodedata.normalize("NFKD", (tc.category or "").strip().lower())
+    cat = "".join(ch for ch in cat if not unicodedata.combining(ch))
+    if not cat or not cat.isascii():
+        return None
+    return cat.startswith("pokemon")
 
 
 log = logging.getLogger(__name__)
@@ -446,7 +492,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         # Dex-Nr.: bevorzugt von der Karte; fehlt sie (z.B. Mega-Reihe), über
         # Schwesterkarten gleichen Namens nachschlagen (Spezies-Ebene).
         dex_id = tc.dex_id
-        if dex_id is None:
+        if dex_id is None and _is_pokemon(tc) is not False:
             sib_results = results or await tcgdex.search_cards(
                 {"name": read.name or tc.name or ""}, tcg_lang)
             dex_id, sib_en = await _dex_from_results(sib_results)
@@ -523,9 +569,12 @@ async def resolve_reads(db: Session, reads: list[ScanRawRead], default_lang: str
                         cached: bool = False) -> list[ScanCandidate]:
     """cached: Live-Scan-Bild — TCGdex-Karten aus dem kurzen Zwischenspeicher (_get_card)."""
     token = _cached.set(cached)
+    req_token = _request_cards.set({})
     try:
+        await _prefetch(reads, default_lang)
         return await _resolve_reads(db, reads, default_lang)
     finally:
+        _request_cards.reset(req_token)
         _cached.reset(token)
 
 

@@ -243,6 +243,8 @@ def _decide(card: np.ndarray, cands: list[matcher.Candidate], quad: np.ndarray) 
     upside = bool(cands and cands[0].upside_down)
     wanted = {num_key(catalog[c.card_id].local_id) for c in cands if c.card_id in catalog}
     def read_numbers():
+        if getattr(_quick, "on", False):
+            return []       # live scan, wide view: no number reading (slow); close-ups read it
         with timing.phase("ocr"):
             return numocr.read_numbers(card, upside_down=upside, wanted=wanted)
 
@@ -834,6 +836,8 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     places this frame on that map — also a close-up of a few cards — and gives
     every card its corners on the map ("map_quad"). A close-up is searched like
     loose cards (no pockets in view); a frame that can't be placed gets no cards.
+    Live frames of the whole page skip the number OCR (seconds each); close-ups
+    read the number, so moving in settles a same-art reprint.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
@@ -984,7 +988,6 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
         return None
     flat, (px, py, pw, ph), H = st
     Hinv = np.linalg.inv(H)
-    fh, fw = flat.shape[:2]
     cw, ch = pw / cols, ph / rows
     found: dict[int, tuple[matcher.Decision, np.ndarray]] = {}
 
@@ -997,28 +1000,45 @@ def _binder_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int
         p = pocket(oq)
         if p is not None and p not in found and p not in skip:
             found[p] = (d, np.float32(oq))
+    found.update(_search_cells(flat, (px, py, pw, ph), rows, cols, top_k, set(found) | set(skip)))
     cards: list[dict] = []
+    for p in sorted(found):
+        d, q = found[p]
+        back = cv2.perspectiveTransform(np.float32(q).reshape(-1, 1, 2), Hinv).reshape(-1, 2)
+        cards.append(_result(d, back, img, p))
+    return cards
+
+
+def _search_cells(flat: np.ndarray, grid: tuple[float, float, float, float], rows: int, cols: int, top_k: int,
+                  done: set[int]) -> dict[int, tuple[matcher.Decision, np.ndarray]]:
+    """
+    Grid cells (pockets, or where loose cards lie in rows) that no outline found
+    a card in: search each on its own — its outlines and the cell itself, a bit
+    wider — and keep a cell only when a card matches (empty pockets stay empty).
+    """
+    px, py, pw, ph = grid
+    fh, fw = flat.shape[:2]
+    cw, ch = pw / cols, ph / rows
+    out: dict[int, tuple[matcher.Decision, np.ndarray]] = {}
     for r in range(rows):
         for c in range(cols):
-            if r * cols + c in skip:
-                continue
-            if r * cols + c in found:
-                d, q = found[r * cols + c]
-                back = cv2.perspectiveTransform(q.reshape(-1, 1, 2), Hinv).reshape(-1, 2)
-                cards.append(_result(d, back, img, r * cols + c))
+            if r * cols + c in done:
                 continue
             x0, y0 = px + c * cw, py + r * ch
             ex, ey = POCKET_SLACK * cw, POCKET_SLACK * ch
             X0, Y0 = int(max(0, x0 - ex)), int(max(0, y0 - ey))
             X1, Y1 = int(min(fw, x0 + cw + ex)), int(min(fh, y0 + ch + ey))
+            if X1 - X0 < 20 or Y1 - Y0 < 20:
+                continue
             cell = flat[Y0:Y1, X0:X1]
             opts = [d.quad + [X0, Y0] for d in _detect(cell, max_cards=2, nested=True) if d.area_frac > 0.3]
+            opts += [q + [X0, Y0] for d in _detect(cell, max_cards=3, nested=True) if 0.08 < d.area_frac <= 0.3
+                     for q in detect.cards_around_art(d.quad, cell.shape)]
             opts.append(np.float32([[x0, y0], [x0 + cw, y0], [x0 + cw, y0 + ch], [x0, y0 + ch]]))
             d, q = _best_of(flat, opts, top_k, snap_outline=True)
             if d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD:  # skip empty pockets
-                back = cv2.perspectiveTransform(np.float32(q).reshape(-1, 1, 2), Hinv).reshape(-1, 2)
-                cards.append(_result(d, back, img, r * cols + c))
-    return cards
+                out[r * cols + c] = (d, np.float32(q))
+    return out
 
 
 def _multi_cards(img: np.ndarray, top_k: int,
@@ -1035,17 +1055,22 @@ def _multi_cards(img: np.ndarray, top_k: int,
     for det in _detect(img, max_cards=24, nested=True):
         if leave_out is not None and leave_out(det.quad):
             continue
-        card = detect.warp(img, det.quad)
-        cands = _match(card, snap, top_k)
-        if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
-            continue
-        q = det.quad
-        if not cands[0].geo_ok:
-            # sloppy or merged outline: let the homography find the real card
-            card, cands, q = _refine(img, card, cands, q, snap, top_k)
-        # plausible geometry first: a merged two-card outline can rack up
-        # art inliers but never maps cleanly onto one template
-        scored.append(((cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers), q, card, cands))
+        # An artwork frame (the card's own edges barely showing): the card around
+        # it first; the frame itself only if neither fits (a card lying sideways).
+        tries = detect.cards_around_art(det.quad, img.shape) + [det.quad]
+        for i, q in enumerate(tries):
+            card = detect.warp(img, q)
+            cands = _match(card, snap, top_k)
+            if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
+                continue
+            if not cands[0].geo_ok:
+                # sloppy or merged outline: let the homography find the real card
+                card, cands, q = _refine(img, card, cands, q, snap, top_k)
+            # plausible geometry first: a merged two-card outline can rack up
+            # art inliers but never maps cleanly onto one template
+            scored.append(((cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers), q, card, cands))
+            if i < len(tries) - 1 and cands[0].geo_ok:
+                break   # the card around the art fits: no need to try the rest
     scored.sort(key=lambda t: t[0], reverse=True)
     kept = []
     for key, q, card, cands in scored:
@@ -1092,18 +1117,41 @@ def _multi_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int,
         view = cv2.warpPerspective(img, Hv, (int(round((x1 - x0) * k)), int(round((y1 - y0) * k))),
                                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
     back = np.linalg.inv(Hv)
+    found = _multi_cards(view, top_k)
+    if rows > 0 and cols > 0:
+        # cards laid out in rows: the grid cells nothing was found in, one by one
+        gx, gy, gw, gh = -x0 * k, -y0 * k, pw * k, ph * k
+        cw, ch = gw / cols, gh / rows
+        taken = set()
+        for _, oq in found:
+            cx, cy = np.float32(oq).mean(axis=0)
+            r, c = int((cy - gy) // ch), int((cx - gx) // cw)
+            if 0 <= r < rows and 0 <= c < cols:
+                taken.add(r * cols + c)
+        extra = _search_cells(view, (gx, gy, gw, gh), rows, cols, top_k, taken)
+        found = sorted(found + list(extra.values()),
+                       key=lambda t: (np.float32(t[1])[:, 1].mean(), np.float32(t[1])[:, 0].mean()))
     return [_result(d, cv2.perspectiveTransform(np.float32(oq).reshape(-1, 1, 2), back).reshape(-1, 2), img, None)
-            for d, oq in _multi_cards(view, top_k)]
+            for d, oq in found]
 
 
 _IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+_quick = threading.local()   # live scan, whole page in view: skip the number OCR (seconds per frame)
+
+
+def _run_quick(*args) -> dict:
+    _quick.on = True
+    try:
+        return _run_match(*args)
+    finally:
+        _quick.on = False
 
 
 def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None,
                   skip: frozenset[int], map_req: str) -> dict:
     """Live scan with a page map (see /match): keep the map, or place the frame on it first."""
     if map_req == "new":
-        res = _run_match(img, mode, rows, cols, top_k, page, skip)
+        res = _run_quick(img, mode, rows, cols, top_k, page, skip)
         map_id = pagemap.store(img) if res["cards"] else None
         if map_id:
             res["map"] = {"id": map_id, "located": True, "whole": True, "area": 1.0, "h": _IDENTITY}
@@ -1119,9 +1167,9 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
     if loc is None:
         return {"mode": mode, "cards": [], "ms": round(t_loc * 1000), "timing": {"locate": round(t_loc * 1000)},
                 "map": {"id": map_req, "located": False}}
-    if loc.whole:       # the whole page (or table) in view: as usual
-        res = _run_match(img, mode, rows, cols, top_k, page, skip)
-    else:               # close-up: cards anywhere in the frame, no pockets
+    if loc.whole:       # the whole page (or table) in view: as usual, without the slow number reading
+        res = _run_quick(img, mode, rows, cols, top_k, page, skip)
+    else:               # close-up: cards anywhere in the frame, no pockets; numbers are read here
         res = _run_match(img, "multi", 0, 0, top_k, None)
     res["ms"] += round(t_loc * 1000)
     res["timing"]["locate"] = round(t_loc * 1000)

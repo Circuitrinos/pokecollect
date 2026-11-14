@@ -250,6 +250,54 @@ def test_live_bild_ohne_bild_abgleich_ohne_ocr(client, provider_local, png_bytes
     assert body["engine"] == "none" and body["candidates"] == [] and body["hinweis_art"] == "bild_abgleich_startet"
 
 
+def test_viele_karten_gleichzeitig_geladen_trainer_ohne_dex_suche(client, provider_local, png_bytes, monkeypatch):
+    """16 erkannte Karten: TCGdex-Abrufe laufen gleichzeitig; Trainer (keine Pokédex-Nr.)
+    lösen keine Suche über Schwesterkarten aus — vorher 7 Abrufe je Trainer, nacheinander."""
+    import asyncio
+    import time as _time
+
+    from app.services import tcgdex
+    from app.services.scan import resolver
+
+    calls: list[str] = []
+
+    async def fake_get_card(card_id, lang="en"):
+        calls.append(card_id)
+        await asyncio.sleep(0.15)
+        trainer = card_id.startswith("tr")
+        return tcgdex.TcgdexCard.model_validate({
+            "id": card_id, "localId": card_id.rsplit("-", 1)[1], "name": card_id,
+            "category": "Trainer" if trainer else "Pokemon", "trainerType": "Item" if trainer else None,
+            "stage": None if trainer else "Basic", "dexId": None if trainer else [25]})
+
+    async def no_search(*a, **k):
+        raise AssertionError("Schwesterkarten-Suche für einen Trainer")
+    monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
+    monkeypatch.setattr(tcgdex, "search_cards", no_search)
+    monkeypatch.setattr(scan_module, "resolve_reads", resolver.resolve_reads)
+    cards = [{"position": i, "quad": [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]], "auto": True, "confidence": 0.95,
+              "candidates": [{"card_id": f"{'tr' if i % 2 else 'pk'}{i}-{i + 1}", "name": "x", "local_id": str(i + 1)}]}
+             for i in range(12)]
+    provider_local(200, {"mode": "binder", "ms": 5, "cards": cards})
+    t0 = _time.perf_counter()
+    r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                    data={"mode": "binder", "rows": "4", "cols": "3", "default_language": "EN"})
+    took = _time.perf_counter() - t0
+    assert r.status_code == 200, r.text
+    got = r.json()["candidates"]
+    assert len(got) == 12 and all(c["match"] for c in got)
+    assert len(set(calls)) == 12 and len(calls) == 12                              # jede Karte genau einmal
+    assert took < 1.2, took                                                        # nacheinander wären es ≥ 1,8 s
+
+
+def test_dexid_mit_nachkomma():
+    """TCGdex liefert für japanische Promos (PCG*) dexId 384.1 — das kippte die ganze Karte."""
+    from app.services import tcgdex
+    assert tcgdex.TcgdexCard.model_validate({"id": "PCG2-067", "dexId": [384.1]}).dex_id == 384
+    assert tcgdex.TcgdexCard.model_validate({"id": "x", "dexId": ["a", None]}).dex_id is None
+    assert tcgdex.TcgdexCard.model_validate({"id": "x", "dexId": 7}).dex_id is None
+
+
 def test_live_bilder_laden_dieselbe_karte_nicht_jedes_mal(client, provider_local, png_bytes, monkeypatch):
     """Live-Scan: dieselben Karten alle paar Sekunden — TCGdex nur beim ersten Bild; normale Scans immer frisch."""
     from app.services import tcgdex

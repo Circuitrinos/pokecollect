@@ -16,6 +16,7 @@ Eigenimplementierung (MIT). Kein Code aus Drittprojekten übernommen.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -153,6 +154,15 @@ class TcgdexCard(BaseModel):
     @classmethod
     def _str_or_none(cls, v):
         return v if isinstance(v, str) else None
+
+    @field_validator("dexId", mode="before")
+    @classmethod
+    def _dex_ints(cls, v):
+        # TCGdex führt manche Formen mit Nachkomma (Japan-Promos PCG*: 384.1) — die Art zählt
+        if not isinstance(v, list):
+            return None
+        out = [int(x) for x in v if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and abs(x) < 1e6]
+        return out or None
 
     @field_validator("legal", mode="before")
     @classmethod

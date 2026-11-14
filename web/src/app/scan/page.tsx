@@ -367,6 +367,13 @@ export default function ScanPage() {
     : null;
   const tiltQuadRef = useRef<Quad | null>(null);
   tiltQuadRef.current = tiltQuad;
+  // Wo das Raster im Bild liegt: geneigt (Lagesensor) oder sonst der Rahmen auf dem Bildschirm —
+  // der Bild-Abgleich sucht dann jedes Fach/Feld, in dem er frei keine Karte fand, einzeln ab
+  const gridQuadRef = useRef<Quad | null>(null);
+  gridQuadRef.current = tiltQuad ?? (gridShown && step === "setup" && vidSize && gAspect !== null ? (() => {
+    const g = guideRect(vidSize.w, vidSize.h, gAspect);
+    return [[g.x, g.y], [g.x + g.w, g.y], [g.x + g.w, g.y + g.h], [g.x, g.y + g.h]] as Quad;
+  })() : null);
   const { stop: stopTilt, start: startTilt } = tilt;
   useEffect(() => {   // Mappe verlassen / Kamera aus → Sensor aus; eingeschaltet gemerkt → beim Öffnen wieder an
     if (!tiltOn) { stopTilt(); return; }
@@ -471,6 +478,10 @@ export default function ScanPage() {
   const livePickRef = useRef<string | null>(null);
   livePickRef.current = livePick;
   const [livePicking, setLivePicking] = useState(false);
+  // ✓ gedrückt, während ein Bild noch geprüft wird: mit dessen Ergebnis abschließen
+  const liveInFlightRef = useRef(false);
+  const finishWantedRef = useRef(false);
+  const [finishWanted, setFinishWanted] = useState(false);
   const motion = useMotion(liveOn);
   const toggleLive = () => {
     const on = !live;
@@ -486,6 +497,8 @@ export default function ScanPage() {
     setLiveState(liveRef.current);
     setLivePick(null);
     setLiveChip(null);
+    finishWantedRef.current = false;
+    setFinishWanted(false);
   }, [liveOn, mode, liveGrid]);
   useEffect(() => { lastDoneRef.current = null; }, [mode, liveGrid]);
   // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
@@ -500,7 +513,14 @@ export default function ScanPage() {
 
   const finishLive = () => {
     const st = liveRef.current;
-    if (!st.tracks.length) { handleCaptureRef.current(); return; }   // noch nichts gefunden → normales Foto
+    if (!st.tracks.length) {
+      // das erste Bild wird noch geprüft → mit seinem Ergebnis abschließen, sonst ein normales Foto
+      if (liveInFlightRef.current) { finishWantedRef.current = true; setFinishWanted(true); return; }
+      handleCaptureRef.current();
+      return;
+    }
+    finishWantedRef.current = false;
+    setFinishWanted(false);
     const { frame, items } = finish(st, Array.from(liveFramesRef.current.keys()));
     const photo = frame != null ? liveFramesRef.current.get(frame) : null;
     if (!photo || !items.length) return;
@@ -575,11 +595,12 @@ export default function ScanPage() {
         full.height = Math.round(v.videoHeight * kf);
         fctx.drawImage(v, 0, 0, full.width, full.height);
         const vw = v.videoWidth, vh = v.videoHeight;
-        const tq = tiltQuadRef.current;
-        const page = useGrid && tq ? tq.map(([x, y]) => [x / vw, y / vh] as Pt) : null;
+        const gq = gridQuadRef.current;
+        const page = useGrid && gq ? gq.map(([x, y]) => [x / vw, y / vh] as Pt) : null;
         const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", 0.88));
         if (!photo || stop) continue;
         showChip("checking");
+        liveInFlightRef.current = true;
         try {
           const before = liveRef.current;
           const res = await scanApi.scan(photo, {
@@ -589,7 +610,13 @@ export default function ScanPage() {
             map: mode === "single" ? null : before.mapId ?? "new",
           });
           if (stop) break;
-          if (res.data.engine !== "local") { showChip("paused"); await sleep(4000); continue; }
+          if (res.data.engine !== "local") {
+            liveInFlightRef.current = false;
+            if (finishWantedRef.current) { finishLiveRef.current(); break; }
+            showChip("paused");
+            await sleep(4000);
+            continue;
+          }
           const where = res.data.live_map;
           if (where?.unknown) {       // Seitenkarte weg (matcher neu gestartet): diese Seite von vorn
             liveFramesRef.current = new Map();
@@ -597,19 +624,25 @@ export default function ScanPage() {
             continue;
           }
           const next = commitLive((st) => addFrame(st, res.data.candidates, mode, { map: where, cols, rows }));
+          liveInFlightRef.current = false;
+          const frames = liveFramesRef.current;
+          if (!next.lost) frames.set(next.frames, photo);
+          if (finishWantedRef.current) { finishLiveRef.current(); break; }   // ✓ wartete auf dieses Bild
           if (next.lost) { showChip("lost"); await sleep(300); continue; }
           showChip(null);
-          const frames = liveFramesRef.current;
-          frames.set(next.frames, photo);
           // behalten: die letzten Bilder und das, das gerade das beste Foto wäre
           const keep = finish(next, Array.from(frames.keys())).frame;
           for (const f of Array.from(frames.keys())) if (f <= next.frames - 6 && f !== keep) frames.delete(f);
           if (autoFinishRef.current(next)) break;
         } catch {
+          liveInFlightRef.current = false;
           if (stop) break;
+          if (finishWantedRef.current) { finishLiveRef.current(); break; }
           showChip("paused");
           await sleep(2500);
           continue;
+        } finally {
+          liveInFlightRef.current = false;
         }
         await sleep(200);
       }
@@ -997,8 +1030,8 @@ export default function ScanPage() {
   const handleCapture = async () => {
     // geneigtes Raster: wo die Seite im Foto liegt (Anteile des Videobilds = des Fotos)
     const v = videoRef.current;
-    const tq = tiltQuadRef.current;
-    const page = tq && v && v.videoWidth ? tq.map(([x, y]) => [x / v.videoWidth, y / v.videoHeight] as Pt) : null;
+    const gq = gridQuadRef.current;
+    const page = gq && v && v.videoWidth ? gq.map(([x, y]) => [x / v.videoWidth, y / v.videoHeight] as Pt) : null;
     const blob = await blobFromVideo();
     // Kamera läuft weiter (Serienscan); Auto-Aufnahme erst nach Kartenwechsel wieder scharf.
     needClearRef.current = true;
@@ -1582,7 +1615,8 @@ export default function ScanPage() {
                     const n = counts(liveState);
                     const total = n.green + n.yellow + n.red;
                     const same = allSure(liveState, mode) && signature(liveState) === lastDoneRef.current;
-                    const text = liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
+                    const text = finishWanted ? t.scan_live_finishing
+                      : liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
                       : same ? t.scan_live_same
                       : liveChip === "hold" ? t.scan_live_hold
                       : liveChip === "checking" ? t.scan_live_checking : !total ? t.scan_live_looking : null;
@@ -1684,7 +1718,7 @@ export default function ScanPage() {
                       <button type="button" onClick={() => finishLive()} disabled={busy} aria-label={t.scan_live_done}
                         title={t.scan_live_done} data-testid="scan-live-done"
                         className="justify-self-center flex h-16 w-16 items-center justify-center rounded-full border-4 border-green-400 bg-green-500/30 text-2xl text-white shadow-lg transition hover:bg-green-500/50 active:scale-95 disabled:opacity-50">
-                        {busy ? <span className="block h-full w-full animate-pulse rounded-full bg-white/50" /> : "✓"}
+                        {busy || finishWanted ? <span className="block h-full w-full animate-pulse rounded-full bg-white/50" /> : "✓"}
                       </button>
                     ) : (
                     <button type="button" onClick={() => void handleCapture()} disabled={busy} aria-label={t.scan_capture}

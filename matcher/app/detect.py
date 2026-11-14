@@ -341,6 +341,39 @@ def _nms(quads: list[np.ndarray], iou: float = 0.7) -> list[np.ndarray]:
     return kept
 
 
+# Where the artwork sits on an upright card (modern Pokémon and trainer cards):
+# about 83 % of the card's width, starting ~12 % from the top, ~38 % of its height.
+ART_W, ART_TOP, ART_H = 0.83, 0.12, 0.38
+
+
+def cards_around_art(quad: np.ndarray, shape) -> list[np.ndarray]:
+    """
+    A card's own edges often barely show (silver border on a light table) while
+    its artwork frame does. For an outline shaped like an artwork frame on an
+    upright card, the card around it: once with the art in the upper part, once
+    upside down. The match then snaps to the real outline. [] if it isn't art-shaped.
+    """
+    q = order_points(quad)
+    top, bottom = q[1] - q[0], q[2] - q[3]
+    left, right = q[3] - q[0], q[2] - q[1]
+    a = (np.linalg.norm(top) + np.linalg.norm(bottom)) / 2
+    b = (np.linalg.norm(left) + np.linalg.norm(right)) / 2
+    if b < 1 or not 1.2 <= a / b <= 2.2:
+        return []
+    u = (top + bottom) / max(np.linalg.norm(top + bottom), 1e-6)
+    v = (left + right) / max(np.linalg.norm(left + right), 1e-6)
+    w = a / ART_W
+    h = w * CARD_H / CARD_W
+    if not 0.25 <= b / h <= 0.55:
+        return []
+    m = (w - a) / 2
+    up = np.float32([q[0] - m * u - ART_TOP * h * v, q[1] + m * u - ART_TOP * h * v])
+    upright = np.float32([up[0], up[1], up[1] + h * v, up[0] + h * v])
+    down = np.float32([q[3] - m * u + ART_TOP * h * v, q[2] + m * u + ART_TOP * h * v])
+    flipped = np.float32([down[0] - h * v, down[1] - h * v, down[1], down[0]])
+    return [c for c in (upright, flipped) if plausible_quad(c, shape)]
+
+
 def detect_cards(img: np.ndarray, max_cards: int = 20, nested: bool = False) -> list[Detection]:
     """
     Card-shaped quads, largest first.
