@@ -25,6 +25,7 @@ import app.models  # noqa: F401 — alle Tabellen (inkl. users) vor create_all
 import app.tenancy  # noqa: F401 — registriert die Mehrbenutzer-Filter (Session-Events)
 from app.api.v1 import router as v1_router
 from app.api.bild_spiegel import router as bild_spiegel_router
+from app.services import card_names
 from app.services.cron import start_scheduler
 from app.schemas._validators import _CONTROL_CHARS
 from app.messages import localize
@@ -391,6 +392,15 @@ def _run_light_migrations():
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS stamp_quad TEXT",
         # Muster-Drucke je Katalogkarte (TCGplayer: Pokéball, Masterball, Energie-Symbol, Love Ball …)
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS patterns TEXT",
+        # Basis-Energien heißen wie in Pokémon TCG Live „Basic Psychic Energy" statt
+        # „Psychic Energy" (services/card_names.py) — gespeicherte Karten und
+        # Decklisten einmal nachziehen; die alten Spezial-Energien bleiben.
+        *[f"""UPDATE {table} x SET {col} = 'Basic ' || initcap(lower(trim(x.{col})))
+              WHERE x.{col} ~* '{card_names.SQL_PATTERN}'
+                AND NOT EXISTS (SELECT 1 FROM tcgdex_catalog t WHERE t.card_id = x.tcgdex_card_id
+                                AND lower(coalesce(t.energy_type, '')) = 'special')"""
+          for table, col in (("pokemon_cards", "englischer_name"), ("pokemon_cards", "kartenname"),
+                             ("deck_slots", "name"))],
     ]
     with engine.begin() as conn:
         for stmt in stmts:

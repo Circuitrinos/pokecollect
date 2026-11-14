@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.models.pokemon_set import PokemonSet
 from app.schemas.scan import ScanCandidate, ScanMatch, ScanRawRead
 from app.services import tcgdex
+from app.services.card_names import basic_energy_name
 from app.services.set_sync import PTCGO_TO_SETID
 
 # Live-Scan: dieselben Karten kommen alle ein, zwei Sekunden wieder — deren
@@ -501,8 +502,8 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
 
         match = ScanMatch(
             tcgdex_card_id=tc.id,
-            name=tc.name,
-            englischer_name=eng,
+            name=basic_energy_name(tc.name, tc.energyType),
+            englischer_name=basic_energy_name(eng, tc.energyType),
             set_id=set_id,
             set_code=(set_row.code if set_row else read.set_code),
             set_name=(tc.set.name if tc.set else None),
@@ -516,8 +517,8 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
             variants_firstedition=tc.variants.firstEdition if tc.variants else None,
         )
         suggested = {
-            "kartenname": tc.name or read.name,
-            "englischer_name": eng,
+            "kartenname": basic_energy_name(tc.name, tc.energyType) or read.name,
+            "englischer_name": basic_energy_name(eng, tc.energyType),
             "pokedex_nr": dex_id,
             "set_edition": set_edition,
             "karten_nr": knr,

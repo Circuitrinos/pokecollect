@@ -594,3 +594,64 @@ def test_choose_the_print_by_hand(client, catalog):
         db.execute(delete(TcgdexCatalog).where(TcgdexCatalog.card_id.like(f"{P}3-%")))
         db.commit()
         db.close()
+
+
+def test_basic_energy_named_like_tcg_live(client, catalog):
+    """Basis-Energien heißen wie in Pokémon TCG Live „Basic Psychic Energy" — auf
+    Karten, auf Deckzeilen und im Abgleich; die Spezial-Energien bleiben."""
+    from sqlalchemy import text
+
+    from app.main import _run_light_migrations
+    from app.services import catalog as catalog_svc
+    from app.services.card_names import basic_energy_name
+
+    assert basic_energy_name("Psychic Energy") == "Basic Psychic Energy"
+    assert basic_energy_name("basic psychic energy") == "Basic Psychic Energy"
+    assert basic_energy_name("Darkness Energy", "Special") == "Darkness Energy"
+    assert basic_energy_name("Luminous Energy") == "Luminous Energy"
+    assert basic_energy_name("Psycho-Energie") == "Psycho-Energie"
+    assert svc.rule_name("Psychic Energy") == svc.rule_name("Basic {P} Energy") == "basic psychic energy"
+
+    with SessionLocal() as db:
+        row = db.get(TcgdexCatalog, f"{P}e-005")
+        f = catalog_svc.catalog_fields(db, row, "EN")
+        assert f["kartenname"] == "Basic Psychic Energy" and f["englischer_name"] == "Basic Psychic Energy"
+        assert [r.card_id for r in svc.prints_for(db, "Basic {P} Energy")] == [f"{P}e-005"]
+
+    # TCG-Live-Liste mit „Basic {P} Energy" → Druck gefunden, Export unverändert
+    deck = client.post(f"{API}/decks", json={"name": "Test-Energy", "text": "Energy: 1\n4 Basic {P} Energy TDE 5\n"}).json()["deck"]
+    assert deck["slots"][0]["tcgdex_card_id"] == f"{P}e-005"
+    assert "4 Basic {P} Energy TDE 5" in client.get(f"{API}/decks/{deck['id']}/export").text
+    # aus dem Katalog hinzugefügt → Zeile heißt „Basic Grass Energy"
+    added = client.post(f"{API}/decks/{deck['id']}/slots", json={"tcgdex_card_id": f"{P}e-009", "count": 2}).json()
+    assert any(s["name"] == "Basic Grass Energy" for s in added["slots"]), [s["name"] for s in added["slots"]]
+
+    # gespeicherte Karten und Zeilen: beim Start einmal umbenannt (Spezial-Energie nicht)
+    with SessionLocal() as db:
+        db.add_all([
+            TcgdexCatalog(card_id=f"{P}e-old", region="west", set_id=f"{P}e", local_id="old", name="Darkness Energy",
+                          name_en="Darkness Energy", category="Energy", energy_type="Special"),
+        ])
+        db.commit()
+        uid = db.scalar(text("SELECT id FROM users ORDER BY id LIMIT 1"))
+        db.add_all([
+            PokemonCard(kartenname="Psychic Energy", englischer_name="Psychic Energy", user_id=uid,
+                        tcgdex_card_id=f"{P}e-005", besessen=True),
+            PokemonCard(kartenname="Psycho-Energie", englischer_name="Psychic Energy", user_id=uid, sprache="DE",
+                        tcgdex_card_id=f"{P}e-005", besessen=True),
+            PokemonCard(kartenname="Darkness Energy", englischer_name="Darkness Energy", user_id=uid,
+                        tcgdex_card_id=f"{P}e-old", besessen=True),
+        ])
+        db.execute(text("UPDATE deck_slots SET name = 'Grass Energy' WHERE tcgdex_card_id = :c"), {"c": f"{P}e-009"})
+        db.commit()
+    _run_light_migrations()
+    _run_light_migrations()                                   # zweimal: nichts doppelt
+    with SessionLocal() as db:
+        cards = db.execute(select(PokemonCard.kartenname, PokemonCard.englischer_name)
+                           .where(PokemonCard.tcgdex_card_id.like(f"{P}e-%"))
+                           .execution_options(all_users=True)).all()
+        assert sorted(cards) == sorted([("Basic Psychic Energy", "Basic Psychic Energy"),
+                                        ("Psycho-Energie", "Basic Psychic Energy"),
+                                        ("Darkness Energy", "Darkness Energy")]), cards
+        assert db.scalar(text("SELECT name FROM deck_slots WHERE tcgdex_card_id = :c"), {"c": f"{P}e-009"}) \
+            == "Basic Grass Energy"

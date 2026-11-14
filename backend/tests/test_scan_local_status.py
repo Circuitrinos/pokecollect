@@ -368,3 +368,22 @@ def test_nur_der_druck_offen_sperrt_nicht(client, provider_local, png_bytes, mon
     matcher([ball("me01-131", 78), ball("sv01-196", 70), {"card_id": "dp3-124", "name": "Other", "local_id": "124",
                                                            "art_inliers": 20}])
     assert scan()["print_choice"] is True
+
+
+def test_scan_benennt_basis_energie_wie_tcg_live(client, provider_local, png_bytes, monkeypatch):
+    """Erkannte Basis-Energie: „Basic Psychic Energy" (TCGdex führt sie oft als „Psychic Energy")."""
+    from app.services import tcgdex
+    from app.services.scan import resolver
+
+    async def fake_get_card(card_id, lang="en"):
+        return tcgdex.TcgdexCard.model_validate({"id": card_id, "localId": "5", "name": "Psychic Energy",
+                                                 "category": "Energy", "energyType": "Basic"})
+    monkeypatch.setattr(tcgdex, "get_card", fake_get_card)
+    monkeypatch.setattr(scan_module, "resolve_reads", resolver.resolve_reads)
+    provider_local(200, {"mode": "single", "ms": 5, "cards": [{
+        "position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "auto": True, "confidence": 0.95,
+        "candidates": [{"card_id": "mee-005", "name": "Psychic Energy", "local_id": "5"}]}]})
+    r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                    data={"mode": "single", "default_language": "EN"})
+    c = r.json()["candidates"][0]
+    assert c["suggested"]["kartenname"] == "Basic Psychic Energy" and c["match"]["name"] == "Basic Psychic Energy"

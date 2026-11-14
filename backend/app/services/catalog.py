@@ -27,7 +27,7 @@ from app.models.collection import Collection, collection_cards
 from app.models.pokemon_set import PokemonSet
 from app.models.sealed import SealedCatalog
 from app.models.tcgdex_catalog import TcgdexCatalog
-from app.services import regulation, tcgcsv, tcgdex
+from app.services import card_names, regulation, tcgcsv, tcgdex
 from app.services.card_creation import create_owned_card
 from app.services.collection_slots import next_free_position
 from app.services.scan.resolver import _map_rarity
@@ -803,8 +803,8 @@ def catalog_fields(db: Session, row: TcgdexCatalog, lang: Optional[str] = "DE", 
     number = card_number(db, row, sets)
     promo = _is_promo(row.set_name) or _is_promo(set_name)
     return {
-        "kartenname": card_name or row.card_id,
-        "englischer_name": row.name_en,
+        "kartenname": card_names.basic_energy_name(card_name, row.energy_type) or row.card_id,
+        "englischer_name": card_names.basic_energy_name(row.name_en, row.energy_type),
         "pokedex_nr": row.dex_id,
         "set_edition": set_edition,
         "karten_nr": number,

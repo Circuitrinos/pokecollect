@@ -31,7 +31,7 @@ from app.models.card import PokemonCard
 from app.models.deck import SECTIONS, Deck, DeckSlot
 from app.models.pokemon_set import PokemonSet
 from app.models.tcgdex_catalog import TcgdexCatalog
-from app.services import regulation
+from app.services import card_names, regulation
 
 log = logging.getLogger(__name__)
 
@@ -72,14 +72,16 @@ def expand_symbols(name: str) -> str:
 
 def rule_name(name: str) -> str:
     """Name im Sinne der Regeln: Akzente/Groß-klein zählen nicht, der Zusatz in
-    Klammern („Boss's Orders (Ghetsis)") auch nicht."""
-    n = _plain(expand_symbols(name))
-    return re.sub(r"\s*\([^)]*\)\s*$", "", n)
+    Klammern („Boss's Orders (Ghetsis)") auch nicht; „Psychic Energy" und
+    „Basic {P} Energy" sind dieselbe Karte („basic psychic energy")."""
+    n = re.sub(r"\s*\([^)]*\)\s*$", "", _plain(expand_symbols(name)))
+    m = re.fullmatch(r"(?:basic )?(\w+) energy", n)
+    return f"basic {m.group(1)} energy" if m and m.group(1) in _BASIC_TYPES else n
 
 
 def basic_energy_type(name: str) -> Optional[str]:
-    m = re.fullmatch(r"(?:basic )?(\w+) energy", rule_name(name))
-    return m.group(1) if m and m.group(1) in _BASIC_TYPES else None
+    m = re.fullmatch(r"basic (\w+) energy", rule_name(name))
+    return m.group(1) if m else None
 
 
 def ptcgl_name(name: str) -> str:
@@ -305,7 +307,7 @@ def add_slot(db: Session, deck: Deck, row: TcgdexCatalog, count: int = 1, how: s
         if s.tcgdex_card_id and s.tcgdex_card_id.upper() == row.card_id.upper():
             s.count = min(MAX_SLOT_COUNT, s.count + count)
             return s
-    name = row.name_en or row.name or row.card_id
+    name = card_names.basic_energy_name(row.name_en or row.name, row.energy_type) or row.card_id
     slot = DeckSlot(deck_id=deck.id, tcgdex_card_id=row.card_id, name=name, set_code=(row.set_code or None),
                     number=_num(row.local_id), count=min(MAX_SLOT_COUNT, count),
                     section=section_of(row, name), match=how, position=_next_position(db, deck.id))
@@ -322,7 +324,9 @@ def prints_for(db: Session, name: str) -> list[TcgdexCatalog]:
     if not first:
         return []
     col = func.lower(func.coalesce(TcgdexCatalog.name_en, TcgdexCatalog.name))
-    rows = db.scalars(select(TcgdexCatalog).where(TcgdexCatalog.region == "west", col.like(f"{first}%"))).all()
+    t = basic_energy_type(name)   # Katalog: „Psychic Energy" oder „Basic Psychic Energy"
+    cond = col.like(f"%{t} energy%") if t else col.like(f"{first}%")
+    rows = db.scalars(select(TcgdexCatalog).where(TcgdexCatalog.region == "west", cond)).all()
     rows = [r for r in rows if rule_name(r.name_en or r.name or "") == want]
     return sorted(rows, key=lambda r: (r.regulation_mark or "", r.set_id or "", r.local_id_num or 0), reverse=True)
 
