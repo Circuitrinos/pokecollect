@@ -25,6 +25,7 @@ import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Loc
 import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, type Quad } from "@/lib/tiltGrid";
 import { useTiltGrid } from "@/lib/useTiltGrid";
 import { useMotion } from "@/lib/useMotion";
+import { debugEnabled, dlog } from "@/lib/debugLog";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
   addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict, viewQuad,
@@ -278,6 +279,7 @@ export default function ScanPage() {
   }, [target, collectionId, collections]);
 
   const stopCamera = () => {
+    dlog("camera.stop");
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
     streamRef.current = null;
     setCameraOn(false);
@@ -287,6 +289,7 @@ export default function ScanPage() {
     setCamMsg(null);
     if (!navigator.mediaDevices?.getUserMedia) {
       // Unsicherer Kontext (HTTP über LAN) → getUserMedia ist gesperrt.
+      dlog("camera.unavailable", { secure: window.isSecureContext });
       setCamMsg(t.scan_camera_insecure);
       return;
     }
@@ -296,8 +299,11 @@ export default function ScanPage() {
         audio: false,
       });
       streamRef.current = stream;
+      const st = stream.getVideoTracks()[0]?.getSettings?.();
+      dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode });
       setCameraOn(true); // Video wird erst jetzt gerendert → Stream im Effect anhängen
-    } catch {
+    } catch (e) {
+      dlog("camera.error", { name: (e as Error)?.name, message: (e as Error)?.message });
       setCamMsg(t.scan_camera_insecure);
     }
   };
@@ -504,7 +510,7 @@ export default function ScanPage() {
   // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
   const autoFinish = (st: LiveState): boolean => {
     if (!allSure(st, mode)) return false;
-    if (signature(st) === lastDoneRef.current) return false;
+    if (signature(st) === lastDoneRef.current) { dlog("live.same-as-last"); return false; }
     finishLiveRef.current();
     return true;
   };
@@ -513,6 +519,8 @@ export default function ScanPage() {
 
   const finishLive = () => {
     const st = liveRef.current;
+    dlog("live.finish", { tracks: st.tracks.length, frames: st.frames, counts: counts(st), inFlight: liveInFlightRef.current,
+      wanted: finishWantedRef.current, kept: Array.from(liveFramesRef.current.keys()) });
     if (!st.tracks.length) {
       // das erste Bild wird noch geprüft → mit seinem Ergebnis abschließen, sonst ein normales Foto
       if (liveInFlightRef.current) { finishWantedRef.current = true; setFinishWanted(true); return; }
@@ -523,6 +531,7 @@ export default function ScanPage() {
     setFinishWanted(false);
     const { frame, items } = finish(st, Array.from(liveFramesRef.current.keys()));
     const photo = frame != null ? liveFramesRef.current.get(frame) : null;
+    dlog("live.finish.review", { photoFrame: frame, hasPhoto: !!photo, items: items.length });
     if (!photo || !items.length) return;
     lastDoneRef.current = signature(st);
     liveFramesRef.current = new Map();
@@ -540,6 +549,7 @@ export default function ScanPage() {
       const lang = (v.cand?.suggested as Record<string, unknown> | undefined)?.sprache as string | undefined;
       const r = await scanApi.resolve({ tcgdex_card_id: alt.tcgdex_card_id, name: alt.name, language: lang ?? defaultLang });
       const next = commitLive((st) => pick(st, key, alt.tcgdex_card_id, r.data));
+      dlog("live.pick", { key, id: alt.tcgdex_card_id });
       setLivePick(null);
       autoFinish(next);
     } catch {
@@ -564,6 +574,8 @@ export default function ScanPage() {
     const grid = mode === "multi" ? parseGrid(multiGrid) : null;
     const { cols, rows } = grid ?? parseLayout(layout);
     const useGrid = mode === "binder" || grid !== null;
+    dlog("live.start", { mode, cols: useGrid ? cols : 0, rows: useGrid ? rows : 0, sensor: motion.still() });
+    let frameNo = 0;
     (async () => {
       while (!stop) {
         // 1. auf ein ruhiges, scharfes Bild warten — Sensor (falls da) und Kamerabild;
@@ -584,7 +596,13 @@ export default function ScanPage() {
           // ruhig und scharf; sonst bald das schärfste der letzten Bilder (sofern der Sensor nicht
           // gerade Bewegung meldet); spätestens ein ruhiges bzw. irgendein Bild
           if ((calm && q.sharp) || (waited > 1500 && q.sharp && sensor !== false)
-            || (waited > 3000 && (q.still || sensor === true)) || waited > 6000) break;
+            || (waited > 3000 && (q.still || sensor === true)) || waited > 6000) {
+            dlog("live.frame.pick", {
+              n: frameNo + 1, waited: Math.round(waited), why: calm && q.sharp ? "still+sharp" : waited > 6000 ? "timeout"
+                : waited > 3000 ? "still-enough" : "sharpest", diff: q.diff, sharp: q.s, sensor,
+            });
+            break;
+          }
           showChip(calm ? null : "hold");
           await sleep(110);
         }
@@ -601,8 +619,15 @@ export default function ScanPage() {
         if (!photo || stop) continue;
         showChip("checking");
         liveInFlightRef.current = true;
+        frameNo += 1;
+        const tSend = performance.now();
         try {
           const before = liveRef.current;
+          dlog("live.frame.send", {
+            n: frameNo, w: full.width, h: full.height, kb: Math.round(photo.size / 1024), grid: !!page,
+            tilt: !!tiltQuadRef.current, map: mode === "single" ? null : before.mapId ?? "new",
+            skip: mode === "binder" ? skipPockets(before) : [],
+          });
           const res = await scanApi.scan(photo, {
             mode, rows: useGrid ? rows : 0, cols: useGrid ? cols : 0, default_language: defaultLang, page,
             skip: mode === "binder" ? skipPockets(before) : undefined, live: true,
@@ -610,6 +635,12 @@ export default function ScanPage() {
             map: mode === "single" ? null : before.mapId ?? "new",
           });
           if (stop) break;
+          dlog("live.frame.result", {
+            n: frameNo, ms: Math.round(performance.now() - tSend), engine: res.data.engine, hint: res.data.hinweis_art,
+            cards: res.data.candidates.length, map: res.data.live_map ?? null,
+            found: res.data.candidates.map((c) => [c.position, c.match?.tcgdex_card_id ?? null,
+              c.needs_choice ? (c.print_choice ? "print" : "pick") : "sure", Math.round((c.confidence ?? 0) * 100)]),
+          });
           if (res.data.engine !== "local") {
             liveInFlightRef.current = false;
             if (finishWantedRef.current) { finishLiveRef.current(); break; }
@@ -625,6 +656,12 @@ export default function ScanPage() {
           }
           const next = commitLive((st) => addFrame(st, res.data.candidates, mode, { map: where, cols, rows }));
           liveInFlightRef.current = false;
+          if (debugEnabled()) {
+            dlog("live.state", {
+              n: frameNo, frames: next.frames, lost: next.lost, mapId: next.mapId, counts: counts(next),
+              tracks: next.tracks.map((tr) => { const v = verdict(tr); return [tr.position ?? tr.key, v.level, v.why, v.id, tr.obs.length]; }),
+            });
+          }
           const frames = liveFramesRef.current;
           if (!next.lost) frames.set(next.frames, photo);
           if (finishWantedRef.current) { finishLiveRef.current(); break; }   // ✓ wartete auf dieses Bild
@@ -634,8 +671,10 @@ export default function ScanPage() {
           const keep = finish(next, Array.from(frames.keys())).frame;
           for (const f of Array.from(frames.keys())) if (f <= next.frames - 6 && f !== keep) frames.delete(f);
           if (autoFinishRef.current(next)) break;
-        } catch {
+        } catch (e) {
           liveInFlightRef.current = false;
+          const err = e as { message?: string; response?: { status?: number } };
+          dlog("live.frame.error", { n: frameNo, ms: Math.round(performance.now() - tSend), status: err?.response?.status, message: err?.message });
           if (stop) break;
           if (finishWantedRef.current) { finishLiveRef.current(); break; }
           showChip("paused");
@@ -647,7 +686,7 @@ export default function ScanPage() {
         await sleep(200);
       }
     })();
-    return () => { stop = true; };
+    return () => { stop = true; dlog("live.stop", { frames: frameNo }); };
   }, [liveOn, mode, layout, multiGrid, defaultLang]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Scan-Entwurf ────────────────────────────────────────────────────────
@@ -977,6 +1016,7 @@ export default function ScanPage() {
 
   const runScan = useCallback(async (rawBlob: Blob, page?: Pt[] | null) => {
     setBusy(true);
+    const tScan = performance.now();
     let blob: Blob | null = null;
     try {
       // EXIF-Orientierung fest einbacken (Anzeige == Zuschnitt) und vor dem
@@ -993,6 +1033,7 @@ export default function ScanPage() {
       const grid = mode === "multi" ? parseGrid(multiGrid) : null;
       const { cols, rows } = grid ?? parseLayout(layout);
       const useGrid = mode === "binder" || (grid !== null && !!page);
+      dlog("scan.send", { mode, kb: Math.round(blob.size / 1024), rows: useGrid ? rows : 0, cols: useGrid ? cols : 0, grid: !!page });
       const res = await scanApi.scan(blob, {
         mode,
         rows: useGrid ? rows : 0,
@@ -1000,6 +1041,9 @@ export default function ScanPage() {
         default_language: defaultLang,
         page: mode === "binder" || mode === "multi" ? page : null,
       });
+      dlog("scan.result", { ms: Math.round(performance.now() - tScan), engine: res.data.engine, hint: res.data.hinweis_art,
+        cards: res.data.candidates.length,
+        found: res.data.candidates.map((c) => [c.position, c.match?.tcgdex_card_id ?? null, c.needs_choice ? "pick" : "sure"]) });
       const list = res.data.candidates.map((c) => toEditableRef.current(c));
       const art = res.data.hinweis_art;
       if (art) {
@@ -1019,7 +1063,9 @@ export default function ScanPage() {
         return;
       }
       openReviewRef.current(blob, list);
-    } catch {
+    } catch (e) {
+      const err = e as { message?: string; response?: { status?: number } };
+      dlog("scan.error", { ms: Math.round(performance.now() - tScan), status: err?.response?.status, message: err?.message });
       if (blob) await keepRef.current(blob, true);
       else toast.error(t.scan_error);
     } finally {
@@ -1030,6 +1076,7 @@ export default function ScanPage() {
   const handleCapture = async () => {
     // geneigtes Raster: wo die Seite im Foto liegt (Anteile des Videobilds = des Fotos)
     const v = videoRef.current;
+    dlog("scan.capture", { mode, video: v ? `${v.videoWidth}x${v.videoHeight}` : null, tilt: !!tiltQuadRef.current, live: liveOn });
     const gq = gridQuadRef.current;
     const page = gq && v && v.videoWidth ? gq.map(([x, y]) => [x / v.videoWidth, y / v.videoHeight] as Pt) : null;
     const blob = await blobFromVideo();
@@ -1042,6 +1089,7 @@ export default function ScanPage() {
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
+    dlog("scan.file", { kb: f ? Math.round(f.size / 1024) : null, type: f?.type });
     if (f) runScan(f);
     e.target.value = "";
   };

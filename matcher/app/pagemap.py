@@ -9,6 +9,7 @@ and in the map alike; h maps a frame point onto the map.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -27,6 +28,8 @@ MIN_INLIERS = 25        # fewer → the frame is not placed (another page, too b
 MAX_MAPS = 16           # live sessions kept at once
 TTL_S = 30 * 60
 WHOLE_PAGE = 0.6        # a frame covering this much of the map shows the whole page
+
+log = logging.getLogger("matcher.pagemap")
 
 
 @dataclass
@@ -105,12 +108,14 @@ def locate(img: np.ndarray, m: PageMap) -> Located | None:
         return None
     pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(des, m.des, k=2)
     good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < RATIO * p[1].distance]
+    log.debug("locate: %d features, %d good matches (map %d features)", len(xy), len(good), len(m.xy))
     if len(good) < MIN_INLIERS:
         return None
     src = np.float32([xy[g.queryIdx] for g in good])
     dst = np.float32([m.xy[g.trainIdx] for g in good])
     H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
     if H is None or mask is None or int(mask.sum()) < MIN_INLIERS:
+        log.debug("locate: no consistent fit (%s inliers)", None if mask is None else int(mask.sum()))
         return None
     # pixels → fractions on both sides
     Hn = np.diag([1 / m.w, 1 / m.h, 1.0]) @ H @ np.diag([w, h, 1.0])
@@ -123,6 +128,7 @@ def locate(img: np.ndarray, m: PageMap) -> Located | None:
     cross = [turn(c[(i + 1) % 4] - c[i], c[(i + 2) % 4] - c[(i + 1) % 4]) for i in range(4)]
     area = _area(c)
     if not (all(x > 0 for x in cross) or all(x < 0 for x in cross)) or not 0.01 < area < 6:
+        log.debug("locate: implausible fit (area %.3f)", area)
         return None     # folded or absurd: a wrong fit
     return Located(Hn / Hn[2, 2], area, int(mask.sum()))
 

@@ -45,15 +45,19 @@ async def _get_card(card_id: str, lang: str):
     key = (card_id, lang)
     req = _request_cards.get()
     if req is not None and key in req:
+        log.debug("TCGdex %s/%s: schon geladen (diese Anfrage)", lang, card_id)
         return _copy(req[key])
     if not _cached.get():
+        log.debug("TCGdex %s/%s: laden", lang, card_id)
         card = await tcgdex.get_card(card_id, lang)
     else:
         now = time.monotonic()
         hit = _LIVE_CACHE.get(key)
         if hit and hit[0] > now:
+            log.debug("TCGdex %s/%s: aus dem Live-Zwischenspeicher", lang, card_id)
             card = hit[1]
         else:
+            log.debug("TCGdex %s/%s: laden (Live)", lang, card_id)
             card = await tcgdex.get_card(card_id, lang)
             if len(_LIVE_CACHE) >= _LIVE_MAX:
                 for k in sorted(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])[: _LIVE_MAX // 4]:
@@ -76,7 +80,9 @@ async def _prefetch(reads: list[ScanRawRead], default_lang: str) -> None:
     async def one(card_id: str, lang: str) -> None:
         async with gate:
             await _get_card(card_id, lang)
+    t0 = time.perf_counter()
     await asyncio.gather(*(one(c, lang) for c, lang in keys), return_exceptions=True)
+    log.debug("TCGdex: %d Karten gleichzeitig geladen in %d ms", len(keys), round((time.perf_counter() - t0) * 1000))
 
 
 def _is_pokemon(tc) -> Optional[bool]:
@@ -494,6 +500,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         # Schwesterkarten gleichen Namens nachschlagen (Spezies-Ebene).
         dex_id = tc.dex_id
         if dex_id is None and _is_pokemon(tc) is not False:
+            log.debug("%s: keine Pokédex-Nr. — über Schwesterkarten gesucht (%s)", tc.id, tc.category)
             sib_results = results or await tcgdex.search_cards(
                 {"name": read.name or tc.name or ""}, tcg_lang)
             dex_id, sib_en = await _dex_from_results(sib_results)

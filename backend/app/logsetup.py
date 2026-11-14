@@ -7,9 +7,10 @@ Dienst (rotierend, 10 MB × 5 Dateien):
   <dienst>.log          alles ab INFO (wie ``docker logs``)
   <dienst>-errors.log   Warnungen und Fehler, mit Traceback und Anfrage (Pfad, Benutzer, ID)
   <dienst>-access.log   jede Anfrage (nur die API)
+  <dienst>-debug.log    nur mit LOG_LEVEL=DEBUG: alles, auch die Einzelheiten je Scan
 
-LOG_DIR setzt einen anderen Ordner, LOG_LEVEL die Stufe (Standard INFO). Ohne
-eingehängten Ordner bleibt es bei der Konsole.
+LOG_DIR setzt einen anderen Ordner, LOG_LEVEL die Stufe (Standard INFO; DEBUG für
+die Entwicklung). Ohne eingehängten Ordner bleibt es bei der Konsole.
 """
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 MAX_BYTES = 10 * 1024 * 1024
 BACKUPS = 5
 _done: Optional[Path] = None
+# Bei DEBUG zu gesprächig (jedes Byte einer HTTP-Verbindung, jede SQL-Zeile …): bleiben bei INFO
+QUIET = ("httpx", "httpcore", "hpack", "h11", "multipart", "python_multipart", "PIL", "urllib3",
+         "asyncio", "sqlalchemy", "apscheduler", "watchfiles", "uvicorn.access")
 
 
 class _NotTwice(logging.Filter):
@@ -51,10 +55,15 @@ def setup(service: str, access: bool = True) -> Optional[Path]:
     """Konsole + (wenn vorhanden) Logdateien. Mehrfacher Aufruf ist harmlos."""
     global _done
     level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
     root = logging.getLogger()
     if not root.handlers:
         logging.basicConfig(level=level, format=FORMAT)
     root.setLevel(level)
+    if level <= logging.DEBUG:
+        for name in QUIET:
+            logging.getLogger(name).setLevel(logging.INFO)
     if _done is not None:
         return _done
     configured = os.environ.get("LOG_DIR")
@@ -71,13 +80,15 @@ def setup(service: str, access: bool = True) -> Optional[Path]:
         return None
     main = _handler(d / f"{service}.log", logging.INFO)
     errors = _handler(d / f"{service}-errors.log", logging.WARNING)
+    extra = [_handler(d / f"{service}-debug.log", logging.DEBUG)] if level <= logging.DEBUG else []
     # uvicorn hängt eigene Handler an „uvicorn" (ohne Weitergabe an root)
     for name in ("", "uvicorn"):
         lg = logging.getLogger(name)
-        lg.addHandler(main)
-        lg.addHandler(errors)
+        for h in (main, errors, *extra):
+            lg.addHandler(h)
     if access:
         logging.getLogger("uvicorn.access").addHandler(_handler(d / f"{service}-access.log", logging.INFO))
     _done = d
-    logging.getLogger(__name__).info("Logdateien in %s (%s.log, %s-errors.log)", d, service, service)
+    logging.getLogger(__name__).info("Logdateien in %s (%s.log, %s-errors.log%s), Stufe %s", d, service, service,
+                                     f", {service}-debug.log" if extra else "", logging.getLevelName(level))
     return d

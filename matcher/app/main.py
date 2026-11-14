@@ -882,6 +882,20 @@ def _page_corners(page: str) -> np.ndarray | None:
     return q
 
 
+def _debug_cards(res: dict) -> None:
+    """One debug line per card found (never breaks the request)."""
+    for c in res.get("cards") or []:
+        try:
+            centre = [round(float(v), 3) for v in np.float64(c.get("quad")).mean(axis=0)] if c.get("quad") else None
+            top = ", ".join(f"{x.get('card_id')} art {x.get('art_inliers')}/{x.get('inliers')}"
+                            for x in (c.get("candidates") or [])[:3])
+            log.debug("  card at %s pos %s: %s %s conf %s number %s — %s", centre, c.get("position"),
+                      "auto" if c.get("auto") else "choose", c.get("reason"), c.get("confidence"),
+                      c.get("number_read"), top)
+        except Exception as exc:  # noqa: BLE001 — nur Protokoll
+            log.debug("  card: %s (%s)", c, exc)
+
+
 def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, page: np.ndarray | None = None,
                    skip: frozenset[int] = frozenset(), map_req: str = "") -> dict:
     t0 = time.perf_counter()
@@ -890,8 +904,14 @@ def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, pag
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(400, "unreadable image")
+        log.debug("match request: %s %dx%d, grid %sx%s, page %s, skip %s, map %s, top_k %d", mode, img.shape[1],
+                  img.shape[0], cols, rows, None if page is None else [[round(float(v), 3) for v in p] for p in page],
+                  sorted(skip) or "-",
+                  map_req or "-", top_k)
         res = (_match_on_map(img, mode, rows, cols, top_k, page, skip, map_req) if map_req
                else _run_match(img, mode, rows, cols, top_k, page, skip))
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_cards(res)
         state["matches"] += 1
     if queued >= 0.05:
         res["timing"]["queued"] = round(queued * 1000)
@@ -1036,8 +1056,13 @@ def _search_cells(flat: np.ndarray, grid: tuple[float, float, float, float], row
                      for q in detect.cards_around_art(d.quad, cell.shape)]
             opts.append(np.float32([[x0, y0], [x0 + cw, y0], [x0 + cw, y0 + ch], [x0, y0 + ch]]))
             d, q = _best_of(flat, opts, top_k, snap_outline=True)
-            if d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD:  # skip empty pockets
+            ok = bool(d.candidates and d.candidates[0].inliers >= matcher.MIN_GOOD)
+            log.debug("  cell %d (row %d col %d): %d outline(s) tried → %s", r * cols + c, r + 1, c + 1, len(opts),
+                      f"{d.candidates[0].card_id} ({d.reason})" if ok else "empty")
+            if ok:  # skip empty pockets
                 out[r * cols + c] = (d, np.float32(q))
+    log.debug("grid %dx%d: %d cell(s) already had a card, %d searched, %d found", cols, rows, len(done),
+              rows * cols - len(done), len(out))
     return out
 
 
@@ -1052,13 +1077,18 @@ def _multi_cards(img: np.ndarray, top_k: int,
     """
     snap = store.snapshot()
     scored = []
-    for det in _detect(img, max_cards=24, nested=True):
+    dets = _detect(img, max_cards=24, nested=True)
+    n_tries = n_art = n_left = 0
+    for det in dets:
         if leave_out is not None and leave_out(det.quad):
+            n_left += 1
             continue
         # An artwork frame (the card's own edges barely showing): the card around
         # it first; the frame itself only if neither fits (a card lying sideways).
         tries = detect.cards_around_art(det.quad, img.shape) + [det.quad]
+        n_art += len(tries) - 1
         for i, q in enumerate(tries):
+            n_tries += 1
             card = detect.warp(img, q)
             cands = _match(card, snap, top_k)
             if not cands or cands[0].inliers < matcher.MIN_GOOD:  # not a card outline
@@ -1076,6 +1106,8 @@ def _multi_cards(img: np.ndarray, top_k: int,
     for key, q, card, cands in scored:
         if all(_overlap(q, k[1]) < 0.3 for k in kept):
             kept.append((key, q, card, cands))
+    log.debug("loose cards %dx%d: %d outlines (%d left out), %d tried (%d grown from art frames), %d matched, %d kept",
+              img.shape[1], img.shape[0], len(dets), n_left, n_tries, n_art, len(scored), len(kept))
     return [_decide(card, cands, q) for _, q, card, cands in
             sorted(kept, key=lambda t: (t[1][:, 1].mean(), t[1][:, 0].mean()))]
 
@@ -1153,6 +1185,8 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
     if map_req == "new":
         res = _run_quick(img, mode, rows, cols, top_k, page, skip)
         map_id = pagemap.store(img) if res["cards"] else None
+        log.debug("page map: %s", f"new map {map_id} from {len(res['cards'])} card(s)" if map_id
+                  else "not kept (no cards in this frame, or too little texture)")
         if map_id:
             res["map"] = {"id": map_id, "located": True, "whole": True, "area": 1.0, "h": _IDENTITY}
             for c in res["cards"]:
@@ -1160,13 +1194,17 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
         return res
     m = pagemap.get(map_req)
     if m is None:       # expired or the matcher restarted: the app starts the page over
+        log.debug("page map %s unknown (expired or matcher restarted)", map_req)
         return {"mode": mode, "cards": [], "ms": 0, "timing": {}, "map": {"id": map_req, "located": False, "unknown": True}}
     t0 = time.perf_counter()
     loc = pagemap.locate(img, m)
     t_loc = time.perf_counter() - t0
     if loc is None:
+        log.debug("page map %s: frame not placed (%d ms)", map_req, round(t_loc * 1000))
         return {"mode": mode, "cards": [], "ms": round(t_loc * 1000), "timing": {"locate": round(t_loc * 1000)},
                 "map": {"id": map_req, "located": False}}
+    log.debug("page map %s: placed, %d inliers, covers %.3f of the map → %s", map_req, loc.inliers, loc.area,
+              "whole page" if loc.whole else "close-up")
     if loc.whole:       # the whole page (or table) in view: as usual, without the slow number reading
         res = _run_quick(img, mode, rows, cols, top_k, page, skip)
     else:               # close-up: cards anywhere in the frame, no pockets; numbers are read here

@@ -27,6 +27,8 @@ services:
       APP_PASSWORD_HASH: 'CHANGE_BCRYPT_HASH'
       CATALOG_IMAGE_LANG: en
       CURRENCY: USD
+      # DEBUG adds api-debug.log with the details of every scan (for development)
+      LOG_LEVEL: INFO
       # Optional single sign-on (OpenID Connect, e.g. Authentik). Redirect URI to
       # register at the provider: PUBLIC_URL + /api/v1/auth/oidc/callback
       # OIDC_ISSUER: 'https://auth.example.com/application/o/pokecollect/'
@@ -63,6 +65,8 @@ services:
     user: "3010:3010"
     environment:
       DATABASE_URL: 'postgresql://pokecollect:CHANGE_DB_PASSWORD@db:5432/pokecollect'
+      # DEBUG adds matcher-debug.log: outlines, grid cells, page map, every card's match
+      LOG_LEVEL: INFO
     volumes:
       - /path/to/pokecollect/matcher:/data
       # same folder as the api (matcher.log, matcher-errors.log)

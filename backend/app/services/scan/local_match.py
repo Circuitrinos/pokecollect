@@ -161,6 +161,14 @@ async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: st
              mode, len(body.get("cards") or []), round((time.perf_counter() - t0) * 1000),
              body.get("ms"), body.get("timing") or "")
 
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Matcher-Antwort (%s, Formular %s): %s", mode, {k: v for k, v in form.items() if k != "page"},
+                  {"page": body.get("page"), "map": body.get("map"), "shortlist": body.get("shortlist")})
+        for card in body.get("cards") or []:
+            log.debug("  Fach %s: %s (%s, %.2f) %s", card.get("position"), "sicher" if card.get("auto") else "unsicher",
+                      card.get("reason"), float(card.get("confidence") or 0),
+                      ", ".join(f"{c.get('card_id')}:{c.get('art_inliers')}/{c.get('inliers')}"
+                                for c in (card.get("candidates") or [])[:4]))
     reads: list[ScanRawRead] = []
     extras: dict[int, LocalExtra] = {}
     for card in body.get("cards", []):

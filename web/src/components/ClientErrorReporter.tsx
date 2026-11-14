@@ -2,6 +2,7 @@
 import { useEffect } from "react";
 import { api } from "@/lib/api";
 import { APP_VERSION } from "@/lib/version";
+import { debugFromUrl, dlog } from "@/lib/debugLog";
 
 // Unbehandelte Fehler und abgelehnte Promises im Browser ans Server-Log melden
 // (backend/app/api/v1/client_log.py → api-errors.log). Höchstens 20 je Seitenaufruf,
@@ -12,6 +13,10 @@ let sent = 0;
 const seen = new Set<string>();
 
 export function reportClientError(kind: string, error: unknown, fallback = "") {
+  if (typeof window !== "undefined") {
+    const e = error as { message?: string } | null;
+    dlog("js-error", { kind, message: String(e?.message ?? error ?? fallback).slice(0, 300) });
+  }
   if (typeof window === "undefined" || sent >= MAX_REPORTS || !localStorage.getItem("token")) return;
   const e = error as { message?: string; stack?: string; isAxiosError?: boolean } | null;
   if (e?.isAxiosError) return;
@@ -29,6 +34,8 @@ export function reportClientError(kind: string, error: unknown, fallback = "") {
 
 export default function ClientErrorReporter() {
   useEffect(() => {
+    debugFromUrl();
+    dlog("page", { path: window.location.pathname, version: APP_VERSION });
     const onError = (ev: ErrorEvent) => reportClientError("error", ev.error ?? ev.message, ev.message);
     const onRejection = (ev: PromiseRejectionEvent) => reportClientError("unhandledrejection", ev.reason);
     window.addEventListener("error", onError);

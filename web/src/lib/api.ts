@@ -1,5 +1,6 @@
 import { getUiLang } from "@/lib/uiLang";
-import axios from "axios";
+import { debugEnabled, dlog } from "@/lib/debugLog";
+import axios, { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from "axios";
 
 // Zentrale API-Basis-URL — einzige Quelle, keine Kopien in Seiten (Issue #14).
 // Abschließende Schrägstriche fallen weg (#91-Nacharbeit): imageUrl() hängt
@@ -21,8 +22,26 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`;
   }
   config.headers["X-UI-Lang"] = getUiLang();   // Fehlermeldungen in der UI-Sprache
+  if (debugEnabled()) (config as InternalAxiosRequestConfig & { _t0?: number })._t0 = performance.now();
   return config;
 });
+
+// Debug-Protokoll (lib/debugLog.ts): jede API-Antwort mit Dauer und Anfrage-ID
+// (X-Request-ID — dieselbe ID steht in api.log beim Server)
+function logCall(config: InternalAxiosRequestConfig | undefined, res: AxiosResponse | undefined, err?: AxiosError) {
+  const t0 = (config as (InternalAxiosRequestConfig & { _t0?: number }) | undefined)?._t0;
+  const url = String(config?.url ?? "");
+  if (t0 === undefined || url.startsWith("/client-log")) return;
+  dlog("api", {
+    m: (config?.method ?? "get").toUpperCase(), u: url.slice(0, 120), s: res?.status ?? err?.response?.status ?? 0,
+    ms: Math.round(performance.now() - t0), rid: res?.headers?.["x-request-id"] ?? err?.response?.headers?.["x-request-id"],
+    ...(err && !err.response ? { err: err.code ?? err.message } : {}),
+  });
+}
+api.interceptors.response.use(
+  (response) => { logCall(response.config, response); return response; },
+  (error: AxiosError) => { logCall(error.config, error.response, error); return Promise.reject(error); },
+);
 
 // 401 → Token verwerfen und zur Login-Seite (Issue #1). window.location statt
 // Next-Router: der Interceptor läuft außerhalb von React. Ausgenommen sind der

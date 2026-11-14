@@ -1,10 +1,11 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { settingsApi, cardApi, pricesApi, dataApi, logout } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
 import { APP_VERSION } from "@/lib/version";
+import { debugEnabled, setDebug } from "@/lib/debugLog";
 import { openWhatsNew } from "@/lib/whatsnew";
 import { useI18n } from "@/lib/i18n";
 import { apiErrorText } from "@/lib/uiLang";
@@ -38,6 +39,8 @@ export default function SettingsPage() {
   const [fillingPokedex, setFillingPokedex] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [switchingImages, setSwitchingImages] = useState(false);
+  const [debugOn, setDebugOn] = useState(false);
+  useEffect(() => { setDebugOn(debugEnabled()); }, []);
 
   const handlePriceRefresh = async () => {
     setRefreshingPrices(true);
@@ -242,6 +245,12 @@ export default function SettingsPage() {
           <button type="button" onClick={handleExportCsv} disabled={exporting} className={BTN}>
             {exporting ? t.settings_data_busy : t.settings_export_csv}
           </button>
+        </Tool>
+        <Tool title={t.settings_debug_title} hint={t.settings_debug_hint}>
+          <label className="flex items-center gap-2 text-sm text-gray-300" data-testid="settings-debug">
+            <Toggle checked={debugOn} onChange={(v) => { setDebug(v); setDebugOn(v); }} />
+            {debugOn ? t.settings_debug_on : t.settings_debug_off}
+          </label>
         </Tool>
       </Section>
 

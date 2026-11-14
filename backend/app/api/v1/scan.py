@@ -326,6 +326,9 @@ async def scan(
     if not mime.startswith("image/"):
         raise HTTPException(status_code=400, detail="Content-Type muss image/* sein")
     t0 = time.perf_counter()
+    log.debug("Scan-Anfrage: %s, %d KB %s, Raster %sx%s%s%s%s%s, Sprache %s", mode, len(data) // 1024, mime, cols, rows,
+              ", Ecken" if page else "", f", skip {skip}" if skip else "", " (live)" if live else "",
+              f", Seitenkarte {live_map}" if live_map else "", default_language)
     # „card": entzerrter Zuschnitt aus dem Ecken-Editor. Der Bild-Abgleich
     # überspringt dafür die Erkennung; alle anderen Leser sehen ein Einzelbild.
     reader_mode = "single" if mode == "card" else mode
@@ -449,6 +452,15 @@ async def scan(
                 c.confidence = min(c.confidence, extra.confidence)
                 if c.match is not None and _only_the_print_is_open(extra.alternatives):
                     c.needs_choice, c.print_choice = False, True
+    if log.isEnabledFor(logging.DEBUG):
+        for c in candidates:
+            log.debug("  Karte Fach %s: %s %s%s%s, Sicherheit %.2f, %d Alternativen%s", c.position,
+                      c.match.tcgdex_card_id if c.match else "-", (c.suggested or {}).get("kartenname") or "",
+                      " — bitte wählen" if c.needs_choice else "", " — nur der Druck offen" if c.print_choice else "",
+                      c.confidence or 0.0, len(c.alternatives or []), " — Stempel" if c.stamp and c.stamp.ok else "")
+        if live_map_info:
+            log.debug("  Seitenkarte %s: eingeordnet %s, ganze Seite %s, Fläche %s", live_map_info.id,
+                      live_map_info.located, live_map_info.whole, live_map_info.area)
     return ScanResponse(
         engine=engine, mode=mode, candidates=candidates,
         limit_erreicht=limit_erreicht, hinweis=hinweis, hinweis_art=hinweis_art, live_map=live_map_info,

@@ -115,3 +115,49 @@ def test_browser_errors_go_to_the_log_with_a_limit(client, anon_client, caplog):
     assert anon_client.post(f"{API}/client-log", json=body).status_code == 401
     assert client.post(f"{API}/client-log", json={**body, "message": "x" * 3000}).status_code == 422
     client_log._recent.clear()
+
+
+def test_browser_debug_log_one_line_per_event(client, anon_client, caplog):
+    """Debug-Protokoll aus dem Browser (nur wenn dort eingeschaltet): eine Zeile je Ereignis,
+    Zeilenumbrüche maskiert, Namen bereinigt, gedrosselt; ohne Anmeldung 401."""
+    client_log._recent_debug.clear()
+    body = {"session": "ab12cd", "version": "1.15.0", "url": "/scan", "events": [
+        {"t": 1500, "event": "live.frame.send", "data": {"n": 1, "kb": 210, "map": "new"}},
+        {"t": 4200, "event": "live.frame.result\nFAKE LINE", "data": {"cards": 9, "msg": "a\nb"}},
+    ]}
+    with caplog.at_level(logging.INFO, logger="web.debug"):
+        assert client.post(f"{API}/client-log/debug", json=body).status_code == 204
+    lines = [r.getMessage() for r in caplog.records if r.name == "web.debug"]
+    assert len(lines) == 2 and all("\n" not in m for m in lines)
+    assert lines[0].startswith("[admin ab12cd +1.5s] live.frame.send ") and '"kb":210' in lines[0]
+    assert "live.frame.resultfakeline" in lines[1] and '"msg":"a\\nb"' in lines[1]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="web.debug"):
+        for _ in range(client_log.DEBUG_BATCHES_PER_MINUTE + 3):
+            client.post(f"{API}/client-log/debug", json={**body, "events": body["events"][:1]})
+    assert len([r for r in caplog.records if r.name == "web.debug"]) == client_log.DEBUG_BATCHES_PER_MINUTE - 1
+    assert anon_client.post(f"{API}/client-log/debug", json=body).status_code == 401
+    assert client.post(f"{API}/client-log/debug", json={"events": [{"event": "x"}] * 51}).status_code == 422
+    client_log._recent_debug.clear()
+
+
+def test_debug_level_writes_its_own_file(fresh_logsetup, monkeypatch):
+    """LOG_LEVEL=DEBUG: Einzelheiten in <dienst>-debug.log, <dienst>.log bleibt bei INFO; httpx bleibt still."""
+    mod, d = fresh_logsetup
+    root = logging.getLogger()
+    before = root.level
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    try:
+        mod.setup("dbgsvc")
+        logging.getLogger("app.y").debug("fein")
+        logging.getLogger("app.y").info("grob")
+        logging.getLogger("httpx").debug("jedes byte")
+        for h in root.handlers:
+            h.flush()
+        debug, main = (d / "dbgsvc-debug.log").read_text(), (d / "dbgsvc.log").read_text()
+        assert "fein" in debug and "grob" in debug and "jedes byte" not in debug
+        assert "fein" not in main and "grob" in main
+    finally:
+        root.setLevel(before)
+        for name in mod.QUIET:
+            logging.getLogger(name).setLevel(logging.NOTSET)
