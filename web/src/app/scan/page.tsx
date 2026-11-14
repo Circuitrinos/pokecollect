@@ -22,14 +22,15 @@ import { cropToCardPhoto, loadImg, normalizeOrientation, shrinkForUpload, CropTr
 import { ringOrder } from "@/lib/cropOrient";
 import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
-import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, type Quad } from "@/lib/tiltGrid";
+import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, tiltHomography, turnDegrees, type Quad } from "@/lib/tiltGrid";
 import { useTiltGrid } from "@/lib/useTiltGrid";
 import { useMotion } from "@/lib/useMotion";
 import { debugEnabled, dlog } from "@/lib/debugLog";
-import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toPixels, type Mat3 } from "@/lib/motionTrack";
+import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toFractions, toPixels, type Mat3 } from "@/lib/motionTrack";
+import { matrixKey, moveSvg, ptsAttr } from "@/lib/svgMove";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
-  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict, viewQuad,
+  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, skipSquares, verdict, viewQuad,
   type Level, type LiveState, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -374,6 +375,9 @@ export default function ScanPage() {
     : null;
   const tiltQuadRef = useRef<Quad | null>(null);
   tiltQuadRef.current = tiltQuad;
+  // Live-Scan: die Neigung fließt in die Bewegungsverfolgung (Raster behält den Winkel)
+  const tiltTurnRef = useRef<number[] | null>(null);
+  tiltTurnRef.current = tiltOn && tilt.state === "on" ? tilt.turn : null;
   // Wo das Raster im Bild liegt: geneigt (Lagesensor) oder sonst der Rahmen auf dem Bildschirm —
   // der Bild-Abgleich sucht dann jedes Fach/Feld, in dem er frei keine Karte fand, einzeln ab
   const gridQuadRef = useRef<Quad | null>(null);
@@ -496,6 +500,7 @@ export default function ScanPage() {
   const [gridAnchorQuad, setGridAnchorQuad] = useState<Quad | null>(null);
   const overlayGRef = useRef<SVGGElement | null>(null);
   const gridGRef = useRef<SVGGElement | null>(null);
+  const guideWrapRef = useRef<HTMLDivElement | null>(null);   // Rahmen auf dem Bildschirm, solange das Raster nicht folgt
   const [finishWanted, setFinishWanted] = useState(false);
   const motion = useMotion(liveOn);
   const toggleLive = () => {
@@ -535,24 +540,29 @@ export default function ScanPage() {
       const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       ctx.drawImage(v, 0, 0, w, h);
+      // geneigtes Handy (Lagesensor an): die Perspektive kommt vom Sensor, der Rest aus dem Bild
+      const turn = tiltTurnRef.current;
+      const view = turn ? toFractions(tiltHomography(turn, v.videoWidth, v.videoHeight), v.videoWidth, v.videoHeight) : null;
       const t0 = performance.now();
-      const st = tr.push(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h);
+      const st = tr.push(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h, view);
       spent += performance.now() - t0;
       steps += 1;
       if (st.ok) okSteps += 1;
       if (performance.now() - last > 3000) {
-        dlog("track", { steps, ok: okSteps, msPerStep: steps ? spent / steps : 0, epoch: tr.epoch, points: st.points, inliers: st.inliers });
+        dlog("track", { steps, ok: okSteps, msPerStep: steps ? spent / steps : 0, epoch: tr.epoch, points: st.points, inliers: st.inliers,
+          tilt: turn ? Math.round(turnDegrees(turn) * 10) / 10 : null });
         steps = okSteps = 0; spent = 0; last = performance.now();
       }
     }, 90);
     return () => window.clearInterval(id);
   }, [liveOn]);
 
-  // Rahmen und Raster mit der Bewegung zeichnen — direkt am SVG, ohne die Seite neu aufzubauen
+  // Rahmen und Raster mit der Bewegung zeichnen — direkt am SVG, ohne die Seite neu aufzubauen,
+  // perspektivisch (lib/svgMove). Folgt das Raster nicht (noch kein Bild, Spur verloren), steht
+  // der Rahmen auf dem Bildschirm (mit Neigung) da.
   useEffect(() => {
     if (!liveOn) return;
-    let raf = 0, lastO = "", lastG = "";
-    const fmt = (m: Mat3) => `matrix(${m[0][0]} ${m[1][0]} ${m[0][1]} ${m[1][1]} ${m[0][2]} ${m[1][2]})`;
+    let raf = 0, lastO = "";
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const v = videoRef.current;
@@ -567,25 +577,29 @@ export default function ScanPage() {
       if (g) {
         const frames = liveRef.current.frames;
         const m = since(sendCumRef.current.get(frames));
-        const key = m ? fmt(m) : frames ? "stale" : "none";
+        const key = m ? matrixKey(m) : frames ? "stale" : "none";
+        moveSvg(g, m, key);
         if (key !== lastO) {
           lastO = key;
-          if (m) g.setAttribute("transform", key); else g.removeAttribute("transform");
           g.style.opacity = key === "stale" ? "0.3" : "1";   // Spur verloren: blass bis zur nächsten Prüfung
         }
       }
       const gg = gridGRef.current;
-      if (gg) {
-        const m = since(gridAnchorRef.current);
-        const key = m ? fmt(m) : "";
-        if (key !== lastG) {
-          lastG = key;
-          if (m) gg.setAttribute("transform", key); else gg.removeAttribute("transform");
-        }
-      }
+      const gm = gg ? since(gridAnchorRef.current) : null;
+      if (gg) moveSvg(gg, gm);
+      const visible = !!gg && !!gm;
+      const show = (el: HTMLElement | SVGElement | null | undefined, on: boolean) => {
+        if (el && (el.style.display === "none") === on) el.style.display = on ? "" : "none";
+      };
+      show(gg?.ownerSVGElement, visible);
+      show(guideWrapRef.current, !visible);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    const guideWrap = guideWrapRef;
+    return () => {
+      cancelAnimationFrame(raf);
+      if (guideWrap.current) guideWrap.current.style.display = "";   // Live aus: der Rahmen steht wieder da
+    };
   }, [liveOn]);
   useEffect(() => { lastDoneRef.current = null; }, [mode, liveGrid]);
   // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
@@ -713,15 +727,20 @@ export default function ScanPage() {
         const tSend = performance.now();
         try {
           const before = liveRef.current;
+          // schon sichere Fächer/Felder lässt der Abgleich aus: bei der Mappe nach Fach, bei losen
+          // Karten im Raster nach dem Feld, in dem die Karte jetzt liegt (mit der Kamera mitgeführt)
+          const lastSend = sendCumRef.current.get(before.frames);
+          const lastInv = lastSend && lastSend.epoch === sendInfo.epoch ? invM(lastSend.cum) : null;
+          const skip = mode === "binder" ? skipPockets(before)
+            : useGrid && page && lastInv ? skipSquares(before, mulM(sendInfo.cum, lastInv), page, cols, rows) : [];
           dlog("live.frame.send", {
             n: frameNo, w: full.width, h: full.height, kb: Math.round(photo.size / 1024), grid: !!page, gridTracked: tracked,
             trackEpoch: sendInfo.epoch,
-            tilt: !!tiltQuadRef.current, map: mode === "single" ? null : before.mapId ?? "new",
-            skip: mode === "binder" ? skipPockets(before) : [],
+            tilt: !!tiltQuadRef.current, map: mode === "single" ? null : before.mapId ?? "new", skip,
           });
           const res = await scanApi.scan(photo, {
             mode, rows: useGrid ? rows : 0, cols: useGrid ? cols : 0, default_language: defaultLang, page,
-            skip: mode === "binder" ? skipPockets(before) : undefined, live: true,
+            skip: skip.length ? skip : undefined, live: true,
             // Seitenkarte: das erste Bild mit Karten wird sie, jedes weitere wird darauf eingeordnet
             map: mode === "single" ? null : before.mapId ?? "new",
           });
@@ -1751,13 +1770,17 @@ export default function ScanPage() {
                   <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
-                  {vidSize && (liveOn && gridAnchorQuad ? (
+                  {vidSize && (
+                    // der Rahmen bleibt da: er zeigt sich wieder, wenn das Raster der Kamera nicht folgen kann
+                    <div ref={guideWrapRef} className="pointer-events-none absolute inset-0">
+                      <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={gridShown ? layoutCols : 1}
+                        rows={gridShown ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
+                        tilted={tiltQuad} />
+                    </div>
+                  )}
+                  {vidSize && liveOn && gridAnchorQuad && (
                     <LiveGrid w={vidSize.w} h={vidSize.h} cols={layoutCols} rows={layoutRows} quad={gridAnchorQuad} gRef={gridGRef} />
-                  ) : (
-                    <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={gridShown ? layoutCols : 1}
-                      rows={gridShown ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
-                      tilted={tiltQuad} />
-                  ))}
+                  )}
                   {vidSize && liveOn && (
                     <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} onTap={(k) => setLivePick(k)} gRef={overlayGRef} />
                   )}
@@ -2528,7 +2551,7 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
 function LiveOverlay({ w, h, state, onTap, gRef }: {
   w: number; h: number; state: LiveState; onTap: (key: string) => void;
-  gRef?: React.MutableRefObject<SVGGElement | null>;   // bekommt die Kamera-Bewegung seit dem letzten geprüften Bild
+  gRef?: React.MutableRefObject<SVGGElement | null>;   // folgt der Kamera seit dem letzten geprüften Bild (lib/svgMove)
 }) {
   const fs = Math.max(w, h) * 0.024;
   return (
@@ -2543,12 +2566,13 @@ function LiveOverlay({ w, h, state, onTap, gRef }: {
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
         const name = raw.length > 16 ? `${raw.slice(0, 15)}…` : raw;
+        const label = [x0 + fs * 0.3, y0 + fs * 1.15];
         return (
           <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why}
             style={{ pointerEvents: "all", cursor: "pointer" }} onClick={() => onTap(tr.key)}>
-            <polygon points={pts.map(([x, y]) => `${x},${y}`).join(" ")} fill={c.fill} stroke={c.stroke}
+            <polygon points={ptsAttr(pts)} data-pts={ptsAttr(pts)} fill={c.fill} stroke={c.stroke}
               strokeWidth={3} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-            <text x={x0 + fs * 0.3} y={y0 + fs * 1.15} fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.75)"
+            <text x={label[0]} y={label[1]} data-at={ptsAttr([label])} fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.75)"
               strokeWidth={fs * 0.16} paintOrder="stroke" fontWeight={600}>
               {v.level === "green" ? "✓ " : ""}{name}
             </text>
@@ -2560,14 +2584,15 @@ function LiveOverlay({ w, h, state, onTap, gRef }: {
   );
 }
 
-/** Live-Scan: das Raster der Seite, das der Kamera folgt (gRef bekommt die Bewegung seit dem ersten Bild). */
+/** Live-Scan: das Raster der Seite, das der Kamera folgt (gRef: perspektivisch seit dem ersten Bild, lib/svgMove). */
 function LiveGrid({ w, h, cols, rows, quad, gRef }: {
   w: number; h: number; cols: number; rows: number; quad: Quad; gRef: React.MutableRefObject<SVGGElement | null>;
 }) {
   const at = squareToQuad(quad);
+  // Linien als Zweipunkt-Polylinien: unter einer Perspektive bleiben Geraden gerade
   const line = (a: Pt, b: Pt, key: string) => (
-    <line key={key} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#facc15" strokeOpacity={0.45} strokeWidth={1}
-      vectorEffect="non-scaling-stroke" />
+    <polyline key={key} points={ptsAttr([a, b])} data-pts={ptsAttr([a, b])} fill="none" stroke="#facc15" strokeOpacity={0.45}
+      strokeWidth={1} vectorEffect="non-scaling-stroke" />
   );
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
@@ -2575,7 +2600,7 @@ function LiveGrid({ w, h, cols, rows, quad, gRef }: {
       <g ref={gRef}>
         {Array.from({ length: cols - 1 }, (_, i) => line(at((i + 1) / cols, 0), at((i + 1) / cols, 1), `c${i}`))}
         {Array.from({ length: rows - 1 }, (_, i) => line(at(0, (i + 1) / rows), at(1, (i + 1) / rows), `r${i}`))}
-        <polygon points={quad.map(([x, y]) => `${x},${y}`).join(" ")} fill="none" stroke="#facc15" strokeWidth={2.5}
+        <polygon points={ptsAttr(quad)} data-pts={ptsAttr(quad)} fill="none" stroke="#facc15" strokeWidth={2.5}
           strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       </g>
     </svg>

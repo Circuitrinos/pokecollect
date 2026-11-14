@@ -270,10 +270,33 @@ class Shortlist:
         """Embeddings of a straightened card (detect.warp output), upright and upside down."""
         if self.engine is None:
             return None
-        h, w = card_bgr.shape[:2]
-        core = card_bgr[PAD:h - PAD, PAD:w - PAD] if h > 4 * PAD and w > 4 * PAD else card_bgr
-        core = autolevel(core)
-        return self.engine.embed([core, cv2.rotate(core, cv2.ROTATE_180)])
+        qs = self.query_many([card_bgr], ["both"])
+        return qs[0] if qs else None
+
+    def query_many(self, cards: list[np.ndarray], ways: list[str]) -> list[np.ndarray] | None:
+        """
+        Several straightened cards in one model run. ways[i]: "up" (the card lies
+        upright in its crop — one image), "down" (upside down: the crop turned
+        round), "both" (unknown: both, as query()). → (k, D) per card.
+        """
+        if self.engine is None:
+            return None
+        imgs: list[np.ndarray] = []
+        spans: list[tuple[int, int]] = []
+        for card_bgr, way in zip(cards, ways):
+            h, w = card_bgr.shape[:2]
+            core = card_bgr[PAD:h - PAD, PAD:w - PAD] if h > 4 * PAD and w > 4 * PAD else card_bgr
+            core = autolevel(core)
+            start = len(imgs)
+            if way in ("up", "both"):
+                imgs.append(core)
+            if way in ("down", "both"):
+                imgs.append(cv2.rotate(core, cv2.ROTATE_180))
+            spans.append((start, len(imgs)))
+        if not imgs:
+            return []
+        out = self.engine.embed(imgs)
+        return [out[a:b] for a, b in spans]
 
     def photo_embedding(self, card_bgr: np.ndarray) -> np.ndarray:
         """Embedding of a straightened scan photo, prepared like a query (upright only)."""
@@ -292,7 +315,7 @@ class Shortlist:
         key = (len(snap.ids), self._learned_ver)
         d = self._domain
         if d is not None and d.key == key:
-            return d
+            return d if d.ids else None     # "not enough photos" for this key: no correction
         with self._domain_lock:
             if self._domain is None or self._domain.key != key:
                 l_ids, l_mat = self._learned
@@ -314,6 +337,16 @@ class Shortlist:
         q = self.query(card_bgr)
         if q is None:
             return None
+        return self._pick(q)
+
+    def shortlist_many(self, cards: list[np.ndarray], ways: list[str]) -> list[tuple[list[str], int] | None]:
+        """shortlist() for several cards in one model run; ways as in query_many()."""
+        qs = self.query_many(cards, ways) if self.active else None
+        if qs is None:
+            return [None] * len(cards)
+        return [self._pick(q) if len(q) else None for q in qs]
+
+    def _pick(self, q: np.ndarray) -> tuple[list[str], int]:
         ids = self.index.top(q, EMBED_TOP, self.domain())
         l_ids, l_mat = self._learned
         if l_ids:

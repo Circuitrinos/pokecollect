@@ -353,6 +353,11 @@ def cards_around_art(quad: np.ndarray, shape) -> list[np.ndarray]:
     upright card, the card around it: once with the art in the upper part, once
     upside down. The match then snaps to the real outline. [] if it isn't art-shaped.
     """
+    return [c for c, _ in cards_around_art_ways(quad, shape)]
+
+
+def cards_around_art_ways(quad: np.ndarray, shape) -> list[tuple[np.ndarray, str]]:
+    """cards_around_art() with the way each lies in its crop: "up" (art in the upper part) or "down"."""
     q = order_points(quad)
     top, bottom = q[1] - q[0], q[2] - q[3]
     left, right = q[3] - q[0], q[2] - q[1]
@@ -371,7 +376,7 @@ def cards_around_art(quad: np.ndarray, shape) -> list[np.ndarray]:
     upright = np.float32([up[0], up[1], up[1] + h * v, up[0] + h * v])
     down = np.float32([q[3] - m * u + ART_TOP * h * v, q[2] + m * u + ART_TOP * h * v])
     flipped = np.float32([down[0] - h * v, down[1] - h * v, down[1], down[0]])
-    return [c for c in (upright, flipped) if plausible_quad(c, shape)]
+    return [(c, way) for c, way in ((upright, "up"), (flipped, "down")) if plausible_quad(c, shape)]
 
 
 def detect_cards(img: np.ndarray, max_cards: int = 20, nested: bool = False) -> list[Detection]:

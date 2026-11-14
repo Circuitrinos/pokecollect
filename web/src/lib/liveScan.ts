@@ -271,6 +271,38 @@ export function skipPockets(state: LiveState): number[] {
     .map((t) => t.position as number).sort((a, b) => a - b);
 }
 
+/** Homographie Einheitsquadrat → Viereck (TL, TR, BR, BL). */
+function squareTo(q: number[][]): Mat3 {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = q;
+  const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2;
+  const sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+  const den = dx1 * dy2 - dx2 * dy1;
+  const g = den ? (sx * dy2 - dx2 * sy) / den : 0;
+  const h = den ? (dx1 * sy - sx * dy1) / den : 0;
+  return [[x1 - x0 + g * x1, x3 - x0 + h * x3, x0], [y1 - y0 + g * y1, y3 - y0 + h * y3, y0], [g, h, 1]];
+}
+
+/**
+ * Lose Karten im Raster: Felder (zeilenweise ab oben links), in deren Mitte eine schon
+ * sichere Karte liegt — der Abgleich lässt sie aus, wie die Fächer der Mappe. toNow:
+ * letztes geprüftes Bild → Bild, das gleich geschickt wird (Kamera-Bewegung, Anteile);
+ * grid: das Raster in diesem Bild (Anteile, TL TR BR BL).
+ */
+export function skipSquares(state: LiveState, toNow: Mat3, grid: number[][], cols: number, rows: number): number[] {
+  const back = invert3(squareTo(grid));
+  if (!back || cols < 1 || rows < 1) return [];
+  const sure = new Set<number>(), open = new Set<number>();
+  for (const t of state.tracks) {
+    const q = applyH(toNow, viewQuad(state, t));
+    const [[s, u]] = applyH(back, [[q.reduce((a, p) => a + p[0], 0) / 4, q.reduce((a, p) => a + p[1], 0) / 4]]);
+    if (!(s >= 0 && s < 1 && u >= 0 && u < 1)) continue;
+    const sq = Math.floor(u * rows) * cols + Math.floor(s * cols);
+    (verdict(t).level === "green" ? sure : open).add(sq);
+  }
+  // ein Feld mit noch einer unsicheren Karte darin wird weiter geprüft
+  return Array.from(sure).filter((sq) => !open.has(sq)).sort((a, b) => a - b);
+}
+
 /** Fertig: jede gefundene Karte grün, und seit der letzten neuen kam keine dazu. */
 export function allSure(state: LiveState, mode: ScanMode): boolean {
   if (!state.tracks.length || state.tracks.some((t) => verdict(t).level !== "green")) return false;

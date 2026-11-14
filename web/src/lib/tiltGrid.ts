@@ -141,6 +141,25 @@ export function straightenToGuide(gray: Float32Array, w: number, h: number, quad
   return out;
 }
 
+/**
+ * The turn as a homography of the whole frame (px, straight view → turned view),
+ * the same model as tiltedGuide but without its fit: the live scan's motion
+ * tracker takes the perspective from here and the shift, zoom and in-plane turn
+ * from the picture. Rows of a 3×3 matrix.
+ */
+export function tiltHomography(turn: Mat3, frameW: number, frameH: number, f = focalPx(frameW, frameH)): number[][] {
+  const cx = frameW / 2, cy = frameH / 2;
+  // around the centre: (u, v) → (R00 u + R01 v, R10 u + R11 v) / (1 + (R20 u + R21 v) / f)
+  const a = [turn[0], turn[1], turn[3], turn[4], turn[6] / f, turn[7] / f];
+  const [p, q, r, s, g, h] = a;
+  const w0 = 1 - g * cx - h * cy;            // the bottom row after moving the origin to the centre
+  return [
+    [p + cx * g, q + cx * h, -(p * cx + q * cy) + cx * w0],
+    [r + cy * g, s + cy * h, -(r * cx + s * cy) + cy * w0],
+    [g, h, w0],
+  ];
+}
+
 /** A point of the straightened view (see straightenToGuide) back in the frame. */
 export function fromGuide(p: Pt, quad: Quad, g: Rect): Pt {
   return squareToQuad(quad)((p[0] - g.x) / g.w, (p[1] - g.y) / g.h);

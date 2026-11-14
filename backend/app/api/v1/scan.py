@@ -308,8 +308,9 @@ async def scan(
       das geneigte Raster der App bei einem schräg aufgenommenen Foto; der
       Bild-Abgleich entzerrt das Foto damit (Mappe: danach in Fächer teilen,
       lose Karten: danach überall suchen).
-    - skip (nur mode=binder, Bild-Abgleich): Fächer, die der Live-Scan schon
-      sicher kennt („0,4,5") — der Abgleich lässt sie aus, das Bild ist schneller fertig.
+    - skip (mode=binder, und mode=multi mit Raster; Bild-Abgleich): Fächer/Felder,
+      die der Live-Scan schon sicher kennt („0,4,5", zeilenweise ab oben links) —
+      der Abgleich lässt sie aus, das Bild ist schneller fertig.
     - live: ein Bild des Live-Scans — die Karten-Daten kommen kurz aus einem
       Zwischenspeicher (dieselben Karten folgen alle paar Sekunden wieder).
     - map (Live-Scan, Mappe/lose Karten, Bild-Abgleich): „new" macht dieses Bild
@@ -347,7 +348,7 @@ async def scan(
         result = await local_match.extract(
             data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
             page=_page_corners(page) if mode in ("binder", "multi") else None,
-            skip=_skip_pockets(skip, rows * cols) if mode == "binder" else None,
+            skip=_skip_pockets(skip, rows * cols) if mode in ("binder", "multi") else None,
             live_map=_map_ref(live_map) if live and mode in ("binder", "multi") else None)
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"

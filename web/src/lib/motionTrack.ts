@@ -4,6 +4,10 @@
 // Bild wiederfinden (Ausschnitt-Vergleich, auf Bruchteile eines Pixels genau) und
 // daraus Verschiebung, Drehung und Zoom schätzen (RANSAC, Ausreißer zählen nicht).
 // Aufaddiert ergibt das, wo ein Punkt eines früheren Bilds jetzt im Kamerabild liegt.
+// Mit Lagesensor (geneigtes Raster) kommt die Perspektive vom Sensor: die Punkte werden
+// erst in die „gerade" Ansicht zurückgerechnet, dort gilt Verschiebung/Drehung/Zoom,
+// und die Gesamtbewegung ist Sensor-Ansicht · gerade Bewegung — so behält das Raster
+// den Winkel, in dem das Handy gerade gehalten wird.
 // Reine Rechnung ohne DOM, damit sie sich für sich prüfen lässt.
 
 export type Mat3 = number[][];
@@ -217,15 +221,19 @@ export type TrackStep = { ok: boolean; points: number; inliers: number; m: Mat3 
  * die Matrix vom Bild beim Start (bzw. letzten Verlust) ins aktuelle Bild, in
  * Anteilen (0..1). epoch zählt die Verluste: Matrizen aus verschiedenen Epochen
  * passen nicht zusammen.
+ * view (optional, Anteile): wie der Lagesensor die gerade Ansicht gerade neigt
+ * (tiltHomography) — dann ist cum = view · gerade Bewegung, eine volle Perspektive.
  */
 export class MotionTracker {
   cum: Mat3 = IDENTITY;
   epoch = 0;
   lostFor = 0;
   private prev: Float32Array | null = null;
+  private prevView: Mat3 = IDENTITY;    // Sensor-Ansicht beim Bezugsbild
+  private straight: Mat3 = IDENTITY;    // Bewegung in der geraden Ansicht seit dem Start (Anteile)
   private w = 0;
   private h = 0;
-  private lastStep: Mat3 = IDENTITY;    // letzte Bewegung je Bild: Startwert fürs nächste
+  private lastStep: Mat3 = IDENTITY;    // letzte (gerade) Bewegung je Bild: Startwert fürs nächste
   private readonly radius: number;
 
   constructor(radius = 10) {
@@ -234,57 +242,76 @@ export class MotionTracker {
 
   reset() {
     this.cum = IDENTITY;
+    this.straight = IDENTITY;
     this.prev = null;
     this.lastStep = IDENTITY;
     this.lostFor = 0;
     this.epoch += 1;
   }
 
-  push(g: Float32Array, w: number, h: number): TrackStep {
+  /** Neuer Bezug: dieses Bild ist der Start (cum = Einheit). */
+  private restart(g: Float32Array, view: Mat3) {
+    this.prev = g;
+    this.prevView = view;
+    this.straight = inv(view) ?? IDENTITY;
+    this.cum = IDENTITY;
+  }
+
+  push(g: Float32Array, w: number, h: number, view: Mat3 | null = null): TrackStep {
+    const vNow = view ?? IDENTITY;
     if (!this.prev || w !== this.w || h !== this.h) {
-      this.prev = g; this.w = w; this.h = h;
+      this.w = w; this.h = h;
+      this.restart(g, vNow);
       return { ok: true, points: 0, inliers: 0, m: IDENTITY };
     }
+    const vp = toPixels(this.prevView, w, h), vn = toPixels(vNow, w, h);
+    const vpInv = inv(vp), vnInv = inv(vn);
+    if (!vpInv || !vnInv) return { ok: false, points: 0, inliers: 0, m: null };
     const pts = pickPoints(this.prev, w, h);
+    // straight-guess (gerade Ansicht) → wo ein Punkt im neuen Bild zu suchen ist
     const attempt = (guess: Mat3) => {
+      const predict = mul(mul(vn, guess), vpInv);
       const src: number[][] = [], dst: number[][] = [];
       for (const [x, y] of pts) {
-        const gx = guess[0][0] * x + guess[0][1] * y + guess[0][2] - x;
-        const gy = guess[1][0] * x + guess[1][1] * y + guess[1][2] - y;
-        const f = findPoint(this.prev!, g, w, h, x, y, this.radius, gx, gy);
+        const [[px, py]] = apply(predict, [[x, y]]);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+        const f = findPoint(this.prev!, g, w, h, x, y, this.radius, px - x, py - y);
         if (f && f[2] < 18) { src.push([x, y]); dst.push([f[0], f[1]]); }
       }
-      const fit = fitSimilarity(src, dst);
+      // in die gerade Ansicht zurück: dort ist die Bewegung Verschiebung, Drehung, Zoom
+      const s = apply(vpInv, src), d = apply(vnInv, dst);
+      const keep = s.map((_, i) => i).filter((i) => [s[i], d[i]].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)));
+      const fit = fitSimilarity(keep.map((i) => s[i]), keep.map((i) => d[i]));
       const scale = fit ? Math.hypot(fit.m[0][0], fit.m[1][0]) : 0;
       const angle = fit ? Math.abs(Math.atan2(fit.m[1][0], fit.m[0][0])) : 0;
-      const good = !!fit && fit.inliers >= Math.max(8, 0.35 * src.length) && scale > 0.8 && scale < 1.25 && angle < 0.25;
-      return { fit, good, n: src.length };
+      const good = !!fit && fit.inliers >= Math.max(8, 0.35 * keep.length) && scale > 0.8 && scale < 1.25 && angle < 0.25;
+      return { fit, good, n: keep.length };
     };
     // Startwert: dieselbe Bewegung wie beim letzten Mal (die Hand bewegt sich gleichmäßig);
     // passt das nicht, eine grobe Suche auf halber Auflösung (schneller Schwenk)
     let res = attempt(this.lastStep);
     if (!res.good) {
       const shift = coarseShift(this.prev, g, w, h, this.radius);
-      if (shift) res = attempt([[1, 0, shift[0]], [0, 1, shift[1]], [0, 0, 1]]);
+      if (shift) res = attempt(mul(mul(vnInv, [[1, 0, shift[0]], [0, 1, shift[1]], [0, 0, 1]]), vp));
     }
     const { fit, good: ok } = res;
-    const src = { length: res.n };
     if (!ok) {
       // das alte Bild bleibt Bezug: beim nächsten Mal wird die Bewegung seitdem gesucht
       this.lostFor += 1;
       this.lastStep = IDENTITY;
       if (this.lostFor >= 3) {          // mehrmals nicht wiedergefunden: neu anfangen
-        this.cum = IDENTITY;
         this.lostFor = 0;
         this.epoch += 1;
-        this.prev = g;
+        this.restart(g, vNow);
       }
-      return { ok: false, points: src.length, inliers: fit?.inliers ?? 0, m: null };
+      return { ok: false, points: res.n, inliers: fit?.inliers ?? 0, m: null };
     }
     this.prev = g;
+    this.prevView = vNow;
     this.lostFor = 0;
     this.lastStep = fit!.m;
-    this.cum = mul(toFractions(fit!.m, w, h), this.cum);
-    return { ok: true, points: src.length, inliers: fit!.inliers, m: fit!.m };
+    this.straight = mul(toFractions(fit!.m, w, h), this.straight);
+    this.cum = mul(vNow, this.straight);
+    return { ok: true, points: res.n, inliers: fit!.inliers, m: fit!.m };
   }
 }

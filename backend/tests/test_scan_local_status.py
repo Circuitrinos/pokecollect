@@ -182,7 +182,7 @@ def test_schraege_mappenseite_schickt_ecken_an_den_matcher(client, provider_loca
 
 
 def test_live_scan_laesst_sichere_faecher_aus(client, provider_local, png_bytes, monkeypatch):
-    """Live-Scan: die schon sicheren Fächer gehen als skip an den matcher — nur bei der Mappe."""
+    """Live-Scan: die schon sicheren Fächer/Felder gehen als skip an den matcher — Mappe und lose Karten im Raster."""
     seen: list[bytes] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -199,7 +199,9 @@ def test_live_scan_laesst_sichere_faecher_aus(client, provider_local, png_bytes,
     assert b'name="skip"\r\n\r\n0,5\r\n' in seen[-1]
     post("binder", "")
     assert b'name="skip"' not in seen[-1]
-    post("multi", "0,1")                                       # lose Karten haben keine Fächer
+    post("multi", "1,0")                                       # lose Karten im Raster: Felder wie Fächer
+    assert b'name="skip"\r\n\r\n0,1\r\n' in seen[-1]
+    post("single", "0,1")                                      # eine Karte hat keine Felder
     assert b'name="skip"' not in seen[-1]
 
 

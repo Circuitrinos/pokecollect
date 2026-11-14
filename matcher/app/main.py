@@ -13,6 +13,8 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
 
@@ -829,15 +831,17 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     clockwise — the app's tilted grid when the photo was taken at an angle
     (against glare). The photo is straightened by it first: a binder page is
     then split into pockets (rows × cols), loose cards are found anywhere.
-    skip (binder mode, optional): pockets to leave out, "0,4,5" — the live
-    scan already knows them, so a frame only spends time on the rest.
+    skip (binder mode, and multi with a grid, optional): squares to leave out,
+    "0,4,5" (row by row from top left) — the live scan already knows them, so a
+    frame only spends time on the rest.
     map (binder and multi mode, optional, live scan): "new" keeps this frame as
     the page map (pagemap.py) when it shows cards → "map": {"id": …}; an id
     places this frame on that map — also a close-up of a few cards — and gives
     every card its corners on the map ("map_quad"). A close-up is searched like
     loose cards (no pockets in view); a frame that can't be placed gets no cards.
-    Live frames of the whole page skip the number OCR (seconds each); close-ups
-    read the number, so moving in settles a same-art reprint.
+    Live frames of the whole page skip the number OCR (seconds each) and, with a
+    grid and its corners, search square by square, all squares at once
+    (_live_cells); close-ups read the number, so moving in settles a same-art reprint.
     """
     if state["status"] != "ready":
         raise HTTPException(503, f"matcher not ready: {state['status']}")
@@ -845,7 +849,7 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
     corners = _page_corners(page) if mode in ("binder", "multi") else None
-    skipped = _skip_pockets(skip, rows * cols) if mode == "binder" else frozenset()
+    skipped = _skip_pockets(skip, rows * cols) if mode in ("binder", "multi") else frozenset()
     map_req = map_req.strip()[:64] if mode in ("binder", "multi") else ""
     # The work is CPU-bound: run it in a worker thread so /health keeps
     # answering (the backend's status check has a 2 s timeout).
@@ -1167,6 +1171,158 @@ def _multi_straightened(img: np.ndarray, page: np.ndarray, rows: int, cols: int,
             for d, oq in found]
 
 
+# Live scan of a grid (binder page, or loose cards laid out in rows): square by square.
+LIVE_TRIES = 4                  # outline guesses per square at most
+LIVE_CARD_AREA = (0.35, 1.2)    # a card's outline, of its square's area
+_cell_pool = ThreadPoolExecutor(max_workers=max(2, os.cpu_count() or 4), thread_name_prefix="square")
+
+
+@dataclass
+class _Guess:
+    quad: np.ndarray     # in the straightened page
+    way: str             # how the card lies in its crop, for the image model: "up", "down", "both" (unknown)
+
+
+def _card_shaped(q: np.ndarray) -> bool:
+    o = detect.order_points(q)
+    w = (np.linalg.norm(o[1] - o[0]) + np.linalg.norm(o[2] - o[3])) / 2
+    h = (np.linalg.norm(o[3] - o[0]) + np.linalg.norm(o[2] - o[1])) / 2
+    return h > 0 and 0.58 <= w / h <= 0.88       # 63 × 88 mm upright (0.72)
+
+
+def _grid_guesses(flat: np.ndarray, grid: tuple[float, float, float, float], rows: int, cols: int,
+                  squares: list[int]) -> dict[int, list[_Guess]]:
+    """
+    Every square's outline guesses, most promising first: card outlines found in
+    it, the card around an artwork frame found in it (upright, then upside down
+    last), the square itself. Found on the whole page at once — outlines see their
+    neighbours there, so a pair of cards isn't taken for one — and each goes to the
+    square under its centre.
+    """
+    px, py, pw, ph = grid
+    cw, ch = pw / cols, ph / rows
+    lo, hi = LIVE_CARD_AREA[0] * cw * ch, LIVE_CARD_AREA[1] * cw * ch
+
+    def square_of(q: np.ndarray) -> int | None:
+        cx, cy = np.float32(q).mean(axis=0)
+        r, c = int((cy - py) // ch), int((cx - px) // cw)
+        return r * cols + c if 0 <= r < rows and 0 <= c < cols else None
+
+    whole: dict[int, list[_Guess]] = {i: [] for i in squares}
+    up: dict[int, list[_Guess]] = {i: [] for i in squares}
+    down: dict[int, list[_Guess]] = {i: [] for i in squares}
+    for d in detect.detect_cards(flat, max_cards=6 * rows * cols, nested=True):
+        if lo <= cv2.contourArea(d.quad) <= hi and _card_shaped(d.quad):
+            s = square_of(d.quad)
+            if s in whole:
+                whole[s].append(_Guess(d.quad, "both"))
+        for q, way in detect.cards_around_art_ways(d.quad, flat.shape):
+            s = square_of(q)
+            if s in up and lo <= cv2.contourArea(q) <= hi:
+                (up if way == "up" else down)[s].append(_Guess(q, way))
+    out = {}
+    for i in squares:
+        r, c = divmod(i, cols)
+        x0, y0 = px + c * cw, py + r * ch
+
+        def fit(g: _Guess, x0: float = x0, y0: float = y0) -> float:    # centred and card-sized first
+            cx, cy = g.quad.mean(axis=0)
+            return (abs(cx - x0 - cw / 2) / cw + abs(cy - y0 - ch / 2) / ch
+                    + abs(cv2.contourArea(g.quad) / (cw * ch) - 0.78))
+        rect = _Guess(np.float32([[x0, y0], [x0 + cw, y0], [x0 + cw, y0 + ch], [x0, y0 + ch]]), "up")
+        out[i] = (sorted(whole[i], key=fit)[:2] + sorted(up[i], key=fit)[:2] + [rect]
+                  + sorted(down[i], key=fit)[:1])[:LIVE_TRIES]
+    return out
+
+
+def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: int,
+                skip: frozenset[int], mode: str) -> list[dict] | None:
+    """
+    Live frame of a grid whose corners the app knows (it follows the page with
+    the camera): every square on its own, all squares at once. Round by round,
+    each open square tries its next outline guess — the guesses of all squares
+    go through the image model in one run (it uses every core already), the ORB
+    checks run side by side in threads. A square is done as soon as its art
+    match is clear; a match on a sloppy outline makes the matched card's real
+    outline its next guess. Only the card's upright side is embedded where the
+    guess knows it (half the model time). Squares in skip (already sure) are
+    left out. No number reading (live, whole page). Binder: position = pocket.
+    → cards with corners in the photo, or None when the grid isn't usable.
+    """
+    with timing.phase("page"):
+        st = _straighten_page(img, page, rows, cols)
+    if st is None:
+        return None
+    flat, grid, H = st
+    Hinv = np.linalg.inv(H)
+    squares = [i for i in range(rows * cols) if i not in skip]
+    with timing.phase("detect"):
+        todo = _grid_guesses(flat, grid, rows, cols, squares)
+    snap = store.snapshot()
+    best: dict[int, tuple] = {}       # square → (key, quad, crop, cands)
+    used = dict.fromkeys(todo, 0)
+    open_sq = [i for i in todo if todo[i]]
+    while open_sq:
+        now = [(i, todo[i].pop(0)) for i in open_sq]
+        crops = [detect.warp(flat, g.quad) for _, g in now]
+        for i, _ in now:
+            used[i] += 1
+        with timing.phase("embed"):
+            sls = shortlist.shortlist_many(crops, [g.way for _, g in now])
+        with timing.phase("match"):
+            found = list(_cell_pool.map(lambda crop, sl: matcher.match_card(crop, snap, top_k=top_k, shortlist=sl),
+                                        crops, sls))
+        open_sq = []
+        for (i, g), crop, cands in zip(now, crops, found):
+            key = (cands[0].geo_ok, cands[0].art_inliers, cands[0].inliers) if cands else (False, -1, -1)
+            if i not in best or key > best[i][0]:
+                best[i] = (key, g.quad, crop, cands)
+            if matcher.art_clear(cands):
+                todo[i] = []
+                continue
+            if cands and cands[0].inliers >= matcher.MIN_GOOD:
+                # sloppy outline: the matched card's own outline next (like _refine)
+                inner = matcher.card_outline_in_query(cands[0], (crop.shape[1], crop.shape[0]))
+                if inner is not None:
+                    q2 = cv2.perspectiveTransform(inner.reshape(-1, 1, 2),
+                                                  np.linalg.inv(detect.warp_matrix(g.quad))).reshape(4, 2)
+                    if detect.plausible_quad(q2, flat.shape) and _overlap(q2, np.float32(g.quad)) > 0.5:
+                        todo[i].insert(0, _Guess(np.float32(q2), "down" if cands[0].upside_down else "up"))
+            if todo[i] and used[i] < LIVE_TRIES:
+                open_sq.append(i)
+    # strongest first; a card two squares both saw counts once
+    kept: list[tuple[int, tuple]] = []
+    for i, b in sorted(best.items(), key=lambda t: t[1][0], reverse=True):
+        key, q, crop, cands = b
+        if not cands or cands[0].inliers < matcher.MIN_GOOD:
+            continue            # empty square
+        if cands[0].geo_ok and not cands[0].upside_down:
+            inner = matcher.card_outline_in_query(cands[0], (crop.shape[1], crop.shape[0]))
+            if inner is not None:   # put the corners on the card's true outline
+                q2 = cv2.perspectiveTransform(inner.reshape(-1, 1, 2),
+                                              np.linalg.inv(detect.warp_matrix(q))).reshape(4, 2)
+                if detect.plausible_quad(q2, flat.shape) and _overlap(q2, np.float32(q)) > 0.6:
+                    q, crop = np.float32(q2), detect.warp(flat, q2)
+        if all(_overlap(np.float32(q), np.float32(k[1][1])) < 0.3 for k in kept):
+            kept.append((i, (key, q, crop, cands)))
+    decided = []
+    for i, (_, q, crop, cands) in sorted(kept, key=lambda t: t[0]):
+        d, q = _decide(crop, cands, q)
+        back = cv2.perspectiveTransform(np.float32(q).reshape(-1, 1, 2), Hinv).reshape(-1, 2)
+        decided.append((d, back, i if mode == "binder" else None))
+    if log.isEnabledFor(logging.DEBUG):
+        found_in = {i: b for i, b in kept}
+        for i in squares:
+            c = found_in.get(i, (None, None, None, None))[3]
+            log.debug("  square %d (row %d col %d): %d outline(s) tried → %s", i, i // cols + 1, i % cols + 1,
+                      used.get(i, 0), f"{c[0].card_id} art {c[0].art_inliers}/{c[0].inliers}" if c else "nothing")
+    with timing.phase("stamp"):
+        cards = list(_cell_pool.map(lambda t: _result(t[0], t[1], img, t[2]), decided))
+    log.debug("live grid %dx%d: %d square(s) searched, %d skipped, %d outline(s) tried, %d card(s)", cols, rows,
+              len(squares), len(skip), sum(used.values()), len(cards))
+    return cards
+
+
 _IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 _quick = threading.local()   # live scan, whole page in view: skip the number OCR (seconds per frame)
 
@@ -1225,9 +1381,12 @@ def _run_match(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, pag
     h, w = img.shape[:2]
     cards: list[dict] = []
     straightened = None
-    if mode == "binder" and rows > 0 and cols > 0 and page is not None:
+    grid = rows > 0 and cols > 0 and page is not None
+    if grid and mode in ("binder", "multi") and getattr(_quick, "on", False):
+        straightened = _live_cells(img, page, rows, cols, top_k, skip, mode)   # live: square by square, all at once
+    if straightened is None and mode == "binder" and grid:
         straightened = _binder_straightened(img, page, rows, cols, top_k, skip)
-    elif mode == "multi" and page is not None:
+    elif straightened is None and mode == "multi" and page is not None:
         straightened = _multi_straightened(img, page, rows, cols, top_k)
 
     if straightened is not None:
