@@ -205,6 +205,39 @@ def test_live_scan_laesst_sichere_faecher_aus(client, provider_local, png_bytes,
     assert b'name="skip"' not in seen[-1]
 
 
+def test_live_scan_nahaufnahme_einer_karte(client, provider_local, png_bytes, monkeypatch):
+    """Nahaufnahme (Live-Scan): Ecken der verfolgten Karte (auch weit außerhalb) und ihre Kandidaten gehen an den
+    matcher; der entscheidet per Nummer — die Antwort ist eine sichere Karte."""
+    seen: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.content)
+        return httpx.Response(200, json={"mode": "closeup", "ms": 90, "cards": [{
+            "position": None, "quad": [[-0.1, -2.1], [2.5, -2.0], [2.6, 1.0], [-0.05, 0.98]], "auto": True,
+            "reason": "number", "confidence": 0.9, "number_read": "25/198",
+            "candidates": [{"card_id": "sv01-025", "name": "Pikachu", "local_id": "25"},
+                           {"card_id": "sv02-131", "name": "Pikachu", "local_id": "131"}]}]})
+    monkeypatch.setattr(local_match, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    card = "[[-0.1, -2.1], [2.5, -2.0], [2.6, 1.0], [-0.05, 0.98]]"
+
+    def post(**data):
+        return client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                           data={"mode": "closeup", "live": "true", **data})
+
+    r = post(card=card, ids="sv02-131, sv01-025,sv02-131,bad id,../x")
+    assert r.status_code == 200, r.text
+    assert b'name="mode"\r\n\r\ncloseup' in seen[-1]
+    assert b'name="card"\r\n\r\n[[-0.1, -2.1], [2.5, -2.0], [2.6, 1.0], [-0.05, 0.98]]' in seen[-1]
+    assert b'name="ids"\r\n\r\nsv02-131,sv01-025\r\n' in seen[-1]
+    c = r.json()["candidates"][0]
+    assert c["raw"]["tcgdex_card_id"] == "sv01-025" and c["needs_choice"] is False
+    n = len(seen)
+    for bad in ({"ids": "sv01-025"}, {"card": card}, {"card": "[[0, 0], [99, 0], [1, 1], [0, 1]]", "ids": "sv01-025"},
+                {"card": card, "ids": "../.."}):
+        assert post(**bad).status_code == 400
+    assert len(seen) == n                                      # nichts davon erreicht den matcher
+
+
 def test_live_scan_seitenkarte(client, provider_local, png_bytes, monkeypatch):
     """Live-Scan: „new" legt die Seitenkarte an, eine ID ordnet das Bild ein — map_quad je Karte kommt durch."""
     seen: list[bytes] = []
@@ -330,6 +363,49 @@ def test_live_bilder_laden_dieselbe_karte_nicht_jedes_mal(client, provider_local
     assert len(calls) == n and again["match"] == first["match"]       # aus dem Zwischenspeicher
     post()
     assert len(calls) == 2 * n                                         # ohne live: frisch geladen
+
+
+def test_live_bilder_suchen_namen_nicht_jedes_mal(client, provider_local, png_bytes, monkeypatch):
+    """TCGdex liefert eine Karte gerade nicht (503): die Namenssuche danach nur beim ersten
+    Live-Bild, nicht bei jedem (im Log je ~0,5 s pro Bild)."""
+    from app.services import tcgdex
+    from app.services.scan import resolver
+
+    searches: list[str] = []
+
+    async def no_card(card_id, lang="en"):
+        return None
+
+    async def fake_search(params, lang="en"):
+        searches.append(params["name"])
+        return [{"id": "sve-016", "localId": "16", "name": "Basic Metal Energy"}]
+    monkeypatch.setattr(tcgdex, "get_card", no_card)
+    monkeypatch.setattr(tcgdex, "fetch_card_by_set_multilang", lambda *a, **k: _async_none())
+    monkeypatch.setattr(tcgdex, "search_cards", fake_search)
+    monkeypatch.setattr(resolver, "_LIVE_CACHE", {})
+    monkeypatch.setattr(resolver, "_LIVE_SEARCH", {})
+    monkeypatch.setattr(scan_module, "resolve_reads", resolver.resolve_reads)
+    provider_local(200, {"mode": "single", "ms": 5, "cards": [{
+        "position": None, "quad": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "auto": True, "confidence": 0.95,
+        "candidates": [{"card_id": "sv06.5-099", "name": "Basic Metal Energy", "local_id": "99"}]}]})
+
+    def post(**extra):
+        r = client.post("/api/v1/scan", files={"file": ("p.png", png_bytes, "image/png")},
+                        data={"mode": "single", **extra})
+        assert r.status_code == 200, r.text
+
+    post(live="1")
+    n = len(searches)
+    assert n >= 1
+    post(live="1")
+    post(live="1")
+    assert len(searches) == n                                          # aus dem Zwischenspeicher
+    post()
+    assert len(searches) == 2 * n                                      # ohne live: frisch gesucht
+
+
+async def _async_none():
+    return None
 
 
 def test_nur_der_druck_offen_sperrt_nicht(client, provider_local, png_bytes, monkeypatch):

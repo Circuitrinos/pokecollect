@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -824,8 +825,13 @@ def _learn_stamp(spec: list, photo_data: list[bytes], ref_data: list[bytes]) -> 
 @app.post("/match")
 async def match(file: UploadFile = File(...), mode: str = Form("single"),
                 rows: int = Form(0), cols: int = Form(0), top_k: int = Form(5), page: str = Form(""),
-                skip: str = Form(""), map_req: str = Form("", alias="map")) -> dict:
+                skip: str = Form(""), map_req: str = Form("", alias="map"), card: str = Form(""),
+                ids: str = Form("")) -> dict:
     """
+    mode=closeup (live scan): the phone is close to one card the app follows —
+    card: its four corners in this photo as fractions (they may lie far outside
+    it), ids: its candidates ("sv06-099,sv10-176"). The number is read there and
+    settles which of them it is (_closeup).
     page (binder and multi mode, optional): the grid's four corners in the
     photo, JSON [[x, y], …] as fractions of width/height, top left first,
     clockwise — the app's tilted grid when the photo was taken at an angle
@@ -848,6 +854,9 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     data = await file.read()
     if not data or len(data) > MAX_BYTES:
         raise HTTPException(400, "empty or oversized image")
+    if mode == "closeup":
+        quad, wanted = _closeup_card(card), _closeup_ids(ids)
+        return await run_in_threadpool(_closeup_request, data, quad, wanted, max(1, min(top_k, 10)))
     corners = _page_corners(page) if mode in ("binder", "multi") else None
     skipped = _skip_pockets(skip, rows * cols) if mode in ("binder", "multi") else frozenset()
     map_req = map_req.strip()[:64] if mode in ("binder", "multi") else ""
@@ -855,6 +864,95 @@ async def match(file: UploadFile = File(...), mode: str = Form("single"),
     # answering (the backend's status check has a 2 s timeout).
     return await run_in_threadpool(_match_request, data, mode, rows, cols, max(1, min(top_k, 10)), corners, skipped,
                                    map_req)
+
+
+_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,48}")
+CLOSEUP_IDS = 8
+
+
+def _closeup_card(card: str) -> np.ndarray:
+    """The card's corners for mode=closeup (fractions; may reach well outside the photo)."""
+    try:
+        q = np.float32(json.loads(card))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "card: four [x, y] corners expected") from None
+    if q.shape != (4, 2) or not np.all(np.isfinite(q)) or np.abs(q).max() > 8 or cv2.contourArea(q) < 0.02:
+        raise HTTPException(400, "card: four [x, y] corners expected")
+    return q
+
+
+def _closeup_ids(ids: str) -> list[str]:
+    out = [p.strip() for p in ids.split(",") if _ID_RE.fullmatch(p.strip())]
+    out = list(dict.fromkeys(out))[:CLOSEUP_IDS]
+    if not out:
+        raise HTTPException(400, "ids: the card's candidates expected")
+    return out
+
+
+def _closeup_request(data: bytes, quad: np.ndarray, ids: list[str], top_k: int) -> dict:
+    t0 = time.perf_counter()
+    with _match_lock:
+        queued = time.perf_counter() - t0
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(400, "unreadable image")
+        res = _closeup(img, quad, ids, top_k)
+        if log.isEnabledFor(logging.DEBUG):
+            _debug_cards(res)
+        state["matches"] += 1
+    if queued >= 0.05:
+        res["timing"]["queued"] = round(queued * 1000)
+    c = res["cards"][0] if res["cards"] else {}
+    log.info("match closeup %dx%d of %s: %s%s in %d ms %s", img.shape[1], img.shape[0], ",".join(ids),
+             c.get("candidates", [{}])[0].get("card_id") if c.get("auto") else "not settled",
+             f" (number {c.get('number_read')})" if c.get("number_read") else "", res["ms"], res["timing"])
+    return res
+
+
+def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> dict:
+    """
+    Live scan, the phone close to one card the app follows: its corners in this
+    photo (often mostly outside — the phone is at the number corner) and its
+    candidates, typically same-art reprints the whole-page frames can't tell
+    apart. The outline is first snapped to the card (ORB against just those
+    candidates; the app's corners come from its motion tracking and can be a
+    little off), then the number is read where it is printed — also one without
+    a total — and decides if it fits exactly one candidate.
+    """
+    timing.start()
+    t0 = time.perf_counter()
+    h, w = img.shape[:2]
+    q = np.float32(quad) * np.float32([w, h])
+    card = detect.warp(img, q)
+    snap = store.snapshot()
+    with timing.phase("match"):
+        found = matcher.match_card(card, snap, top_k=max(top_k, len(ids)), shortlist=(ids, 0))
+    snapped = False
+    if found and found[0].inliers >= matcher.MIN_GOOD and not found[0].upside_down:
+        inner = matcher.card_outline_in_query(found[0], (card.shape[1], card.shape[0]))
+        if inner is not None:
+            q2 = cv2.perspectiveTransform(inner.reshape(-1, 1, 2), np.linalg.inv(detect.warp_matrix(q))).reshape(4, 2)
+            if np.all(np.isfinite(q2)) and _overlap(np.float32(q2), q) > 0.6:
+                q, card, snapped = np.float32(q2), detect.warp(img, q2), True
+    wanted = {num_key(catalog[c].local_id) for c in ids if c in catalog}
+    with timing.phase("ocr"):
+        numbers = numocr.read_numbers(card, upside_down=False, wanted=wanted, bare=True)
+    by_id = {c.card_id: c for c in found}
+    order = [c.card_id for c in found if c.card_id in ids] + [c for c in ids if c not in by_id]
+    cands = [by_id.get(c) or matcher.Candidate(c, 0.0, 0, 0, 0, 64) for c in order]
+    hits = [c for c in cands if any(matcher._number_matches(catalog.get(c.card_id), n, t) for n, t in numbers)]
+    shown = (f"{numbers[0][0]}/{numbers[0][1]}" if numbers[0][1] else numbers[0][0]) if numbers else None
+    if len(hits) == 1:
+        hit = hits[0]
+        n, t = next((n, t) for n, t in numbers if matcher._number_matches(catalog.get(hit.card_id), n, t))
+        d = matcher.Decision(True, "number", 0.9, f"{n}/{t}" if t else n, [hit] + [c for c in cands if c is not hit])
+    else:
+        d = matcher.Decision(False, "close", 0.45, shown, cands)
+    log.debug("closeup: outline %s, %d ORB candidate(s), numbers read %s → %s", "snapped" if snapped else "as sent",
+              len(found), numbers or "-", d.candidates[0].card_id if d.auto else "not settled")
+    return {"mode": "closeup", "cards": [_result(d, q, img, None)] if cands else [],
+            "ms": round((time.perf_counter() - t0) * 1000), "timing": timing.take(),
+            "shortlist": "given", "snapped": snapped}
 
 
 def _skip_pockets(skip: str, pockets: int) -> frozenset[int]:

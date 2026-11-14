@@ -133,7 +133,7 @@ def _live_map(raw) -> Optional[ScanLiveMap]:
 
 async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: str,
                   rows: int = 0, cols: int = 0, page: str | None = None, skip: str | None = None,
-                  live_map: str | None = None) -> LocalResult:
+                  live_map: str | None = None, card: str | None = None, ids: str | None = None) -> LocalResult:
     t0 = time.perf_counter()
     form = {"mode": mode, "rows": str(rows), "cols": str(cols), "top_k": "5"}
     if page:   # Mappenseite schräg fotografiert: ihre Ecken (ältere Matcher ignorieren das Feld)
@@ -142,6 +142,8 @@ async def extract(image_bytes: bytes, *, base_url: str, mime_type: str, mode: st
         form["skip"] = skip
     if live_map:   # Live-Scan: Seitenkarte anlegen („new") bzw. das Bild darauf einordnen
         form["map"] = live_map
+    if card and ids:   # Live-Scan, Nahaufnahme einer verfolgten Karte: ihre Ecken und Kandidaten
+        form["card"], form["ids"] = card, ids
     try:
         async with _client() as client:
             r = await client.post(

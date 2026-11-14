@@ -10,7 +10,7 @@ from app.schemas._grenzen import PgNichtNegativ  # #117
 from app.schemas._validators import clean_card_nr, reject_control_chars
 
 # "card" = bereits entzerrte Karte (Ecken im App-Editor gesetzt) → nur neu abgleichen
-ScanMode = Literal["single", "multi", "binder", "card"]
+ScanMode = Literal["single", "multi", "binder", "card", "closeup"]
 
 
 class ScanRawRead(BaseModel):

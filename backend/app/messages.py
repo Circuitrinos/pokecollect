@@ -84,6 +84,7 @@ EN: dict[str, str] = {
     "Ungültige Ecken": "Invalid corners",
     "Bild zu groß (max. 5 MB)": "Image too large (max. 5 MB)",
     "Ungültige Karten-ID": "Invalid card id",
+    "Nahaufnahme: Ecken (card) und Kandidaten (ids) nötig": "Close-up: corners (card) and candidates (ids) required",
     "Keine gültige Modelldatei": "Not a valid model file",
     "Kein eigenes Foto zum Markieren": "There is no photo of your own to mark",
     "Scan-Entwurf nicht gefunden": "Scan draft not found",

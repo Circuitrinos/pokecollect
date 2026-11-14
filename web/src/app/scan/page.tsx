@@ -28,10 +28,13 @@ import { useMotion } from "@/lib/useMotion";
 import { debugEnabled, dlog } from "@/lib/debugLog";
 import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toFractions, toPixels, type Mat3 } from "@/lib/motionTrack";
 import { matrixKey, moveSvg, ptsAttr } from "@/lib/svgMove";
+import {
+  FoilWatch, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
+} from "@/lib/liveFoil";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
-  addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, skipSquares, verdict, viewQuad,
-  type Level, type LiveState, type Verdict,
+  addFocus, addFrame, allSure, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS, pick, signature,
+  skipPockets, skipSquares, verdict, viewQuad, type Level, type LiveState, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
@@ -50,6 +53,7 @@ type EditableCandidate = ScanCandidate & {
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — angehakt (von Hand oder vom Stempel-Fund)
   prizePackSet?: boolean;   // von Hand gesetzt: ein neuer Stempel-Befund ändert es nicht mehr
   foil?: Pick<FoilCheck, "hint" | "score"> | null;   // Reverse holo? (undefined = noch nicht geprüft)
+  liveFoil?: LiveFoil | null;                         // Live-Scan: so hat die Karte beim Neigen geglänzt
   firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
   condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
   copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
@@ -480,7 +484,7 @@ export default function ScanPage() {
     setLiveState(next);
     return next;
   };
-  type LiveChip = "hold" | "checking" | "paused" | "lost" | null;
+  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | null;
   const [liveChip, setLiveChip] = useState<LiveChip>(null);
   // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
   // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
@@ -501,6 +505,8 @@ export default function ScanPage() {
   const overlayGRef = useRef<SVGGElement | null>(null);
   const gridGRef = useRef<SVGGElement | null>(null);
   const guideWrapRef = useRef<HTMLDivElement | null>(null);   // Rahmen auf dem Bildschirm, solange das Raster nicht folgt
+  const foilWatchRef = useRef(new FoilWatch());               // Folie: Farbausschnitte je Karte (lib/liveFoil)
+  const [liveFoils, setLiveFoils] = useState<Record<string, LiveFoil>>({});
   const [finishWanted, setFinishWanted] = useState(false);
   const motion = useMotion(liveOn);
   const toggleLive = () => {
@@ -555,6 +561,84 @@ export default function ScanPage() {
       }
     }, 90);
     return () => window.clearInterval(id);
+  }, [liveOn]);
+
+  // Folie: mehrmals pro Sekunde ein kleiner Farbausschnitt jeder verfolgten Karte (lib/liveFoil)
+  useEffect(() => {
+    if (!liveOn) return;
+    const watch = foilWatchRef.current;
+    watch.clear();
+    const src = document.createElement("canvas");
+    const sctx = src.getContext("2d");
+    const atlas = document.createElement("canvas");
+    const actx = atlas.getContext("2d", { willReadFrequently: true });
+    if (!sctx || !actx) return;
+    const COLS = 8;
+    let lastJudge = 0;
+    const known = new Map<string, FoilKind | null>();
+    const id = window.setInterval(() => {
+      const v = videoRef.current;
+      const st = liveRef.current;
+      if (!v || !v.videoWidth || document.hidden || !st.tracks.length) return;
+      const tr = trackerRef.current;
+      const last = sendCumRef.current.get(st.frames);
+      const back = last && last.epoch === tr.epoch ? invM(last.cum) : null;
+      if (!back) return;
+      const toNow = mulM(tr.cum, back);
+      const k = 480 / Math.max(v.videoWidth, v.videoHeight);
+      const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+      if (src.width !== w || src.height !== h) { src.width = w; src.height = h; }
+      sctx.drawImage(v, 0, 0, w, h);
+      const cards = st.tracks.map((t) => ({ key: t.key, q: applyM(toNow, viewQuad(st, t)).map(([x, y]) => [x * w, y * h]) }))
+        .filter(({ q }) => q.every(([x, y]) => x >= 0 && x <= w && y >= 0 && y <= h)
+          && Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) >= 36)
+        .slice(0, 2 * COLS);
+      if (!cards.length) return;
+      const aw = COLS * PATCH_W, ah = Math.ceil(cards.length / COLS) * PATCH_H;
+      if (atlas.width !== aw || atlas.height !== ah) { atlas.width = aw; atlas.height = ah; }
+      actx.imageSmoothingEnabled = true;
+      actx.imageSmoothingQuality = "medium";
+      cards.forEach(({ q }, i) => {
+        const m = patchTransform(q);
+        if (!m) return;
+        const ox = (i % COLS) * PATCH_W, oy = Math.floor(i / COLS) * PATCH_H;
+        actx.save();
+        actx.beginPath();
+        actx.rect(ox, oy, PATCH_W, PATCH_H);
+        actx.clip();
+        actx.setTransform(m[0], m[1], m[2], m[3], m[4] + ox, m[5] + oy);
+        actx.drawImage(src, 0, 0);
+        actx.restore();
+      });
+      const px = actx.getImageData(0, 0, aw, ah).data;
+      const angle = tiltAngles(tiltTurnRef.current);
+      const now = performance.now();
+      cards.forEach(({ key }, i) => {
+        const ox = (i % COLS) * PATCH_W, oy = Math.floor(i / COLS) * PATCH_H;
+        const rgba = new Uint8ClampedArray(PATCH_W * PATCH_H * 4);
+        for (let y = 0; y < PATCH_H; y++) rgba.set(px.subarray(((oy + y) * aw + ox) * 4, ((oy + y) * aw + ox + PATCH_W) * 4), y * PATCH_W * 4);
+        watch.add(key, rgba, angle, now);
+      });
+      if (now - lastJudge < 700) return;
+      lastJudge = now;
+      watch.forget(new Set(st.tracks.map((t) => t.key)));
+      let changed = false;
+      const out: Record<string, LiveFoil> = {};
+      for (const t of st.tracks) {
+        const s = watch.score(t.key);
+        const v = verdict(t);
+        const kind = judgeFoil(s, isBasicEnergy(String(v.cand?.suggested?.kartenname ?? v.cand?.match?.name ?? "")));
+        if (s && kind) out[t.key] = { ...s, kind };
+        if ((known.get(t.key) ?? null) !== kind) {
+          changed = true;
+          known.set(t.key, kind);
+          dlog("live.foil", { key: t.key, id: v.id, kind, art: s && +s.art.toFixed(3), frame: s && +s.frame.toFixed(3),
+            whole: s && +s.whole.toFixed(3), n: s?.n, spread: s?.spread != null ? +s.spread.toFixed(1) : null });
+        }
+      }
+      if (changed) setLiveFoils(out);
+    }, 150);
+    return () => { window.clearInterval(id); setLiveFoils({}); };
   }, [liveOn]);
 
   // Rahmen und Raster mit der Bewegung zeichnen — direkt am SVG, ohne die Seite neu aufzubauen,
@@ -632,7 +716,28 @@ export default function ScanPage() {
     liveFramesRef.current = new Map();
     commitLive(() => emptyLive());
     setLivePick(null);
-    openReviewRef.current(photo, items.map((i) => toEditableRef.current(i.cand, i.chosenId)));
+    // Folie: mit allen bis jetzt gesammelten Ausschnitten urteilen (lib/liveFoil)
+    const foils = new Map(items.map((i) => {
+      const s = foilWatchRef.current.score(i.key);
+      const name = String(i.cand.suggested?.kartenname ?? i.cand.match?.name ?? "");
+      const kind = judgeFoil(s, isBasicEnergy(name));
+      const opts = i.cand.foil_options ?? [];
+      if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind,
+        art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
+        spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
+      if (!s || !kind || kind === "Normal") return [i.key, null] as const;
+      // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
+      const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
+        ? "Reverse Holo" : kind;
+      // nur ein Hinweis, und nur auf eine Folierung, die es von dieser Karte gibt
+      return [i.key, !opts.length || opts.includes(k) ? { ...s, kind: k } : null] as const;
+    }));
+    openReviewRef.current(photo, items.map((i) => {
+      const e = toEditableRef.current(i.cand, i.chosenId);
+      const f = foils.get(i.key);
+      return f ? { ...e, liveFoil: f } : e;
+    }));
+    foilWatchRef.current.clear();
   };
   const finishLiveRef = useRef(finishLive);
   finishLiveRef.current = finishLive;
@@ -719,12 +824,44 @@ export default function ScanPage() {
           if (i) { gq = applyM(toPixels(mulM(trk.cum, i), vw, vh), anchor.quad) as Quad; tracked = true; }
         }
         const page = useGrid && gq ? gq.map(([x, y]) => [x / vw, y / vh] as Pt) : null;
-        const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", 0.88));
+        // nah an der Nummern-Ecke einer unsicheren Karte? Dann nur diese Karte: dort die Nummer lesen
+        const seenLast = sendCumRef.current.get(liveRef.current.frames);
+        const sinceLast = seenLast && seenLast.epoch === sendInfo.epoch ? invM(seenLast.cum) : null;
+        const focus = mode !== "single" && sinceLast ? focusTarget(liveRef.current, mulM(sendInfo.cum, sinceLast)) : null;
+        const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", focus ? 0.92 : 0.88));
         if (!photo || stop) continue;
-        showChip("checking");
+        showChip(focus ? "reading" : "checking");
         liveInFlightRef.current = true;
         frameNo += 1;
         const tSend = performance.now();
+        if (focus) {
+          try {
+            dlog("live.focus.send", { n: frameNo, key: focus.key, ids: focus.ids, corner: focus.corner,
+              width: Math.round(focus.width * 100) / 100, kb: Math.round(photo.size / 1024) });
+            const res = await scanApi.scan(photo, { mode: "closeup", card: focus.quad, ids: focus.ids, live: true,
+              default_language: defaultLang });
+            if (stop) break;
+            const c = res.data.candidates[0];
+            dlog("live.focus.result", { n: frameNo, key: focus.key, ms: Math.round(performance.now() - tSend),
+              engine: res.data.engine, id: c?.match?.tcgdex_card_id ?? null, sure: !!c && !c.needs_choice && !c.print_choice });
+            if (c && res.data.engine === "local") commitLive((st) => addFocus(st, focus.key, c));
+            liveInFlightRef.current = false;
+            if (finishWantedRef.current) { finishLiveRef.current(); break; }
+            showChip(null);
+            if (autoFinishRef.current(liveRef.current)) break;
+          } catch (e) {
+            const err = e as { message?: string; response?: { status?: number } };
+            dlog("live.focus.error", { n: frameNo, status: err?.response?.status, message: err?.message });
+            if (stop) break;
+            if (finishWantedRef.current) { finishLiveRef.current(); break; }
+            showChip("paused");
+            await sleep(1500);
+          } finally {
+            liveInFlightRef.current = false;
+          }
+          await sleep(200);
+          continue;
+        }
         try {
           const before = liveRef.current;
           // schon sichere Fächer/Felder lässt der Abgleich aus: bei der Mappe nach Fach, bei losen
@@ -1629,8 +1766,10 @@ export default function ScanPage() {
     if (step !== "review" || foilModelRef.current === false || foilKeyRef.current) return;
     const next = candidates.find((c) => {
       const f = String((c.suggested as Record<string, unknown>)?.folierung ?? "") || "Normal";
+      // Basis-Energien: das Bild ist die ganze Karte — Holo oder nicht, kein Reverse Holo zu erkennen
       return c.foil === undefined && !c.saved && !c.variantOf && !!c.cropUrl && !!c.match?.tcgdex_card_id
-        && f === "Normal" && c.match?.variants_reverse !== false;
+        && f === "Normal" && c.match?.variants_reverse !== false
+        && !isBasicEnergy(String((c.suggested as Record<string, unknown>)?.kartenname ?? c.match?.name ?? ""));
     });
     if (!next) return;
     foilKeyRef.current = next.key;
@@ -1782,7 +1921,8 @@ export default function ScanPage() {
                     <LiveGrid w={vidSize.w} h={vidSize.h} cols={layoutCols} rows={layoutRows} quad={gridAnchorQuad} gRef={gridGRef} />
                   )}
                   {vidSize && liveOn && (
-                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} onTap={(k) => setLivePick(k)} gRef={overlayGRef} />
+                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} foils={liveFoils} onTap={(k) => setLivePick(k)}
+                      gRef={overlayGRef} />
                   )}
                   {vidSize && liveOn && !busy && (() => {
                     const n = counts(liveState);
@@ -1792,7 +1932,8 @@ export default function ScanPage() {
                       : liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
                       : same ? t.scan_live_same
                       : liveChip === "hold" ? t.scan_live_hold
-                      : liveChip === "checking" ? t.scan_live_checking : !total ? t.scan_live_looking : null;
+                      : liveChip === "checking" ? t.scan_live_checking : liveChip === "reading" ? t.scan_live_reading
+                      : !total ? t.scan_live_looking : null;
                     return (
                       <div className="pointer-events-none absolute top-2 left-1/2 flex w-max max-w-[94%] -translate-x-1/2 flex-wrap items-center justify-center gap-x-2 rounded-2xl bg-black/60 px-3 py-1 text-center text-xs text-white"
                         data-testid="scan-live-status">
@@ -2355,6 +2496,15 @@ export default function ScanPage() {
                         </select>
                       )}
                     </div>
+                    {c.liveFoil && c.liveFoil.kind !== "Normal" && String(s.folierung ?? "") !== c.liveFoil.kind && (
+                      // Live-Scan: beim Neigen glänzte das Bildfenster (Holo) bzw. der Rest (Reverse Holo)
+                      <button type="button" data-testid="scan-live-foil-hint"
+                        onClick={() => { updateField(idx, "folierung", c.liveFoil!.kind); }}
+                        title={t.scan_live_foil_title(c.liveFoil.art.toFixed(2), c.liveFoil.frame.toFixed(2))}
+                        className="w-full rounded border border-purple-500/60 bg-purple-950/40 px-2 py-1 text-left text-xs text-purple-200 hover:bg-purple-900/40">
+                        ✨ {t.scan_live_foil_hint(c.liveFoil.kind)} <span className="text-purple-300/80">— {t.scan_foil_set}</span>
+                      </button>
+                    )}
                     {c.foil?.hint && String(s.folierung ?? "") !== "Reverse Holo" && (
                       // Folien-Modell: der Rahmen glänzt wie bei einer Reverse Holo — antippen setzt es
                       <button type="button" data-testid="scan-foil-hint"
@@ -2549,8 +2699,8 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 };
 
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
-function LiveOverlay({ w, h, state, onTap, gRef }: {
-  w: number; h: number; state: LiveState; onTap: (key: string) => void;
+function LiveOverlay({ w, h, state, foils, onTap, gRef }: {
+  w: number; h: number; state: LiveState; foils: Record<string, LiveFoil>; onTap: (key: string) => void;
   gRef?: React.MutableRefObject<SVGGElement | null>;   // folgt der Kamera seit dem letzten geprüften Bild (lib/svgMove)
 }) {
   const fs = Math.max(w, h) * 0.024;
@@ -2565,13 +2715,21 @@ function LiveOverlay({ w, h, state, onTap, gRef }: {
         const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
-        const name = raw.length > 16 ? `${raw.slice(0, 15)}…` : raw;
+        const foil = foils[tr.key]?.kind;
+        const shine = foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
+        const name = (raw.length > 16 ? `${raw.slice(0, 15)}…` : raw) + shine;
         const label = [x0 + fs * 0.3, y0 + fs * 1.15];
+        // unsicher: die Nummern-Ecke markieren — dort nah heran, dann liest der Abgleich die Nummer
+        const corner = v.level !== "green" ? cardPart(pts, NUMBER_CORNERS.left) : null;
         return (
           <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why}
             style={{ pointerEvents: "all", cursor: "pointer" }} onClick={() => onTap(tr.key)}>
             <polygon points={ptsAttr(pts)} data-pts={ptsAttr(pts)} fill={c.fill} stroke={c.stroke}
               strokeWidth={3} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            {corner && (
+              <polygon points={ptsAttr(corner)} data-pts={ptsAttr(corner)} fill="none" stroke={c.stroke}
+                strokeWidth={2} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" data-testid="scan-live-number-corner" />
+            )}
             <text x={label[0]} y={label[1]} data-at={ptsAttr([label])} fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.75)"
               strokeWidth={fs * 0.16} paintOrder="stroke" fontWeight={600}>
               {v.level === "green" ? "✓ " : ""}{name}

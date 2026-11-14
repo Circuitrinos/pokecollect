@@ -879,7 +879,7 @@ export const dataApi = {
 // ── Scan ──────────────────────────────────────────────────────────────────
 
 // "card": bereits entzerrte Karte (nach dem Ecken-Editor) → nur neu abgleichen
-export type ScanMode = "single" | "multi" | "binder" | "card";
+export type ScanMode = "single" | "multi" | "binder" | "card" | "closeup";
 
 export type ScanMatch = {
   tcgdex_card_id: string | null;
@@ -1216,7 +1216,8 @@ export const scanApi = {
   models: (provider: string) =>
     api.get<ScanModelList>("/scan/models", { params: { provider } }),
   scan: (file: Blob, opts: { mode: ScanMode; rows?: number; cols?: number; default_language?: string;
-    page?: [number, number][] | null; skip?: number[]; live?: boolean; map?: string | null }) => {
+    page?: [number, number][] | null; skip?: number[]; live?: boolean; map?: string | null;
+    card?: number[][] | null; ids?: string[] }) => {
     const form = new FormData();
     form.append("file", file, "scan.jpg");
     form.append("mode", opts.mode);
@@ -1229,6 +1230,9 @@ export const scanApi = {
     if (opts.skip?.length) form.append("skip", opts.skip.join(","));
     if (opts.live) form.append("live", "1");   // Live-Bild: Kartendaten dürfen kurz aus dem Zwischenspeicher kommen
     if (opts.live && opts.map) form.append("map", opts.map);   // Seitenkarte: „new" oder ihre ID
+    // Live-Scan, Nahaufnahme (mode closeup): Ecken der verfolgten Karte und ihre Kandidaten
+    if (opts.card) form.append("card", JSON.stringify(opts.card.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)])));
+    if (opts.ids?.length) form.append("ids", opts.ids.join(","));
     return api.post<ScanResponse>("/scan", form);
   },
   resolve: (read: ScanRawRead) => api.post<ScanCandidate>("/scan/resolve", read),

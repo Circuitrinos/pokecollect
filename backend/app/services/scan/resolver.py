@@ -68,6 +68,28 @@ async def _get_card(card_id: str, lang: str):
     return _copy(card)
 
 
+_LIVE_SEARCH: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+
+
+async def _search_name(name: str, lang: str) -> list[dict]:
+    """Kartensuche per Name; im Live-Scan kurz gemerkt wie _get_card — sonst lädt jedes
+    Bild einer Karte, die TCGdex gerade nicht liefert, die Namensliste neu (je ~0,5 s)."""
+    if not _cached.get():
+        return await tcgdex.search_cards({"name": name}, lang)
+    key = (name, lang)
+    now = time.monotonic()
+    hit = _LIVE_SEARCH.get(key)
+    if hit and hit[0] > now:
+        log.debug("TCGdex %s/Suche %r: aus dem Live-Zwischenspeicher", lang, name)
+        return [dict(r) for r in hit[1]]
+    results = await tcgdex.search_cards({"name": name}, lang)
+    if len(_LIVE_SEARCH) >= _LIVE_MAX // 10:
+        for k in sorted(_LIVE_SEARCH, key=lambda k: _LIVE_SEARCH[k][0])[: _LIVE_MAX // 40]:
+            _LIVE_SEARCH.pop(k, None)
+    _LIVE_SEARCH[key] = (now + (_LIVE_TTL if results else _LIVE_TTL_MISS), results)
+    return [dict(r) for r in results]
+
+
 async def _prefetch(reads: list[ScanRawRead], default_lang: str) -> None:
     """Karten mit bekannter ID (Bild-Abgleich) gleichzeitig laden statt nacheinander —
     bei einer Seite mit 16 Karten macht das aus Sekunden je Karte eine Wartezeit."""
@@ -408,7 +430,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     via_suffix = False
     results: list[dict] = []
     if tc is None and read.name:
-        results = await tcgdex.search_cards({"name": read.name}, tcg_lang)
+        results = await _search_name(read.name, tcg_lang)
 
         # Suffix-Fallback (#20): kein Treffer + Name trägt ein Karten-Suffix
         # (ex/GX/V/…) → einmal ohne Suffix breiter suchen. Die localId macht
@@ -416,7 +438,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         if not results:
             base = strip_card_suffix(read.name)
             if base and base != read.name:
-                results = await tcgdex.search_cards({"name": base}, tcg_lang)
+                results = await _search_name(base, tcg_lang)
                 via_suffix = bool(results)
 
         def _norm(x: object) -> str:
@@ -501,8 +523,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         dex_id = tc.dex_id
         if dex_id is None and _is_pokemon(tc) is not False:
             log.debug("%s: keine Pokédex-Nr. — über Schwesterkarten gesucht (%s)", tc.id, tc.category)
-            sib_results = results or await tcgdex.search_cards(
-                {"name": read.name or tc.name or ""}, tcg_lang)
+            sib_results = results or await _search_name(read.name or tc.name or "", tcg_lang)
             dex_id, sib_en = await _dex_from_results(sib_results)
             if not eng:
                 eng = sib_en

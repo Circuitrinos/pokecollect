@@ -278,6 +278,29 @@ def _map_ref(value: str) -> str | None:
     return v if v == "new" or (0 < len(v) <= 64 and all(ch in "0123456789abcdef" for ch in v)) else None
 
 
+_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,48}")
+
+
+def _closeup_card(card: str) -> str | None:
+    """Nahaufnahme einer Karte (Live-Scan): ihre Ecken im Foto als Anteile — sie dürfen
+    weit außerhalb liegen (das Handy ist nah an einer Ecke der Karte) → JSON, sonst None."""
+    if not card or len(card) > 400:
+        return None
+    try:
+        pts = [[round(float(x), 4), round(float(y), 4)] for x, y in json.loads(card)]
+    except (ValueError, TypeError):
+        return None
+    if len(pts) != 4 or any(not (-6.0 <= v <= 7.0) for p in pts for v in p):
+        return None
+    return json.dumps(pts)
+
+
+def _closeup_ids(ids: str) -> str | None:
+    """Die Kandidaten der Karte (TCGdex-IDs, „sv06-099,sv10-176"), höchstens 8."""
+    out = list(dict.fromkeys(p.strip() for p in ids[:600].split(",") if _ID_RE.fullmatch(p.strip())))[:8]
+    return ",".join(out) or None
+
+
 def _skip_pockets(skip: str, pockets: int) -> str | None:
     """Fächer für den Bild-Abgleich („0,4,5"): nur gültige Nummern, sortiert, ohne Doppelte."""
     parts = (p.strip() for p in skip[:400].split(","))
@@ -296,6 +319,8 @@ async def scan(
     skip: str = Form(""),
     live: bool = Form(False),
     live_map: str = Form("", alias="map"),
+    card: str = Form(""),
+    ids: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """
@@ -316,6 +341,10 @@ async def scan(
     - map (Live-Scan, Mappe/lose Karten, Bild-Abgleich): „new" macht dieses Bild
       zur Seitenkarte, eine ID ordnet es darauf ein — auch eine Nahaufnahme weniger
       Karten; jede Karte bekommt dann ihre Ecken auf der Seitenkarte (map_quad).
+    - mode=closeup (Live-Scan): das Handy ist nah an einer Karte, die die App schon
+      verfolgt — card: ihre Ecken im Foto (Anteile, auch weit außerhalb), ids: ihre
+      Kandidaten. Der Bild-Abgleich liest dort die Nummer und entscheidet den Druck;
+      andere Leser sehen ein Einzelbild.
     """
     data = await file.read()
     if not data:
@@ -332,7 +361,10 @@ async def scan(
               f", Seitenkarte {live_map}" if live_map else "", default_language)
     # „card": entzerrter Zuschnitt aus dem Ecken-Editor. Der Bild-Abgleich
     # überspringt dafür die Erkennung; alle anderen Leser sehen ein Einzelbild.
-    reader_mode = "single" if mode == "card" else mode
+    reader_mode = "single" if mode in ("card", "closeup") else mode
+    closeup = (_closeup_card(card), _closeup_ids(ids)) if mode == "closeup" else (None, None)
+    if mode == "closeup" and None in closeup:
+        raise HTTPException(status_code=400, detail="Nahaufnahme: Ecken (card) und Kandidaten (ids) nötig")
 
     engine = "none"
     reads = None
@@ -349,7 +381,8 @@ async def scan(
             data, base_url=reader_base or "", mime_type=mime, mode=mode, rows=rows, cols=cols,  # card → matcher
             page=_page_corners(page) if mode in ("binder", "multi") else None,
             skip=_skip_pockets(skip, rows * cols) if mode in ("binder", "multi") else None,
-            live_map=_map_ref(live_map) if live and mode in ("binder", "multi") else None)
+            live_map=_map_ref(live_map) if live and mode in ("binder", "multi") else None,
+            card=closeup[0], ids=closeup[1])
         if result.reads is not None:
             reads, local_extras, engine = result.reads, result.extras, "local"
             live_map_info = result.live_map

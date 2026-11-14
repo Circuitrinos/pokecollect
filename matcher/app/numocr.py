@@ -14,6 +14,7 @@ import numpy as np
 from .detect import PAD
 
 _NUM_RE = re.compile(r"([A-Z]{0,3}\d{1,3})\s*/\s*([A-Z]{0,3}\d{1,3})")
+_BARE_RE = re.compile(r"(?<![0-9/])([A-Z]{0,3}\d{1,3})(?![0-9/])")   # a number without a total
 _WHITELIST = "0123456789/TGSVHRC"
 _CONFIGS = [f"--oem 3 --psm {p} -c tessedit_char_whitelist={_WHITELIST}" for p in (7, 6)]
 
@@ -48,11 +49,13 @@ def _prep(roi: np.ndarray) -> list[np.ndarray]:
 
 
 def read_numbers(card: np.ndarray, upside_down: bool = False,
-                 wanted: set[str] | None = None) -> list[tuple[str, str]]:
+                 wanted: set[str] | None = None, bare: bool = False) -> list[tuple[str, str]]:
     """
     (number, total) pairs Tesseract finds, e.g. [('136', '197')]. Stops as soon
     as a number in `wanted` (num_key form, e.g. 'TG5', '136') shows up, so the
     common case costs one or two Tesseract calls instead of 24.
+    bare: also a number printed without a total (basic energies, some promos) —
+    only one in `wanted` counts, as (number, ""), since the strip has other digits too.
     """
     if not available():
         return []
@@ -60,6 +63,7 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
 
     from .catalog import num_key
     found: list[tuple[str, str]] = []
+    bare_seen: dict[str, int] = {}
     for roi in _rois(card, upside_down):
         if roi.size == 0:
             continue
@@ -69,12 +73,24 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
                     txt = pytesseract.image_to_string(img, config=cfg)
                 except Exception:
                     continue
-                for m in _NUM_RE.finditer(txt.replace(" ", "").upper()):
+                text = txt.replace(" ", "").upper()
+                for m in _NUM_RE.finditer(text):
                     pair = (m.group(1), m.group(2))
                     if pair not in found:
                         found.append(pair)
                     if wanted and num_key(pair[0]) in wanted:
                         return [pair] + [p for p in found if p != pair]
+                if bare and wanted:
+                    for line in txt.upper().splitlines():
+                        for m in _BARE_RE.finditer(line.replace(" ", "")):
+                            code = m.group(1)
+                            if num_key(code) not in wanted:
+                                continue
+                            if (code, "") not in found:
+                                found.append((code, ""))
+                            bare_seen[code] = bare_seen.get(code, 0) + 1
+                            if bare_seen[code] >= 2:       # read the same way twice: enough
+                                return [(code, "")] + [p for p in found if p != (code, "")]
     return found
 
 

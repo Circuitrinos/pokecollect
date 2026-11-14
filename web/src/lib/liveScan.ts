@@ -319,6 +319,71 @@ export function pick(state: LiveState, key: string, id: string, cand: ScanCandid
   return { ...state, tracks: state.tracks.map((t) => (t.key === key ? { ...t, picked: { id, cand } } : t)) };
 }
 
+// ── Nahaufnahme der Nummer ────────────────────────────────────────────────
+// Ist das Handy so nah an einer unsicheren Karte, dass ihre Nummern-Ecke groß im
+// Bild ist, geht nur diese Karte an den Bild-Abgleich: ihre Ecken (mit der Kamera
+// mitgeführt, dürfen weit aus dem Bild ragen) und ihre Kandidaten — dort wird die
+// Nummer gelesen und entscheidet den Druck (matcher: mode=closeup).
+
+/** Wo die Nummer steht, in Anteilen der Karte [x0, y0, x1, y1]: unten links (heute), unten rechts (ältere Karten). */
+export const NUMBER_CORNERS: Record<"left" | "right", [number, number, number, number]> = {
+  left: [0.02, 0.895, 0.45, 0.985],
+  right: [0.55, 0.895, 0.98, 0.985],
+};
+export const FOCUS_MIN_WIDTH = 0.3;     // so viel der Bildbreite nimmt die Nummern-Ecke mindestens ein
+const FOCUS_ZOOM = 3;                   // eine solche Nahaufnahme zählt wie eine sehr nahe
+
+export type Focus = { key: string; quad: number[][]; ids: string[]; corner: "left" | "right"; width: number };
+
+/** Ein Teil der Karte (Anteile [x0, y0, x1, y1]) im Bild, für einen Umriss (TL, TR, BR, BL; Anteile). */
+export function cardPart(quad: number[][], part: [number, number, number, number]): number[][] {
+  const [x0, y0, x1, y1] = part;
+  return applyH(squareTo(quad), [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+}
+
+/** Die Kandidaten einer Karte, der wahrscheinlichste zuerst (höchstens 8). */
+export function candidateIds(t: LiveTrack): string[] {
+  const v = verdict(t);
+  const last = latest(t.obs);
+  const ids = [v.id, ...(last?.cand.alternatives ?? []).map((a) => a.tcgdex_card_id), last?.id ?? null];
+  return Array.from(new Set(ids.filter((x): x is string => !!x))).slice(0, 8);
+}
+
+/**
+ * Die unsichere Karte, deren Nummern-Ecke jetzt ganz und groß im Bild ist (oder null).
+ * toNow: letztes geprüftes Bild → jetziges Bild (Kamera-Bewegung, Anteile).
+ */
+export function focusTarget(state: LiveState, toNow: Mat3, minWidth = FOCUS_MIN_WIDTH): Focus | null {
+  let best: Focus | null = null;
+  for (const t of state.tracks) {
+    if (verdict(t).level === "green") continue;
+    const ids = candidateIds(t);
+    if (!ids.length) continue;
+    const quad = applyH(toNow, viewQuad(state, t));
+    const at = squareTo(quad);
+    for (const corner of ["left", "right"] as const) {
+      const [x0, y0, x1, y1] = NUMBER_CORNERS[corner];
+      const pts = applyH(at, [0, 0.5, 1].flatMap((u) => [0, 1].map((v) => [x0 + u * (x1 - x0), y0 + v * (y1 - y0)])));
+      if (!pts.every(([x, y]) => x >= -0.01 && x <= 1.01 && y >= -0.01 && y <= 1.01)) continue;
+      const [[ax], [bx]] = applyH(at, [[x0, y1], [x1, y1]]);
+      const w = Math.abs(bx - ax);
+      if (w >= minWidth && (!best || w > best.width)) best = { key: t.key, quad, ids, corner, width: w };
+    }
+  }
+  return best;
+}
+
+/** Der Befund einer Nahaufnahme gehört genau zu dieser Karte (kein neues Bild der Seite). */
+export function addFocus(state: LiveState, key: string, c: ScanCandidate): LiveState {
+  return {
+    ...state,
+    tracks: state.tracks.map((t) => (t.key !== key ? t : {
+      ...t,
+      obs: [...t.obs, { ...obsOf(c, state.frames, null, FOCUS_ZOOM), quad: t.quad, vq: null }].slice(-MAX_KEEP_OBS),
+    })),
+  };
+}
+
 /** Kandidaten zum Antippen: die Treffer aller Bilder dieser Karte, beste zuerst. */
 export function choices(t: LiveTrack): ScanAlternative[] {
   const best = new Map<string, ScanAlternative & { n: number }>();
@@ -333,7 +398,7 @@ export function choices(t: LiveTrack): ScanAlternative[] {
     .map(({ n: _n, ...a }) => a).slice(0, 8);
 }
 
-export type FinalItem = { cand: ScanCandidate; chosenId: string | null };
+export type FinalItem = { key: string; cand: ScanCandidate; chosenId: string | null };
 
 /**
  * Ergebnis für die Prüfseite: ein Foto (das Bild, in dem die meisten Karten mit
@@ -382,7 +447,7 @@ export function finish(state: LiveState, frames: number[]): { frame: number | nu
     // Play!-Stempel: der stärkste Befund dieser Karte
     const stamps = t.obs.filter((o) => (!v.id || o.id === v.id) && o.cand.stamp).map((o) => o.cand.stamp!);
     if (stamps.length) cand = { ...cand, stamp: stamps.reduce((a, s) => (s.score > a.score ? s : a)) };
-    return { cand, chosenId: t.picked?.id ?? null };
+    return { key: t.key, cand, chosenId: t.picked?.id ?? null };
   });
   return { frame: base, items };
 }
