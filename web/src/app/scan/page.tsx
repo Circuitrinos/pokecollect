@@ -26,6 +26,7 @@ import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, turnDegrees, t
 import { useTiltGrid } from "@/lib/useTiltGrid";
 import { useMotion } from "@/lib/useMotion";
 import { debugEnabled, dlog } from "@/lib/debugLog";
+import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toPixels, type Mat3 } from "@/lib/motionTrack";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
   addFrame, allSure, choices, counts, emptyLive, finish, pick, signature, skipPockets, verdict, viewQuad,
@@ -487,6 +488,14 @@ export default function ScanPage() {
   // ✓ gedrückt, während ein Bild noch geprüft wird: mit dessen Ergebnis abschließen
   const liveInFlightRef = useRef(false);
   const finishWantedRef = useRef(false);
+  // Kamera-Bewegung zwischen den Prüfungen (lib/motionTrack): die Rahmen und das Raster
+  // folgen ihr. Je geprüftem Bild der Stand beim Abschicken; das Raster ab dem ersten Bild.
+  const trackerRef = useRef<MotionTracker>(new MotionTracker());
+  const sendCumRef = useRef(new Map<number, { cum: Mat3; epoch: number }>());
+  const gridAnchorRef = useRef<{ cum: Mat3; epoch: number; quad: Quad } | null>(null);
+  const [gridAnchorQuad, setGridAnchorQuad] = useState<Quad | null>(null);
+  const overlayGRef = useRef<SVGGElement | null>(null);
+  const gridGRef = useRef<SVGGElement | null>(null);
   const [finishWanted, setFinishWanted] = useState(false);
   const motion = useMotion(liveOn);
   const toggleLive = () => {
@@ -505,7 +514,79 @@ export default function ScanPage() {
     setLiveChip(null);
     finishWantedRef.current = false;
     setFinishWanted(false);
+    trackerRef.current.reset();
+    sendCumRef.current = new Map();
+    gridAnchorRef.current = null;
+    setGridAnchorQuad(null);
   }, [liveOn, mode, liveGrid]);
+
+  // Bewegung verfolgen: ~11×/s ein kleines Graubild (kurze Seite 160 px)
+  useEffect(() => {
+    if (!liveOn) return;
+    const tr = trackerRef.current;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    let steps = 0, okSteps = 0, spent = 0, last = performance.now();
+    const id = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || !v.videoWidth || document.hidden) return;
+      const k = 160 / Math.min(v.videoWidth, v.videoHeight);
+      const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      ctx.drawImage(v, 0, 0, w, h);
+      const t0 = performance.now();
+      const st = tr.push(toGray(ctx.getImageData(0, 0, w, h).data, w, h), w, h);
+      spent += performance.now() - t0;
+      steps += 1;
+      if (st.ok) okSteps += 1;
+      if (performance.now() - last > 3000) {
+        dlog("track", { steps, ok: okSteps, msPerStep: steps ? spent / steps : 0, epoch: tr.epoch, points: st.points, inliers: st.inliers });
+        steps = okSteps = 0; spent = 0; last = performance.now();
+      }
+    }, 90);
+    return () => window.clearInterval(id);
+  }, [liveOn]);
+
+  // Rahmen und Raster mit der Bewegung zeichnen — direkt am SVG, ohne die Seite neu aufzubauen
+  useEffect(() => {
+    if (!liveOn) return;
+    let raf = 0, lastO = "", lastG = "";
+    const fmt = (m: Mat3) => `matrix(${m[0][0]} ${m[1][0]} ${m[0][1]} ${m[1][1]} ${m[0][2]} ${m[1][2]})`;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const v = videoRef.current;
+      if (!v || !v.videoWidth) return;
+      const tr = trackerRef.current;
+      const since = (from: { cum: Mat3; epoch: number } | null | undefined): Mat3 | null => {
+        if (!from || from.epoch !== tr.epoch) return null;
+        const i = invM(from.cum);
+        return i ? toPixels(mulM(tr.cum, i), v.videoWidth, v.videoHeight) : null;
+      };
+      const g = overlayGRef.current;
+      if (g) {
+        const frames = liveRef.current.frames;
+        const m = since(sendCumRef.current.get(frames));
+        const key = m ? fmt(m) : frames ? "stale" : "none";
+        if (key !== lastO) {
+          lastO = key;
+          if (m) g.setAttribute("transform", key); else g.removeAttribute("transform");
+          g.style.opacity = key === "stale" ? "0.3" : "1";   // Spur verloren: blass bis zur nächsten Prüfung
+        }
+      }
+      const gg = gridGRef.current;
+      if (gg) {
+        const m = since(gridAnchorRef.current);
+        const key = m ? fmt(m) : "";
+        if (key !== lastG) {
+          lastG = key;
+          if (m) gg.setAttribute("transform", key); else gg.removeAttribute("transform");
+        }
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [liveOn]);
   useEffect(() => { lastDoneRef.current = null; }, [mode, liveGrid]);
   // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
   const autoFinish = (st: LiveState): boolean => {
@@ -613,7 +694,16 @@ export default function ScanPage() {
         full.height = Math.round(v.videoHeight * kf);
         fctx.drawImage(v, 0, 0, full.width, full.height);
         const vw = v.videoWidth, vh = v.videoHeight;
-        const gq = gridQuadRef.current;
+        // Raster: wo die Seite jetzt liegt — seit dem ersten Bild mit der Kamera mitgeführt
+        const trk = trackerRef.current;
+        const sendInfo = { cum: trk.cum, epoch: trk.epoch };
+        const anchor = gridAnchorRef.current;
+        let gq = gridQuadRef.current;
+        let tracked = false;
+        if (anchor && anchor.epoch === trk.epoch) {
+          const i = invM(anchor.cum);
+          if (i) { gq = applyM(toPixels(mulM(trk.cum, i), vw, vh), anchor.quad) as Quad; tracked = true; }
+        }
         const page = useGrid && gq ? gq.map(([x, y]) => [x / vw, y / vh] as Pt) : null;
         const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", 0.88));
         if (!photo || stop) continue;
@@ -624,7 +714,8 @@ export default function ScanPage() {
         try {
           const before = liveRef.current;
           dlog("live.frame.send", {
-            n: frameNo, w: full.width, h: full.height, kb: Math.round(photo.size / 1024), grid: !!page,
+            n: frameNo, w: full.width, h: full.height, kb: Math.round(photo.size / 1024), grid: !!page, gridTracked: tracked,
+            trackEpoch: sendInfo.epoch,
             tilt: !!tiltQuadRef.current, map: mode === "single" ? null : before.mapId ?? "new",
             skip: mode === "binder" ? skipPockets(before) : [],
           });
@@ -663,7 +754,16 @@ export default function ScanPage() {
             });
           }
           const frames = liveFramesRef.current;
-          if (!next.lost) frames.set(next.frames, photo);
+          if (!next.lost) {
+            frames.set(next.frames, photo);
+            sendCumRef.current.set(next.frames, sendInfo);
+            for (const f of Array.from(sendCumRef.current.keys())) if (f < next.frames - 3) sendCumRef.current.delete(f);
+            // das Raster folgt ab hier der Kamera (neu verankert, wenn die Spur verloren war)
+            if (useGrid && gq && (!gridAnchorRef.current || gridAnchorRef.current.epoch !== sendInfo.epoch)) {
+              gridAnchorRef.current = { ...sendInfo, quad: gq };
+              setGridAnchorQuad(gq);
+            }
+          }
           if (finishWantedRef.current) { finishLiveRef.current(); break; }   // ✓ wartete auf dieses Bild
           if (next.lost) { showChip("lost"); await sleep(300); continue; }
           showChip(null);
@@ -1651,13 +1751,15 @@ export default function ScanPage() {
                   <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
-                  {vidSize && (
+                  {vidSize && (liveOn && gridAnchorQuad ? (
+                    <LiveGrid w={vidSize.w} h={vidSize.h} cols={layoutCols} rows={layoutRows} quad={gridAnchorQuad} gRef={gridGRef} />
+                  ) : (
                     <CameraGuide w={vidSize.w} h={vidSize.h} aspect={gAspect} cols={gridShown ? layoutCols : 1}
                       rows={gridShown ? layoutRows : 1} quad={lockQuad} steady={lockSteady} boxes={detQuads}
                       tilted={tiltQuad} />
-                  )}
+                  ))}
                   {vidSize && liveOn && (
-                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} onTap={(k) => setLivePick(k)} />
+                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} onTap={(k) => setLivePick(k)} gRef={overlayGRef} />
                   )}
                   {vidSize && liveOn && !busy && (() => {
                     const n = counts(liveState);
@@ -2424,11 +2526,15 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 };
 
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
-function LiveOverlay({ w, h, state, onTap }: { w: number; h: number; state: LiveState; onTap: (key: string) => void }) {
+function LiveOverlay({ w, h, state, onTap, gRef }: {
+  w: number; h: number; state: LiveState; onTap: (key: string) => void;
+  gRef?: React.MutableRefObject<SVGGElement | null>;   // bekommt die Kamera-Bewegung seit dem letzten geprüften Bild
+}) {
   const fs = Math.max(w, h) * 0.024;
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
       data-testid="scan-live-overlay">
+      <g ref={gRef} data-testid="scan-live-moving">
       {state.tracks.map((tr) => {
         const v = verdict(tr);
         const c = LIVE_COLOURS[v.level];
@@ -2449,6 +2555,29 @@ function LiveOverlay({ w, h, state, onTap }: { w: number; h: number; state: Live
           </g>
         );
       })}
+      </g>
+    </svg>
+  );
+}
+
+/** Live-Scan: das Raster der Seite, das der Kamera folgt (gRef bekommt die Bewegung seit dem ersten Bild). */
+function LiveGrid({ w, h, cols, rows, quad, gRef }: {
+  w: number; h: number; cols: number; rows: number; quad: Quad; gRef: React.MutableRefObject<SVGGElement | null>;
+}) {
+  const at = squareToQuad(quad);
+  const line = (a: Pt, b: Pt, key: string) => (
+    <line key={key} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#facc15" strokeOpacity={0.45} strokeWidth={1}
+      vectorEffect="non-scaling-stroke" />
+  );
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+      data-testid="scan-live-grid">
+      <g ref={gRef}>
+        {Array.from({ length: cols - 1 }, (_, i) => line(at((i + 1) / cols, 0), at((i + 1) / cols, 1), `c${i}`))}
+        {Array.from({ length: rows - 1 }, (_, i) => line(at(0, (i + 1) / rows), at(1, (i + 1) / rows), `r${i}`))}
+        <polygon points={quad.map(([x, y]) => `${x},${y}`).join(" ")} fill="none" stroke="#facc15" strokeWidth={2.5}
+          strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </g>
     </svg>
   );
 }
