@@ -84,6 +84,7 @@ _match_lock = threading.Lock()   # one photo at a time; each match already uses 
 _detect_lock = threading.Lock()  # live preview: one frame at a time, extra frames are dropped
 DETECT_MAX_SIDE = 1280
 QUERY_RELOAD_S = float(os.getenv("EMBED_QUERY_RELOAD_S", "60"))   # how often to look for a new student
+MAP_SIZE_TOL = 1.35     # cards placed on the page map more than this much bigger/smaller: a wrong fit
 catalog: dict[str, CatalogCard] = {}
 extender = Extender(SEG_DIR, store, EXTEND_REGIONS)
 shortlist = embedding.Shortlist()
@@ -956,13 +957,35 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
             if np.all(np.isfinite(q2)) and _overlap(np.float32(q2), q) > 0.6:
                 q, card, snapped = np.float32(q2), detect.warp(img, q2), True
     wanted = {num_key(catalog[c].local_id) for c in ids if c in catalog}
+    printed: dict[str, list[tuple[str, str]]] = {}
+    for c in ids:
+        if c in catalog:
+            lid = str(catalog[c].local_id or "").upper()
+            printed.setdefault(num_key(lid), []).append((_set_code(catalog[c]), re.sub(r"^[A-Z]+", "", lid)))
+    prefixes: dict[str, str] = {}
     with timing.phase("ocr"):
-        numbers = numocr.read_numbers(card, upside_down=False, wanted=wanted, bare=True)
+        numbers = numocr.read_numbers(card, upside_down=False, wanted=wanted, bare=True, prefixes=prefixes,
+                                      printed=printed, both_ways=False)
     by_id = {c.card_id: c for c in found}
     order = [c.card_id for c in found if c.card_id in ids] + [c for c in ids if c not in by_id]
     cands = [by_id.get(c) or matcher.Candidate(c, 0.0, 0, 0, 0, 64) for c in order]
     hits = [c for c in cands if any(matcher._number_matches(catalog.get(c.card_id), n, t) for n, t in numbers)]
-    shown = (f"{numbers[0][0]}/{numbers[0][1]}" if numbers[0][1] else numbers[0][0]) if numbers else None
+    hit_num = next(((n, t) for n, t in numbers if any(matcher._number_matches(catalog.get(c.card_id), n, t)
+                                                      for c in hits)), None)
+    pre = prefixes.get(num_key(hit_num[0])) if hit_num and not hit_num[1] else None
+    codes = sorted({_set_code(catalog.get(c.card_id)) for c in hits})
+    if len(hits) > 1 and len(codes) == len(hits):   # the same number in two sets ("SVE 016" / "MEE 016"):
+        code = pre if pre in codes else None        # read right before the number, spelled out in full
+        if code is None:                            # or the logo itself, read twice
+            with timing.phase("ocr"):
+                code = numocr.read_set_code(card, codes)
+        if code:
+            pre = code
+            hits = [c for c in hits if _set_code(catalog.get(c.card_id)) == code]
+    num = hit_num or (numbers[0] if numbers else None)
+    shown = (f"{num[0]}/{num[1]}" if num[1] else num[0]) if num else None
+    if shown and pre:
+        shown = f"{pre} {shown}"
     if len(hits) == 1:
         hit = hits[0]
         n, t = next((n, t) for n, t in numbers if matcher._number_matches(catalog.get(hit.card_id), n, t))
@@ -974,6 +997,12 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
     return {"mode": "closeup", "cards": [_result(d, q, img, None)] if cands else [],
             "ms": round((time.perf_counter() - t0) * 1000), "timing": timing.take(),
             "shortlist": "given", "snapped": snapped}
+
+
+def _set_code(card) -> str:
+    """The card's set as printed letters, roughly ("sve" → "SVE", "mee" → "MEE"). Not always
+    what's printed (sv01 is "SVI") — only used to choose between candidates."""
+    return re.sub(r"[^A-Z]", "", (card.set_id if card else "").upper())
 
 
 def _skip_pockets(skip: str, pockets: int) -> frozenset[int]:
@@ -1045,6 +1074,7 @@ def _match_request(data: bytes, mode: str, rows: int, cols: int, top_k: int, pag
              (" ({checked} known card(s) checked again, {settled} settled without the image model)".format(**res["known"])
               if res.get("known", {}).get("checked") else ""),
              (" (close-up on the page map)" if where.get("located") and not where.get("whole")
+              else " (placed wrong on the page map)" if where.get("misplaced")
               else " (not on the page map)" if map_req and not where.get("located") else ""),
              " (first since start)" if state["matches"] == 1 else "")
     return res
@@ -1563,12 +1593,27 @@ def _match_on_map(img: np.ndarray, mode: str, rows: int, cols: int, top_k: int, 
     if loc.whole:       # the whole page (or table) in view: as usual, without the slow number reading;
         # cards earlier frames found are checked again first, without the image model
         res = _run_quick(img, mode, rows, cols, top_k, page, skip, known=pagemap.known(map_req, loc.h))
-    else:               # close-up: cards anywhere in the frame, no pockets; numbers are read here
-        res = _run_match(img, "multi", 0, 0, top_k, None)
+    else:               # closer: cards anywhere in the frame, no pockets — also without reading numbers
+        # (seconds per card); the app sends a number-corner close-up for that (mode "closeup")
+        res = _run_quick(img, "multi", 0, 0, top_k, None)
     res["ms"] += round(t_loc * 1000)
     res["timing"]["locate"] = round(t_loc * 1000)
     for c in res["cards"]:
         c["map_quad"] = pagemap.project(c["quad"], loc.h)
+    usual = pagemap.usual_card_size(m)
+    sizes = [pagemap.card_size(m, c["map_quad"]) for c in res["cards"] if c.get("map_quad")]
+    ratio = float(np.median(sizes)) / usual if usual and sizes else 1.0
+    if not 1 / MAP_SIZE_TOL < ratio < MAP_SIZE_TOL:
+        # A wrong fit (repeating sleeves, two copies of a card): through it the cards would be the
+        # wrong size on the page. The cards go back without places; the app places them with
+        # its own motion tracking, or not at all — and they aren't remembered.
+        log.info("page map %s: frame placed wrong (cards would be %.2f× their size on the map, covers %.2f) "
+                 "— %d card(s) sent without places", map_req, ratio, loc.area, len(res["cards"]))
+        for c in res["cards"]:
+            c.pop("map_quad", None)
+        res["map"] = {"id": map_req, "located": False, "misplaced": True, "area": round(loc.area, 4),
+                      "inliers": loc.inliers}
+        return res
     _remember(map_req, res["cards"])
     res["map"] = {"id": map_req, "located": True, "whole": loc.whole, "area": round(loc.area, 4),
                   "inliers": loc.inliers, "h": [[round(float(v), 6) for v in row] for row in loc.h]}

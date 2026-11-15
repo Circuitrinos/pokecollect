@@ -901,11 +901,16 @@ export default function ScanPage() {
             commitLive(() => emptyLive());
             continue;
           }
-          const next = commitLive((st) => addFrame(st, res.data.candidates, mode, { map: where, cols, rows }));
+          // die Bewegung seit dem letzten eingeordneten Bild: prüft die Einordnung des Matchers
+          const back = lastSend && lastSend.epoch === sendInfo.epoch ? invM(sendInfo.cum) : null;
+          const toLast = lastSend && back ? mulM(lastSend.cum, back) : null;
+          const next = commitLive((st) => addFrame(st, res.data.candidates, mode, {
+            map: where, cols, rows, expect: st.view && toLast && st.frames === before.frames ? mulM(st.view, toLast) : null,
+          }));
           liveInFlightRef.current = false;
           if (debugEnabled()) {
             dlog("live.state", {
-              n: frameNo, frames: next.frames, lost: next.lost, mapId: next.mapId, counts: counts(next),
+              n: frameNo, frames: next.frames, lost: next.lost, mapId: next.mapId, placed: next.placed ?? null, counts: counts(next),
               tracks: next.tracks.map((tr) => { const v = verdict(tr); return [tr.position ?? tr.key, v.level, v.why, v.id, tr.obs.length]; }),
             });
           }

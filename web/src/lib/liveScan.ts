@@ -12,7 +12,10 @@ import type { ScanAlternative, ScanCandidate, ScanMode } from "./api";
 
 export type Mat3 = number[][];
 /** Wo ein Bild auf der Seitenkarte liegt (Antwort des Bild-Abgleichs). */
-export type LiveMapInfo = { id: string; located: boolean; unknown?: boolean; whole?: boolean; area?: number | null; h?: Mat3 | null };
+export type LiveMapInfo = {
+  id: string; located: boolean; unknown?: boolean; whole?: boolean; area?: number | null; h?: Mat3 | null;
+  misplaced?: boolean;      // der Matcher hat das Bild verworfen (Karten wären falsch groß): ohne Einordnung
+};
 
 const IDENTITY: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
@@ -71,7 +74,12 @@ export type LiveState = {
   view: Mat3 | null;        // letztes Bild → Seitenkarte (für die Rahmen im Kamerabild)
   frameH: Record<number, Mat3>;   // je geprüftem Bild: Bild → Seitenkarte
   lost: number;             // so viele Bilder hintereinander nicht auf der Seitenkarte gefunden
+  placed?: Placed;          // wie das letzte Bild eingeordnet wurde (Fehlersuche)
 };
+
+/** server: die Seitenkarte des Matchers; tracker: die Bewegung seit dem letzten Bild, weil der
+ *  Matcher keine oder eine unglaubwürdige Einordnung hatte; none: erstes Bild, ohne Karte. */
+export type Placed = { how: "server" | "tracker" | "none"; off: number | null };
 
 export type Verdict = { level: Level; why: Why; id: string | null; cand: ScanCandidate | null };
 
@@ -83,6 +91,8 @@ const AGREE_LEAD = 1.6;     // … und so viel Vorsprung vor dem besten anderen
 const MAX_KEEP_OBS = 12;    // je Karte die letzten Befunde
 const DROP_AFTER = 3;       // einmal gesehen, nicht sicher, seit so vielen Bildern weg → Fehlfund
 const CLOSE_ZOOM = 1.5;     // ab hier eine Nahaufnahme: ihr sicherer Befund zählt doppelt
+const MAP_DISAGREE = 0.2;   // Einordnung des Matchers so weit (Bruchteil der Bildgröße) neben der Bewegung → verworfen
+const PAIR_SIZE = 1.5;      // ein Befund gehört nur zu einer Karte ähnlicher Größe (falsch eingeordnete Bilder)
 
 const centre = (q: number[][]): [number, number] =>
   [q.reduce((a, p) => a + p[0], 0) / q.length, q.reduce((a, p) => a + p[1], 0) / q.length];
@@ -103,7 +113,7 @@ const quadOf = (c: ScanCandidate): number[][] | null => {
   return b?.length === 4 ? [[b[0], b[1]], [b[0] + b[2], b[1]], [b[0] + b[2], b[1] + b[3]], [b[0], b[1] + b[3]]] : null;
 };
 
-export function obsOf(c: ScanCandidate, frame: number, h: Mat3 | null = null, zoom = 1): LiveObs {
+export function obsOf(c: ScanCandidate, frame: number, h: Mat3 | null = null, zoom = 1, mapQuads = true): LiveObs {
   const id = c.match?.tcgdex_card_id ?? c.raw?.tcgdex_card_id ?? null;
   const alts: ScanAlternative[] = c.alternatives ?? [];
   const mine = alts.find((a) => a.tcgdex_card_id === id) ?? alts[0];
@@ -113,7 +123,7 @@ export function obsOf(c: ScanCandidate, frame: number, h: Mat3 | null = null, zo
   const printOpen = !!id && !c.needs_choice && !!c.print_choice;
   const close = !!id && !sure && !printOpen && (c.confidence ?? 0) >= CLOSE_CONF;
   const vq = quadOf(c);
-  const quad = c.map_quad?.length === 4 ? c.map_quad : vq && h ? applyH(h, vq) : vq;
+  const quad = mapQuads && c.map_quad?.length === 4 ? c.map_quad : vq && h ? applyH(h, vq) : vq;
   return { frame, id, sure, printOpen, close, art, rival, quad, vq, zoom, cand: c };
 }
 
@@ -137,7 +147,32 @@ export function estimatePocket(tracks: LiveTrack[], pt: [number, number], cols: 
   return col >= 0 && col < cols && row >= 0 && row < rows ? row * cols + col : null;
 }
 
-export type FrameOpts = { map?: LiveMapInfo | null; cols?: number; rows?: number };
+export type FrameOpts = {
+  map?: LiveMapInfo | null; cols?: number; rows?: number;
+  // Bild → Seitenkarte nach der Bewegung seit dem letzten eingeordneten Bild (Bewegungsverfolgung)
+  expect?: Mat3 | null;
+};
+
+const UNIT = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+function polyArea(q: number[][]): number {
+  let a = 0;
+  for (let i = 0; i < q.length; i++) {
+    const [x0, y0] = q[i], [x1, y1] = q[(i + 1) % q.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Wie weit zwei Einordnungen auseinanderliegen: mittlerer Abstand der Bildecken und -mitte
+ *  auf der Seitenkarte, im Verhältnis zur Größe des Bilds dort (b). */
+export function disagreement(a: Mat3, b: Mat3): number {
+  const pts = [...UNIT, [0.5, 0.5]];
+  const pa = applyH(a, pts), pb = applyH(b, pts);
+  const scale = Math.sqrt(polyArea(pb.slice(0, 4)));
+  const d = pa.reduce((s, p, i) => s + Math.hypot(p[0] - pb[i][0], p[1] - pb[i][1]), 0) / pts.length;
+  return Number.isFinite(d) && scale > 1e-6 ? d / scale : Infinity;
+}
 
 /**
  * Befunde eines geprüften Bilds den Karten zuordnen (Mappe: nach Fach, sonst nach
@@ -145,14 +180,31 @@ export type FrameOpts = { map?: LiveMapInfo | null; cols?: number; rows?: number
  */
 export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMode, opts: FrameOpts = {}): LiveState {
   const map = mode === "single" ? null : opts.map ?? null;
-  if (map && state.mapId && map.id === state.mapId && !map.located) return { ...state, lost: state.lost + 1 };
+  const sameMap = !!map && !!state.mapId && map.id === state.mapId;
+  // Einordnung: die des Matchers, außer sie passt nicht zur Bewegung seit dem letzten Bild (eine
+  // falsche Einordnung verschöbe sonst alle Rahmen) oder fehlt, obwohl Karten gefunden wurden
+  const expect = sameMap && state.view ? opts.expect ?? null : null;
+  let h: Mat3 | null = map?.located && map.h ? map.h : null;
+  let placed: Placed = { how: h ? "server" : "none", off: null };
+  if (h && expect) {
+    const off = disagreement(h, expect);
+    placed = { how: off > MAP_DISAGREE ? "tracker" : "server", off: Math.round(off * 1000) / 1000 };
+    if (off > MAP_DISAGREE) h = expect;
+  }
+  if (sameMap && !h) {
+    if (!expect || !cands.length) return { ...state, lost: state.lost + 1 };
+    h = expect;
+    placed = { how: "tracker", off: null };
+  }
+  const fromServer = placed.how === "server";
+  const area = fromServer ? map?.area ?? null : h ? polyArea(applyH(h, UNIT)) : null;
+  h = h ?? IDENTITY;
   const frame = state.frames + 1;
-  const h = map?.located && map.h ? map.h : IDENTITY;
-  const zoom = map?.located && map.area ? Math.max(1, 1 / Math.sqrt(map.area)) : 1;
+  const zoom = area ? Math.max(1, 1 / Math.sqrt(area)) : 1;
   let seq = state.seq;
   let lastNew = state.lastNew;
   const tracks = state.tracks.map((t) => ({ ...t }));
-  const obs = (mode === "single" ? cands.slice(0, 1) : cands).map((c) => obsOf(c, frame, h, zoom)).filter((o) => o.quad);
+  const obs = (mode === "single" ? cands.slice(0, 1) : cands).map((c) => obsOf(c, frame, h, zoom, fromServer)).filter((o) => o.quad);
   const add = (t: LiveTrack, o: LiveObs) => {
     t.obs = [...t.obs, o].slice(-MAX_KEEP_OBS);
     t.quad = o.quad!;
@@ -183,7 +235,8 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
     for (const t of free) {
       const [tx, ty] = centre(t.quad);
       const d = Math.hypot(x - tx, y - ty);
-      if (d < 0.5 * size(t.quad)) pairs.push({ o, t, d });
+      const r = size(o.quad!) / Math.max(1e-6, size(t.quad));
+      if (d < 0.5 * size(t.quad) && r < PAIR_SIZE && r > 1 / PAIR_SIZE) pairs.push({ o, t, d });
     }
   }
   pairs.sort((a, b) => a.d - b.d);
@@ -206,7 +259,7 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
   return {
     frames: frame, tracks: kept, lastNew, seq,
     mapId: map?.located ? map.id : state.mapId,
-    view: h, frameH: { ...state.frameH, [frame]: h }, lost: 0,
+    view: h, frameH: { ...state.frameH, [frame]: h }, lost: 0, placed,
   };
 }
 

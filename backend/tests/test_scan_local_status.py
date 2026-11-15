@@ -271,6 +271,11 @@ def test_live_scan_seitenkarte(client, provider_local, png_bytes, monkeypatch):
         assert b'name="map"' not in seen[-1]
     post("single", live="1", map="new")                                  # eine Karte braucht keine Seitenkarte
     assert b'name="map"' not in seen[-1]
+    reply["map"] = {"id": "ab12cd", "located": False, "misplaced": True, "area": 1.9}   # falsch eingeordnet
+    reply["cards"][0].pop("map_quad")
+    body = post(live="1", map="ab12cd")
+    assert body["live_map"]["misplaced"] is True and body["live_map"]["located"] is False
+    assert body["candidates"] and body["candidates"][0]["map_quad"] is None     # die App ordnet sie selbst ein
     reply["map"] = {"located": True}                                     # kaputt → einfach keine Angabe
     assert post(live="1", map="ab12cd")["live_map"] is None
 

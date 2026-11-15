@@ -99,6 +99,8 @@ class ScanLiveMap(BaseModel):
     located: bool = False
     unknown: bool = False                  # Karte weg (abgelaufen, matcher neu gestartet) → von vorn
     whole: bool = False                    # ganze Seite im Bild (sonst Nahaufnahme)
+    misplaced: bool = False                # eingeordnet, aber offensichtlich falsch (Karten falsch groß):
+                                           # Karten ohne map_quad — die App ordnet sie selbst ein
     area: Optional[float] = None           # Anteil der Seitenkarte, den das Bild zeigt
     h: Optional[list[list[float]]] = None  # 3×3, Bild-Anteile → Karten-Anteile
 

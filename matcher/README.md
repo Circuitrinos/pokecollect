@@ -65,6 +65,22 @@ Live scan: a card a frame found is remembered on the page map (its outline and
 best candidates); the next frames of the same page check it again on its own
 outline against just those candidates — no image model, no outline search. Only
 squares where that fails (a card swapped, an empty pocket) go the full way.
+Frames placed closer on the page are matched without reading numbers too (that
+took seconds per card); the app sends a number-corner close-up (`mode=closeup`)
+for that. A placement through which the cards would come out more than 1.35×
+bigger or smaller than the ones already on the map is a wrong fit (repeating
+sleeves, two copies of a card): the frame's cards go back without places
+(`map.misplaced`) and aren't remembered — the app places them with its motion
+tracking, which it also uses to check every placement before drawing with it.
+
+Close-ups (`mode=closeup`): the number is read where it's printed, also one
+without a total. Basic energies ("SVE 016"): the small bold italic digits read far
+better from a slightly taller strip with adaptive thresholds and sparse-text OCR; a
+bare number only counts as printed ("016") read twice, or right after a candidate's
+full set code ("SVE 16"). When one number fits two sets ("SVE 016" / "MEE 016"),
+that code decides, or the set logo read on its own (inverted — light letters on a
+dark box), twice and without the other code. A wrong print is worse than none:
+anything less leaves the card yellow for the next close-up.
 
 ### Student model (`tools/distill_student.py`)
 

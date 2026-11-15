@@ -140,6 +140,17 @@ def locate(img: np.ndarray, m: PageMap) -> Located | None:
     return Located(Hn / Hn[2, 2], area, int(mask.sum()))
 
 
+def card_size(m: PageMap, quad) -> float:
+    """A card outline's size on the map (square root of its area in map pixels)."""
+    return float(np.sqrt(_area(np.float64(quad).reshape(-1, 2) * [m.w, m.h])))
+
+
+def usual_card_size(m: PageMap) -> float | None:
+    """How big cards are on this map (median of the ones earlier frames placed), if known."""
+    sizes = [card_size(m, s.quad) for s in m.seen]
+    return float(np.median(sizes)) if len(sizes) >= 2 else None
+
+
 def project(quad, H: np.ndarray) -> list[list[float]] | None:
     """Points (fractions) through H; None if one lands at infinity."""
     q = np.float64(quad).reshape(-1, 2)

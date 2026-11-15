@@ -947,7 +947,7 @@ export type ScanResponse = {
   hinweis_art?: GeminiHinweisArt | null;  // maschinenlesbare Fallback-Ursache (Issue #21)
   // Live-Scan: wo dieses Bild auf der Seitenkarte liegt
   live_map?: { id: string; located: boolean; unknown?: boolean; whole?: boolean; area?: number | null;
-    h?: number[][] | null } | null;
+    h?: number[][] | null; misplaced?: boolean } | null;
 };
 
 export type ScanStatus = {
