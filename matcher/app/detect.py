@@ -59,6 +59,14 @@ def warp(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
     return cv2.warpPerspective(img, warp_matrix(quad), (WARP_W, WARP_H), borderValue=(255, 255, 255))
 
 
+def warp_wide(img: np.ndarray, quad: np.ndarray, extra: int) -> np.ndarray:
+    """Like warp, at the same scale, with `extra` more pixels of the photo on every
+    side — for when the corners may be a little off (the card starts at PAD + extra)."""
+    shift = np.float64([[1, 0, extra], [0, 1, extra], [0, 0, 1]])
+    return cv2.warpPerspective(img, shift @ warp_matrix(quad), (WARP_W + 2 * extra, WARP_H + 2 * extra),
+                               borderValue=(255, 255, 255))
+
+
 def plausible_quad(q: np.ndarray, shape) -> bool:
     """Convex, card-shaped, and mostly inside the photo."""
     h, w = shape[:2]

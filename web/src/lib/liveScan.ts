@@ -75,6 +75,7 @@ export type LiveState = {
   frameH: Record<number, Mat3>;   // je geprüftem Bild: Bild → Seitenkarte
   lost: number;             // so viele Bilder hintereinander nicht auf der Seitenkarte gefunden
   placed?: Placed;          // wie das letzte Bild eingeordnet wurde (Fehlersuche)
+  reanchored?: boolean;     // view gilt für ein Nahaufnahme-Bild (reanchor), nicht mehr das letzte eingeordnete
 };
 
 /** server: die Seitenkarte des Matchers; tracker: die Bewegung seit dem letzten Bild, weil der
@@ -162,6 +163,39 @@ function polyArea(q: number[][]): number {
     a += x0 * y1 - x1 * y0;
   }
   return Math.abs(a) / 2;
+}
+
+/**
+ * Ähnlichkeitsabbildung (Zoom, Drehung, Verschiebung) von src auf dst nach kleinsten Quadraten,
+ * als Matrix auf Bruchteilen eines Bilds im Seitenverhältnis aspect (Breite/Höhe) — gerechnet
+ * in gleichmäßigen Einheiten, sonst wäre eine Drehung schief. Mit der größten Restabweichung
+ * (in Bildbreiten); null wenn ausgeartet.
+ */
+export function similarityFit(src: number[][], dst: number[][], aspect = 9 / 16): { m: Mat3; residual: number } | null {
+  if (src.length !== dst.length || src.length < 2) return null;
+  const S = (p: number[][]) => p.map(([x, y]) => [x, y / aspect]);
+  const a = S(src), b = S(dst);
+  const mean = (p: number[][]) => [0, 1].map((k) => p.reduce((s, q) => s + q[k], 0) / p.length);
+  const [ax, ay] = mean(a), [bx, by] = mean(b);
+  let num1 = 0, num2 = 0, den = 0;
+  a.forEach(([x, y], i) => {
+    const sx = x - ax, sy = y - ay, dx = b[i][0] - bx, dy = b[i][1] - by;
+    num1 += sx * dx + sy * dy; num2 += sx * dy - sy * dx; den += sx * sx + sy * sy;
+  });
+  if (den < 1e-9) return null;
+  const c = num1 / den, d = num2 / den;
+  const tx = bx - (c * ax - d * ay), ty = by - (d * ax + c * ay);
+  const residual = Math.max(...a.map(([x, y], i) => Math.hypot(c * x - d * y + tx - b[i][0], d * x + c * y + ty - b[i][1])));
+  // zurück auf Bruchteile (y = Y·aspect): diag(1, aspect) · M · diag(1, 1/aspect)
+  const m: Mat3 = [[c, -d / aspect, tx], [d * aspect, c, ty * aspect], [0, 0, 1]];
+  return Number.isFinite(residual) ? { m, residual } : null;
+}
+
+/** Die Rahmen gehen ab jetzt von einem anderen Bild aus (eine Nahaufnahme, deren Umriss der Matcher
+ *  eingerastet hat): view = dieses Bild → Seitenkarte. Die genauen Umrisse aus dem letzten
+ *  eingeordneten Bild (vq) gelten dafür nicht mehr. */
+export function reanchor(state: LiveState, view: Mat3): LiveState {
+  return { ...state, view, reanchored: true };
 }
 
 /** Wie weit zwei Einordnungen auseinanderliegen: mittlerer Abstand der Bildecken und -mitte
@@ -254,18 +288,58 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
     if (t) add(t, o); else fresh(o, pos);
   }
   // Fehlfunde (ein einziges Mal gesehen, nicht sicher, seitdem weg) fallen wieder heraus
-  const kept = tracks.filter((t) => t.picked || t.obs.length > 1 || frame - t.seen < DROP_AFTER
-    || verdict(t).level === "green");
+  const kept = dedupe(tracks.filter((t) => t.picked || t.obs.length > 1 || frame - t.seen < DROP_AFTER
+    || verdict(t).level === "green"));
   return {
     frames: frame, tracks: kept, lastNew, seq,
     mapId: map?.located ? map.id : state.mapId,
-    view: h, frameH: { ...state.frameH, [frame]: h }, lost: 0, placed,
+    view: h, frameH: { ...state.frameH, [frame]: h }, lost: 0, placed, reanchored: false,
   };
+}
+
+const SAME_PLACE = 0.35;    // zwei Rahmen, deren Mitten so nah (Kartengröße) liegen: dieselbe Karte
+const SAME_PLACE_SIZE = 2.2; // … auch wenn einer nur eine halb gesehene Karte am Bildrand war
+const LEVEL_RANK: Record<Level, number> = { red: 0, yellow: 1, green: 2 };
+
+/**
+ * Zwei Spuren an derselben Stelle der Seitenkarte sind eine Karte (nebeneinander liegende
+ * Karten haben ihre Mitten fast eine ganze Kartengröße auseinander). Entsteht, wenn eine
+ * Karte halb am Bildrand oder in einem schief eingeordneten Bild als neue Karte auftaucht
+ * (Brians Video: Antique Skull Fossil und daneben ein „Alph Lithograph", 21 statt 20 Karten).
+ * Die bessere bleibt: von Hand gewählt › grün › gelb › rot, sicher erkannt vor „übereinstimmend",
+ * dann mehr Befunde, der größere Rahmen (ganze statt halbe Karte), zuletzt gesehen.
+ * Mappen-Fächer mit zwei verschiedenen Nummern bleiben beide.
+ */
+export function dedupe(tracks: LiveTrack[]): LiveTrack[] {
+  const rank = (t: LiveTrack): number[] => {
+    const v = verdict(t);
+    return [t.picked ? 3 : LEVEL_RANK[v.level], v.why === "sure" ? 1 : 0, t.obs.length, size(t.quad), t.seen];
+  };
+  const better = (a: LiveTrack, b: LiveTrack) => {
+    const ra = rank(a), rb = rank(b);
+    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] > rb[i];
+    return false;
+  };
+  const gone = new Set<LiveTrack>();
+  for (let i = 0; i < tracks.length; i++) {
+    for (let j = i + 1; j < tracks.length; j++) {
+      const a = tracks[i], b = tracks[j];
+      if (gone.has(a) || gone.has(b)) continue;
+      if (a.position != null && b.position != null && a.position !== b.position) continue;
+      if (a.picked && b.picked) continue;
+      const sa = size(a.quad), sb = size(b.quad);
+      const r = sa / Math.max(1e-6, sb);
+      const [ax, ay] = centre(a.quad), [bx, by] = centre(b.quad);
+      if (r > SAME_PLACE_SIZE || r < 1 / SAME_PLACE_SIZE || Math.hypot(ax - bx, ay - by) >= SAME_PLACE * Math.max(sa, sb)) continue;
+      gone.add(better(b, a) ? a : b);
+    }
+  }
+  return gone.size ? tracks.filter((t) => !gone.has(t)) : tracks;
 }
 
 /** Rahmen einer Karte im aktuellen Kamerabild (von der Seitenkarte zurückgerechnet). */
 export function viewQuad(state: LiveState, t: LiveTrack): number[][] {
-  if (t.seen === state.frames) {
+  if (t.seen === state.frames && !state.reanchored) {
     const o = t.obs.find((x) => x.frame === t.seen);
     if (o?.vq) return o.vq;
   }

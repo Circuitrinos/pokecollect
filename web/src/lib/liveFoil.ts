@@ -155,8 +155,10 @@ export function judgeFoil(s: FoilScore | null, wholeCard: boolean): FoilKind | n
   return null;            // beides glänzt ähnlich: unklar (Vollbild-Karte, Spiegelung) — keine Aussage
 }
 
-/** Basis-Energie: das Bild ist die ganze Karte — nur Holo oder nicht. */
-export const isBasicEnergy = (name: string | null | undefined) => /^basic\s+\S+\s+energy$/i.test((name ?? "").trim());
+/** Basis-Energie: das Bild ist die ganze Karte — nur Holo oder nicht. Mega Evolution (MEE)
+ *  und manche andere Drucke heißen ohne „Basic" („Fighting Energy"); Spezial-Energien („Jet Energy") nicht. */
+const BASIC_ENERGY = /^(basic\s+\S+|grass|fire|water|lightning|psychic|fighting|darkness|metal|fairy)\s+energy$/i;
+export const isBasicEnergy = (name: string | null | undefined) => BASIC_ENERGY.test((name ?? "").trim());
 
 /** Ausschnitte je Karte (Schlüssel der Live-Karte). */
 /**

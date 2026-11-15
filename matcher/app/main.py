@@ -969,6 +969,23 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
     by_id = {c.card_id: c for c in found}
     order = [c.card_id for c in found if c.card_id in ids] + [c for c in ids if c not in by_id]
     cands = [by_id.get(c) or matcher.Candidate(c, 0.0, 0, 0, 0, 64) for c in order]
+    strip, band, pad = card, numocr._BARE_BAND, detect.PAD
+
+    def fits(nums: list[tuple[str, str]]) -> bool:
+        return any(matcher._number_matches(catalog.get(c.card_id), n, t) for c in cands for n, t in nums)
+
+    if not snapped and not fits(numbers):     # corners from the app's tracking, maybe a little off:
+        wide = detect.warp_wide(img, q, numocr.WIDE_EXTRA)      # a bit lower, then a bit higher
+        for b in numocr.SHIFTED_BANDS:
+            more: dict[str, str] = {}
+            with timing.phase("ocr"):
+                got = numocr.read_numbers(wide, upside_down=False, wanted=wanted, bare=True, prefixes=more,
+                                          printed=printed, both_ways=False, band=b,
+                                          pad=detect.PAD + numocr.WIDE_EXTRA, preps=numocr.SHIFTED_PREPS, sides=1)
+            if fits(got):
+                numbers, prefixes = got, more
+                strip, band, pad = wide, b, detect.PAD + numocr.WIDE_EXTRA
+                break
     hits = [c for c in cands if any(matcher._number_matches(catalog.get(c.card_id), n, t) for n, t in numbers)]
     hit_num = next(((n, t) for n, t in numbers if any(matcher._number_matches(catalog.get(c.card_id), n, t)
                                                       for c in hits)), None)
@@ -978,7 +995,7 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
         code = pre if pre in codes else None        # read right before the number, spelled out in full
         if code is None:                            # or the logo itself, read twice
             with timing.phase("ocr"):
-                code = numocr.read_set_code(card, codes)
+                code = numocr.read_set_code(strip, codes, band=band, pad=pad)
         if code:
             pre = code
             hits = [c for c in hits if _set_code(catalog.get(c.card_id)) == code]
@@ -990,10 +1007,12 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
         hit = hits[0]
         n, t = next((n, t) for n, t in numbers if matcher._number_matches(catalog.get(hit.card_id), n, t))
         d = matcher.Decision(True, "number", 0.9, f"{n}/{t}" if t else n, [hit] + [c for c in cands if c is not hit])
-    else:
-        d = matcher.Decision(False, "close", 0.45, shown, cands)
-    log.debug("closeup: outline %s, %d ORB candidate(s), numbers read %s → %s", "snapped" if snapped else "as sent",
-              len(found), numbers or "-", d.candidates[0].card_id if d.auto else "not settled")
+    else:       # not decided: the prints the number fits first — the review offers those first
+        d = matcher.Decision(False, "close", 0.45, shown, hits + [c for c in cands if c not in hits])
+    log.debug("closeup: outline %s, %d ORB candidate(s), numbers read %s%s → %s",
+              "snapped" if snapped else "as sent", len(found), numbers or "-",
+              f" (strip {band[0]:.2f}-{band[1]:.2f})" if strip is not card else "",
+              d.candidates[0].card_id if d.auto else "not settled")
     return {"mode": "closeup", "cards": [_result(d, q, img, None)] if cands else [],
             "ms": round((time.perf_counter() - t0) * 1000), "timing": timing.take(),
             "shortlist": "given", "snapped": snapped}

@@ -24,6 +24,15 @@ _BARE_CONFIGS = [f"--oem 3 --psm {p} -c tessedit_char_whitelist={_WHITELIST}" fo
 _BAND = (0.90, 0.985)
 _XS = ((0.02, 0.45), (0.55, 0.98))
 _BARE_BAND = (0.88, 0.99)
+# a close-up whose corners the matcher couldn't snap (plain energy art: ORB finds too little)
+# comes from the app's motion tracking and can be 5-10 % of the card off — Brian's MEE 006
+# video: the outline ~6 % too high, "006" just below its bottom edge, outside the strip.
+# Then the strip is read again a bit lower and a bit higher, past the card's edges
+# (detect.warp_wide, same scale), with the two preparations that read energies best and
+# only bottom left (energies with a number print it there; older ones have none).
+WIDE_EXTRA = 120
+SHIFTED_BANDS = ((0.95, 1.06), (0.81, 0.92))
+SHIFTED_PREPS = 2
 
 
 def available() -> bool:
@@ -35,17 +44,19 @@ def available() -> bool:
 
 
 def _rois(card: np.ndarray, upside_down: bool, band: tuple[float, float] = _BAND,
-          both_ways: bool = True) -> list[np.ndarray]:
+          both_ways: bool = True, pad: int = PAD, sides: int = 2) -> list[np.ndarray]:
     """Bottom-left and bottom-right number areas; likely orientation first (only that one
-    if both_ways is False — a close-up's orientation is known)."""
+    if both_ways is False — a close-up's orientation is known). pad: where the card
+    starts (PAD + extra from detect.warp_wide: the band may then reach past its edges);
+    sides=1: only the bottom-left area."""
     out = []
     flipped = cv2.rotate(card, cv2.ROTATE_180)
     ways = (flipped, card) if upside_down else (card, flipped)
     for img in ways if both_ways else ways[:1]:
         h, w = img.shape[:2]
-        y0, y1 = (min(h, max(0, int(PAD + f * (h - 2 * PAD)))) for f in band)
-        for x0f, x1f in _XS:
-            x0, x1 = (min(w, max(0, int(PAD + f * (w - 2 * PAD)))) for f in (x0f, x1f))
+        y0, y1 = (min(h, max(0, int(pad + f * (h - 2 * pad)))) for f in band)
+        for x0f, x1f in _XS[:sides]:
+            x0, x1 = (min(w, max(0, int(pad + f * (w - 2 * pad)))) for f in (x0f, x1f))
             out.append(img[y0:y1, x0:x1])
     return out
 
@@ -83,7 +94,8 @@ def _keys(code: str) -> list[str]:
 def read_numbers(card: np.ndarray, upside_down: bool = False,
                  wanted: set[str] | None = None, bare: bool = False,
                  prefixes: dict[str, str] | None = None, printed: dict[str, list[tuple[str, str]]] | None = None,
-                 both_ways: bool = True) -> list[tuple[str, str]]:
+                 both_ways: bool = True, band: tuple[float, float] | None = None, pad: int = PAD,
+                 preps: int | None = None, sides: int = 2) -> list[tuple[str, str]]:
     """
     (number, total) pairs Tesseract finds, e.g. [('136', '197')]. Stops as soon
     as a number in `wanted` (num_key form, e.g. 'TG5', '136') shows up, so the
@@ -97,6 +109,8 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
     with a fitting set code in front ("SV 16": confirmed at once) or digit for digit
     as printed ("016": needs a second reading) — a lone "8" out of the holo pattern doesn't.
     both_ways: also try the card upside down (not needed when its orientation is known).
+    band, pad: another strip (fractions of the card's height; pad as in _rois);
+    preps: only the first few preparations; sides=1: only the bottom-left number area.
     """
     if not available():
         return []
@@ -105,10 +119,10 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
     from .catalog import num_key
     found: list[tuple[str, str]] = []
     bare_seen: dict[str, int] = {}
-    for roi in _rois(card, upside_down, _BARE_BAND if bare else _BAND, both_ways):
+    for roi in _rois(card, upside_down, band or (_BARE_BAND if bare else _BAND), both_ways, pad, sides):
         if roi.size == 0:
             continue
-        for img in _prep(roi, bare):
+        for img in _prep(roi, bare)[:preps]:
             for cfg in _BARE_CONFIGS if bare else _CONFIGS:
                 try:
                     txt = pytesseract.image_to_string(img, config=cfg)
@@ -150,32 +164,35 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
                         bare_seen[code] = bare_seen.get(code, 0) + 1
                         if bare_seen[code] >= 2:           # read the same way twice (or with its set code): enough
                             return [(code, "")] + [p for p in found if p != (code, "")]
-    return found
+    # a bare number read only once, without its set code, doesn't count (an "016" out of noise)
+    return [p for p in found if p[1] or not printed or bare_seen.get(p[0], 0) >= 2]
 
 
-def read_set_code(card: np.ndarray, codes: list[str], upside_down: bool = False) -> str | None:
+def read_set_code(card: np.ndarray, codes: list[str], upside_down: bool = False,
+                  band: tuple[float, float] = _BARE_BAND, pad: int = PAD) -> str | None:
     """
     Which of a few printed set codes ("SVE", "MEE") is on the card's bottom strip —
-    for the same number in two sets (basic energies). The code sits in a small dark
-    box with light letters: read inverted. Only a code read twice, with no other one
-    seen at all, counts ("MEE" is easily made out of noise; a wrong print is worse
-    than none).
+    for the same number in two sets (basic energies). The code sits in a small box,
+    light letters in a dark frame that blurs to a dark box: read inverted and as is
+    (Brian's MEE 006 close-up: each way read "MEE" once, never "SVE"). Only a code
+    read twice, with no other one seen at all, counts ("MEE" is easily made out of
+    noise; a wrong print is worse than none). band, pad: as in read_numbers.
     """
     if not available() or len(codes) < 2:
         return None
     import pytesseract
     letters = "".join(sorted(set("".join(codes)) | set("NIT")))      # + the "EN" after it, some noise
     count = dict.fromkeys(codes, 0)
-    for roi in _rois(card, upside_down, _BARE_BAND, both_ways=False):
+    for roi in _rois(card, upside_down, band, both_ways=False, pad=pad):
         if roi.size == 0:
             continue
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         big = cv2.resize(gray, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
-        inv = cv2.bitwise_not(cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(big))
-        for psm in (11, 6):
+        plain = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(big)
+        for img, psm in ((cv2.bitwise_not(plain), 11), (plain, 11), (cv2.bitwise_not(plain), 6)):
             try:
                 txt = pytesseract.image_to_string(
-                    inv, config=f"--oem 3 --psm {psm} -c tessedit_char_whitelist={letters}")
+                    img, config=f"--oem 3 --psm {psm} -c tessedit_char_whitelist={letters}")
             except Exception:  # noqa: BLE001, S112 — Tesseract can crash on an odd crop; the next one may do
                 continue
             text = txt.upper().replace(" ", "").replace("\n", "")

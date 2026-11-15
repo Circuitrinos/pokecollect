@@ -26,6 +26,7 @@ import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, tiltHomography
 import { useTiltGrid } from "@/lib/useTiltGrid";
 import { useMotion } from "@/lib/useMotion";
 import { debugEnabled, dlog } from "@/lib/debugLog";
+import { rematchAlternatives, rematchIsWeak, rematchSuggested } from "@/lib/rematch";
 import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toFractions, toPixels, type Mat3 } from "@/lib/motionTrack";
 import { matrixKey, moveSvg, ptsAttr } from "@/lib/svgMove";
 import {
@@ -33,7 +34,7 @@ import {
 } from "@/lib/liveFoil";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
-  addFocus, addFrame, allSure, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS, pick, signature,
+  addFocus, reanchor, similarityFit, addFrame, allSure, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS, pick, signature,
   skipPockets, skipSquares, verdict, viewQuad, type Level, type LiveState, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -828,6 +829,7 @@ export default function ScanPage() {
         const seenLast = sendCumRef.current.get(liveRef.current.frames);
         const sinceLast = seenLast && seenLast.epoch === sendInfo.epoch ? invM(seenLast.cum) : null;
         const focus = mode !== "single" && sinceLast ? focusTarget(liveRef.current, mulM(sendInfo.cum, sinceLast)) : null;
+        const focusFrames = liveRef.current.frames;
         const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", focus ? 0.92 : 0.88));
         if (!photo || stop) continue;
         showChip(focus ? "reading" : "checking");
@@ -844,7 +846,32 @@ export default function ScanPage() {
             const c = res.data.candidates[0];
             dlog("live.focus.result", { n: frameNo, key: focus.key, ms: Math.round(performance.now() - tSend),
               engine: res.data.engine, id: c?.match?.tcgdex_card_id ?? null, sure: !!c && !c.needs_choice && !c.print_choice });
-            if (c && res.data.engine === "local") commitLive((st) => addFocus(st, focus.key, c));
+            // Der Matcher hat die Karte im Bild genau gefunden (Umriss eingerastet): um so viel liegen
+            // die Rahmen gerade daneben (Bewegung beim Herangehen) — für alle Karten zurechtrücken
+            const back = c?.raw?.quad;
+            const fit = back?.length === 4 ? similarityFit(focus.quad, back) : null;
+            const scale = fit ? Math.hypot(fit.m[0][0], fit.m[1][0] * (16 / 9)) : 0;
+            const shift = back?.length === 4    // wie weit die Ecken im Mittel springen (Bildbreiten)
+              ? back.reduce((a, [x, y], i) => a + Math.hypot(x - focus.quad[i][0], (y - focus.quad[i][1]) * (16 / 9)), 0) / 4 : 0;
+            const toFocus = mulM(sendInfo.cum, sinceLast!);
+            const undo = fit ? invM(fit.m) : null, unTo = invM(toFocus);
+            const usable = !!fit && !!undo && !!unTo && fit.residual < 0.06 && scale > 0.85 && scale < 1.18
+              && Math.abs(Math.atan2(fit.m[1][0] * (16 / 9), fit.m[0][0])) < 0.14 && shift > 0.004 && shift < 0.3;
+            const framesAtSend = focusFrames;
+            if (c && res.data.engine === "local") {
+              let moved = false;
+              commitLive((st) => {
+                const next = addFocus(st, focus.key, c);
+                if (!usable || !st.view || st.frames !== framesAtSend) return next;
+                moved = true;
+                return reanchor(next, mulM(st.view, mulM(unTo!, undo!)));
+              });
+              if (moved) {
+                sendCumRef.current.set(liveRef.current.frames, sendInfo);   // die Rahmen gehen jetzt von diesem Bild aus
+                dlog("live.focus.fix", { n: frameNo, key: focus.key, scale: Math.round(scale * 1000) / 1000,
+                  shift: Math.round(shift * 1000) / 1000, residual: Math.round(fit!.residual * 1000) / 1000 });
+              }
+            }
             liveInFlightRef.current = false;
             if (finishWantedRef.current) { finishLiveRef.current(); break; }
             showChip(null);
@@ -1425,16 +1452,21 @@ export default function ScanPage() {
   // Neue Ecken = neuer Zuschnitt → die Karte damit neu abgleichen (Modus „card":
   // der Bild-Abgleich überspringt die Erkennung). Treffer, Alternativen und
   // Auswahlbedarf kommen neu; Ecken, Foto-Wahl, Anzahl, Prize Pack bleiben.
+  // Ist der neue Abgleich unsicherer als der bisherige, bleibt die Karte (lib/rematch).
   const rematch = async (key: string, crop: Blob) => {
-    const before = candidates.find((c) => c.key === key)?.match?.tcgdex_card_id;
+    const old = candidates.find((c) => c.key === key);
+    const before = old?.match?.tcgdex_card_id;
     try {
       const res = await scanApi.scan(crop, { mode: "card", default_language: defaultLang });
       const n = res.data.candidates[0];
+      const weak = rematchIsWeak(old, n);
       setCandidates((prev) => prev.map((c) => {
         if (c.key !== key) return c;
         if (!n) return { ...c, rematching: false };
+        if (weak) return { ...c, alternatives: rematchAlternatives(c, n), rematching: false };
         return {
           ...c, ...n,
+          suggested: rematchSuggested(c, n),
           raw: { ...n.raw, quad: c.raw?.quad ?? null, bbox: c.raw?.bbox ?? null, position: c.raw?.position ?? null },
           position: c.position,
           include: !n.needs_choice,
@@ -1446,6 +1478,8 @@ export default function ScanPage() {
         };
       }));
       if (!n) toast(t.scan_rematch_none, { icon: "⚠️" });
+      else if (weak) toast(t.scan_rematch_kept(String((old?.suggested as Record<string, unknown>)?.kartenname
+        ?? old?.match?.name ?? "?")), { icon: "ℹ️" });
       else if (n.match?.tcgdex_card_id && n.match.tcgdex_card_id === before && !n.needs_choice) toast.success(t.scan_rematch_same);
       else toast.success(t.scan_rematched(String((n.suggested as Record<string, unknown>)?.kartenname ?? n.raw.name ?? "?")));
     } catch {

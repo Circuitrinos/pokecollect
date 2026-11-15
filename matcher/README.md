@@ -78,9 +78,15 @@ without a total. Basic energies ("SVE 016"): the small bold italic digits read f
 better from a slightly taller strip with adaptive thresholds and sparse-text OCR; a
 bare number only counts as printed ("016") read twice, or right after a candidate's
 full set code ("SVE 16"). When one number fits two sets ("SVE 016" / "MEE 016"),
-that code decides, or the set logo read on its own (inverted — light letters on a
-dark box), twice and without the other code. A wrong print is worse than none:
-anything less leaves the card yellow for the next close-up.
+that code decides, or the set code box read on its own (inverted and as is — light
+letters in a dark frame), twice and without the other code. A wrong print is worse
+than none: anything less leaves the card yellow for the next close-up.
+The outline is first snapped to the card (ORB against the candidates). Plain
+energy art often has too little for that, and the app's corners then come from
+its motion tracking — 5–10 % of the card off after moving in close (a MEE 006
+close-up: "006" sat just below the outline). If the number isn't where the
+corners say, the strip is read once more a bit lower and once a bit higher, past
+the card's edges (`detect.warp_wide`, bottom left, two preparations).
 
 ### Student model (`tools/distill_student.py`)
 

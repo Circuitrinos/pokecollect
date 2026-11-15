@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 LEARN_DIR = DATA_DIR / "learned"
 API_URL = os.getenv("API_URL", "http://api:8000").rstrip("/")
+RETRY_UNUSABLE_S = 24 * 3600     # a photo without enough features: tried again after this
 LEARN = os.getenv("LEARN", "1") == "1"
 LEARN_MINUTES = float(os.getenv("LEARN_MINUTES", "15"))
 SEGMENT = "learned"
@@ -72,6 +73,7 @@ class Learner:
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._stale: set[str] = set()       # cached photos embedded by another model than the photo model now
+        self._unusable: dict[str, float] = {}   # photos without enough features: tried again after a day
         self.status = {"enabled": LEARN, "photos": 0, "cards": 0, "added": 0, "removed": 0,
                        "failed": 0, "last_sync": None, "error": None, "stale": 0}
 
@@ -123,7 +125,8 @@ class Learner:
                 if k not in want:
                     p.unlink(missing_ok=True)
                     removed += 1
-            todo = [(k, v) for k, v in want.items() if k not in have]
+            now = time.monotonic()
+            todo = [(k, v) for k, v in want.items() if k not in have and now - self._unusable.get(k, -1e9) > RETRY_UNUSABLE_S]
             again = [(k, want[k]) for k in sorted(self._stale) if k in want and k in have]
             added = failed = 0
             if again:
@@ -185,7 +188,9 @@ class Learner:
             log.warning("Scan photo %s not loadable: %s", rel, exc)
             return False
         f = features.extract(img) if img is not None else None
-        if f is None:
+        if f is None:       # a plain card (basic energy), blurred or dark: tried again tomorrow, not every sync
+            self._unusable[key] = time.monotonic()
+            log.info("Scan photo %s (%s): too few features to learn from — tried again in a day", rel, card_id)
             return False
         emb, model = np.zeros(0, np.float16), None
         if self.shortlist.engine is not None:
