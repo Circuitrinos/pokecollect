@@ -74,6 +74,19 @@ const median = (a: number[]) => {
   return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 
+/** Helligkeit der Karte (Median der Luma über Bild und Rahmen, sRGB 0..255; fürs Protokoll) — gleich,
+ *  ob ein Browser die Farbebenen vertauscht (lib/cameraColors). */
+export function litLevel(px: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): number {
+  const { art, frame } = masks(w, h);
+  const v: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (!art[i] && !frame[i]) continue;
+    const o = 4 * i;
+    v.push(0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2]);
+  }
+  return median(v);
+}
+
 /** Ein Umschalten, eine Karte (RGBA w×h, Lampe aus / an) → Anteil Bild − Anteil Rahmen, die
  *  deutlich stärker aufhellen als die Karte im Mittel; null, wenn zu viel überstrahlt ist. */
 export function flashShare(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): number | null {
@@ -249,14 +262,37 @@ export function flashKind(shares: number[]): FlashKind | null {
   return null;
 }
 
+/**
+ * Holo nur, wenn es auch beim Ausschalten so aussieht. Beim Einschalten ist die Belichtung noch auf
+ * das dunkle Bild gestellt: das erste helle Bild ist überbelichtet, die Kamera staucht die hellen
+ * Stellen (Schulter der Tonkurve) — der helle Rahmen legt weniger zu als das dunklere Bild, und auch
+ * eine normale Karte sieht nach Holo aus. Beim Ausschalten ist das helle Bild das nachgeregelte.
+ * Brians Brave-Test (16.11.): alle sechs „Holo"; im Kamerabild springt die Karte beim Einschalten
+ * von Median 157 auf 204 (90 %: 175 → 228) und regelt in ~0.3 s auf 163 zurück. Nachgestellt an den
+ * echten Paaren (Lampe ×2.2, Schulter ab 40 %): Einschalten normal +0.29/+0.35, Ausschalten
+ * +0.01/+0.05; Holo beim Ausschalten so gefilmt +0.12/+0.50.
+ */
+const FLASH_OFF_HOLO = 0.06;
+const FLASH_OFF_MIN_N = 2;
+
+/** Wie flashKind, mit Richtung je Umschalten (true: Lampe ging an). */
+export function flashKindDir(shares: number[], lightOn: boolean[]): FlashKind | null {
+  const k = flashKind(shares);
+  if (k !== "Holo") return k;
+  const offs = shares.filter((_, i) => !lightOn[i]);
+  if (offs.length < FLASH_OFF_MIN_N) return null;
+  return median(offs) >= FLASH_OFF_HOLO ? "Holo" : flashKind(offs);
+}
+
 /** Gezählte Umschalter je Karte (Schlüssel der Live-Karte). */
 export class FlashTally {
-  private m = new Map<string, { s: number[]; deg: number[] }>();
+  private m = new Map<string, { s: number[]; deg: number[]; on: boolean[] }>();
 
-  add(key: string, share: number, deg: number): void {
-    const e = this.m.get(key) ?? { s: [], deg: [] };
+  add(key: string, share: number, deg: number, lightOn = false): void {
+    const e = this.m.get(key) ?? { s: [], deg: [], on: [] };
     e.s.push(share);
     e.deg.push(Math.round(deg * 10) / 10);
+    e.on.push(lightOn);
     this.m.set(key, e);
   }
 
@@ -265,13 +301,17 @@ export class FlashTally {
   }
 
   kind(key: string): FlashKind | null {
-    return flashKind(this.m.get(key)?.s ?? []);
+    const e = this.m.get(key);
+    return e ? flashKindDir(e.s, e.on) : null;
   }
 
-  result(key: string): (FlashResult & { kind: FlashKind | null }) | null {
+  result(key: string): (FlashResult & { kind: FlashKind | null; offShare: number | null }) | null {
     const e = this.m.get(key);
     const r = e ? summarize(e.s) : null;
-    return r && e ? { ...r, deg: e.deg, kind: flashKind(e.s) } : null;
+    if (!r || !e) return null;
+    const offs = e.s.filter((_, i) => !e.on[i]);
+    const offShare = offs.length ? Math.round(median(offs) * 1000) / 1000 : null;
+    return { ...r, deg: e.deg, kind: flashKindDir(e.s, e.on), offShare };
   }
 
   forget(keep: Set<string>): void {

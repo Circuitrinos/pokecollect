@@ -450,6 +450,9 @@ const DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `Bild und Rahmen haben das Licht der Lampe unterschiedlich zurückgeworfen (${share}, ${n}× geblitzt) — bitte auf der Karte nachsehen`,
   scan_flash_test: "Blitz-Test",
+  scan_fix_colors: "Farben falsch?",
+  scan_colors_fixed: "Farben repariert",
+  scan_fix_colors_hint: "Sieht Rot blau aus (orange Hüllen hellblau)? Manche Browser vertauschen die Farben der Kamera (Brave auf manchen Android-Handys) — antippen repariert Bild, Fotos und Abgleich; der Browser merkt es sich",
   scan_flash_trying: "Blitz-Test · Lampe wird probiert …",
   scan_flash_no_torch_short: "Blitz-Test · keine Lampe",
   scan_flash_no_torch: "Dieser Browser kann die Lampe des Handys nicht schalten (Chrome auf Android kann es meist) — der Blitz-Test geht hier nicht",
@@ -1730,6 +1733,9 @@ const EN: typeof DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `The art and the frame threw the phone's light back differently (${share}, ${n} flashes) — check the card`,
   scan_flash_test: "Flash test",
+  scan_fix_colors: "Wrong colours?",
+  scan_colors_fixed: "Colours fixed",
+  scan_fix_colors_hint: "Does red look blue (orange sleeves light blue)? Some browsers mix up the camera's colours (Brave on some Android phones) — tap to fix the view, the photos and the matching; this browser remembers it",
   scan_flash_trying: "Flash test · trying the light …",
   scan_flash_no_torch_short: "Flash test · no light",
   scan_flash_no_torch: "This browser can't switch the phone's light (Chrome on Android usually can) — the flash test doesn't work here",

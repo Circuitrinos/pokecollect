@@ -4,8 +4,10 @@
 // aber nur für Karten, die gerade fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
   FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, atlasPatch, flashShare,
-  flashTransform, viewAngle,
+  flashTransform, litLevel, viewAngle,
 } from "./flashCheck";
+import { fixCanvasColors } from "./cameraColors";
+import { dlog } from "./debugLog";
 
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
 export type FlashCard = { key: string; quad: number[][] };
@@ -27,6 +29,9 @@ export class FlashMonitor {
   private src = document.createElement("canvas");
   private tiny = document.createElement("canvas");
   private atlas = document.createElement("canvas");
+  private means: number[] = [];       // Helligkeit der letzten Bilder (fürs Protokoll)
+  /** Kamerafarben reparieren (lib/cameraColors) — die Seite setzt das. */
+  colorFix: () => boolean = () => false;
 
   /**
    * cards(): die Karten, deren Folierung noch offen ist — null oder leer: nicht blinken.
@@ -56,7 +61,7 @@ export class FlashMonitor {
     if (this.blinking === on) return;
     this.blinking = on;
     this.onBlink(on);
-    if (!on) { this.finder.reset(); this.shots = []; }
+    if (!on) { this.finder.reset(); this.shots = []; this.means = []; }
   }
 
   private async set(on: boolean) {
@@ -136,6 +141,7 @@ export class FlashMonitor {
           actx.drawImage(this.src, 0, 0);
           actx.restore();
         });
+        if (this.colorFix()) fixCanvasColors(actx, this.atlas.width, this.atlas.height);
         const data = actx.getImageData(0, 0, this.atlas.width, this.atlas.height).data;
         list.forEach((c, i) => shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: viewAngle(px[i], vw, vh) }));
       }
@@ -147,6 +153,8 @@ export class FlashMonitor {
     }
     this.shots.push(shot);
     if (this.shots.length > 3) this.shots.shift();
+    this.means.push(Math.round(mean));
+    if (this.means.length > 4) this.means.shift();
     const sw = this.finder.push(mean, performance.now());
     if (!sw) return;
     // nur ein Umschalten, um das gebeten wurde (richtige Richtung, kurz danach) — kein Schwenk ins Helle
@@ -156,14 +164,18 @@ export class FlashMonitor {
     const off = this.shots.find((s) => s.n === sw.off), on = this.shots.find((s) => s.n === sw.on);
     if (!off || !on) return;
     let added = false;
+    const seen: Record<string, (number | null)[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel]
     on.cards.forEach((b, key) => {
       const a = off.cards.get(key);
-      if (!a || b.deg == null || b.deg < FLASH_MIN_DEG || b.deg > FLASH_MAX_DEG) return;
-      const s = flashShare(a.px, b.px);
+      if (!a || b.deg == null) return;
+      const ok = b.deg >= FLASH_MIN_DEG && b.deg <= FLASH_MAX_DEG;
+      const s = ok ? flashShare(a.px, b.px) : null;
+      seen[key] = [s == null ? null : Math.round(s * 1000) / 1000, Math.round(litLevel(b.px)), Math.round(litLevel(a.px)), Math.round(b.deg)];
       if (s == null) return;
-      this.tally.add(key, s, b.deg);
+      this.tally.add(key, s, b.deg, sw.lightOn);
       added = true;
     });
+    dlog("live.flash.switch", { on: sw.lightOn, means: this.means.slice(), cards: seen });
     if (added) this.onMeasure();
   }
 }

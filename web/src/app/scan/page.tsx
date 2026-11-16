@@ -33,6 +33,7 @@ import {
   FoilWatch, LIVE_FOIL_HINTS, foilBar, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
+import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraColors";
 import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
@@ -89,6 +90,7 @@ const MULTI_GRID_KEY = "scan_multi_grid";   // Raster-Hilfe bei losen Karten (lo
 const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: normales Raster, keine Ecken an den Server
 const LIVE_KEY = "scan_live";        // Live-Scan bleibt eingeschaltet (localStorage)
 const FLASH_KEY = "scan_flash_test"; // Blitz-Test vor der Prüfung (localStorage)
+const COLORS_KEY = "scan_fix_colors"; // Kamerafarben reparieren (vertauschte Farbebenen, lib/cameraColors)
 
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
@@ -239,6 +241,19 @@ export default function ScanPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
+  // Kamerafarben reparieren (Brave auf manchen Android-Handys: Rot wird Blau) — je Browser gemerkt
+  const [fixColors, setFixColors] = useState(false);
+  const fixColorsRef = useRef(false);
+  fixColorsRef.current = fixColors;
+  useEffect(() => {
+    try { setFixColors(localStorage.getItem(COLORS_KEY) === "1"); } catch { /* privat */ }
+  }, []);
+  const toggleFixColors = () => {
+    const on = !fixColors;
+    setFixColors(on);
+    dlog("camera.fix-colors", { on });
+    try { localStorage.setItem(COLORS_KEY, on ? "1" : "0"); } catch { /* privat */ }
+  };
   // Live-Scan (nur mit dem Bild-Abgleich): Kamera an, Bilder werden laufend geprüft
   const [live, setLive] = useState(false);
   useEffect(() => {
@@ -383,6 +398,7 @@ export default function ScanPage() {
         canvas.width = Math.round(vw * k);
         canvas.height = Math.round(vh * k);
         ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        if (fixColorsRef.current) fixCanvasColors(ctx, canvas.width, canvas.height);
         const frame = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.7));
         const t0 = performance.now();
         try {
@@ -509,6 +525,7 @@ export default function ScanPage() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return resolve(null);
       ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      if (fixColorsRef.current) fixCanvasColors(ctx, canvas.width, canvas.height);
       canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9);
     });
 
@@ -819,7 +836,7 @@ export default function ScanPage() {
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
       const fl = flash.get(i.key);
       if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: fl.kind,
-        share: +fl.share.toFixed(3), n: fl.n, all: fl.all, deg: fl.deg, options: opts });
+        share: +fl.share.toFixed(3), off: fl.offShare, n: fl.n, all: fl.all, deg: fl.deg, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
@@ -869,6 +886,7 @@ export default function ScanPage() {
       if (!on) setFlashAngles({});
       dlog("live.flash.blink", { on });
     }, setFlashAngles);
+    mon.colorFix = () => fixColorsRef.current;
     flashRef.current = mon;
     mon.start();
     return () => {
@@ -953,6 +971,7 @@ export default function ScanPage() {
         full.width = Math.round(v.videoWidth * kf);
         full.height = Math.round(v.videoHeight * kf);
         fctx.drawImage(v, 0, 0, full.width, full.height);
+        if (fixColorsRef.current) fixCanvasColors(fctx, full.width, full.height);
         const vw = v.videoWidth, vh = v.videoHeight;
         // Raster: wo die Seite jetzt liegt — seit dem ersten Bild mit der Kamera mitgeführt
         const trk = trackerRef.current;
@@ -2097,7 +2116,13 @@ export default function ScanPage() {
               <div className="space-y-3">
                 <div className="relative mx-auto overflow-hidden rounded"
                   style={{ maxWidth: vidSize ? `min(480px, calc(64vh * ${(vidSize.w / vidSize.h).toFixed(4)}))` : 480 }}>
+                  <svg width="0" height="0" className="absolute" aria-hidden>
+                    <filter id={SWAP_FILTER_ID} colorInterpolationFilters="sRGB">
+                      <feColorMatrix type="matrix" values={swapFilterValues} />
+                    </filter>
+                  </svg>
                   <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
+                    style={fixColors ? { filter: `url(#${SWAP_FILTER_ID})` } : undefined}
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
                   {vidSize && (
@@ -2156,6 +2181,15 @@ export default function ScanPage() {
                       className={`absolute top-10 left-2 rounded-full px-3 py-1.5 text-xs text-white ${live
                         ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
                       <span className={live ? "text-green-300" : "text-gray-400"}>●</span> {t.scan_live}
+                    </button>
+                  )}
+                  {step === "setup" && (
+                    // Farben falsch (Rot sieht blau aus)? Manche Browser vertauschen die Farbebenen der Kamera
+                    <button type="button" onClick={toggleFixColors} aria-pressed={fixColors} title={t.scan_fix_colors_hint}
+                      data-testid="scan-fix-colors"
+                      className={`absolute top-[7.5rem] left-2 rounded-full px-3 py-1.5 text-xs text-white ${fixColors
+                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                      🎨 {fixColors ? t.scan_colors_fixed : t.scan_fix_colors}
                     </button>
                   )}
                   {liveAvailable && step === "setup" && live && (
