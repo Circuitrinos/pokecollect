@@ -778,7 +778,7 @@ export default function ScanPage() {
     }
     finishWantedRef.current = false;
     setFinishWanted(false);
-    // Blitz-Test zuerst (ein paar Sekunden ruhig halten), dann geht es mit seinem Ergebnis weiter
+    // Blitz-Test zuerst (ein paar Sekunden, das Handy über die Karten führen), dann geht es mit seinem Ergebnis weiter
     if (flashTestRef.current && !flashResultRef.current) {
       if (flashRunningRef.current) return;
       void runFlashTest(st).then((r) => {
@@ -811,7 +811,7 @@ export default function ScanPage() {
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
       const fl = flash?.get(i.key);
       if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, share: +fl.share.toFixed(3), n: fl.n,
-        all: fl.all, options: opts });
+        all: fl.all, deg: fl.deg, outside: fl.outside, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)

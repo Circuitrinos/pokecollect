@@ -19,15 +19,26 @@ import { ART_BOX } from "./liveFoil";
 
 export const FLASH_W = 40;
 export const FLASH_H = 55;
-export const FLASH_SWITCHES = 8;      // so oft schaltet die Lampe (an, aus, …), endet aus
-export const FLASH_STEP_MS = 600;     // so lange bleibt sie je Zustand
+export const FLASH_SWITCHES = 16;     // so oft schaltet die Lampe (an, aus, …), endet aus
+export const FLASH_STEP_MS = 400;     // so lange bleibt sie je Zustand
+// Die Folie wirft das Licht nur zurück, wenn die Karte fast gerade unter dem Handy liegt (Brian:
+// „nicht aus jedem Winkel"). In seinem Video, je Umschalten und Karte nach dem Blickwinkel: bis 14°
+// Holo +0.45, Reverse Holo −0.22; darüber Holo +0.00…+0.07, Reverse Holo −0.02…−0.05 — die Folie
+// ist dann von Papier nicht zu unterscheiden. Unter 3° liegt der Glanzpunkt von Hülle und Lack auf
+// der Karte (eine normale Karte maß dort einmal +0.60). Gezählt wird darum nur 3–14°: Normal
+// −0.03…+0.06, Holo +0.10…+0.76, Reverse Holo −0.34…+0.01 (47 von 54 einzelnen Umschaltern
+// richtig bei ±0.10). Beim Blinken das Handy langsam über die Karten führen.
+export const FLASH_MIN_DEG = 3;
+export const FLASH_MAX_DEG = 14;
+const FOCAL = 0.73;                   // Brennweite ≈ 0.73 × lange Bildseite (Hauptkamera ~26 mm KB)
+const CARD_MM = [63, 88];
 const BORDER = 0.05;                  // Außenrand der Karte: zählt nicht
 const EDGE = 0.03;                    // Abstand zur Kante des Bildfensters (Umriss-Fehler)
 const STAMP = { x0: 0.74, y0: 0.4, y1: 0.56 };   // Play!-Stempel unten rechts im Bild: keine Folie
 const CLIP = 250;                     // überstrahlt (Spiegelung): nicht messbar
 const LIFT = 0.15;                    // so viel stärker (log) als die Karte im Mittel: „hellt deutlich auf"
 const SWITCH = 0.03;                  // so viel ändert sich die mittlere Helligkeit beim Umschalten mindestens
-const SETTLE_MS = 350;                // so lange nach einem Umschalten regelt die Kamera nach (kein neues)
+const SETTLE_MS = 250;                // so lange nach einem Umschalten regelt die Kamera nach (kein neues)
 
 const LIN = new Float32Array(256).map((_, i) => {
   const c = i / 255;
@@ -130,7 +141,7 @@ export function atlasPatch(atlas: Uint8ClampedArray, i: number, cards: number): 
   return out;
 }
 
-export type FlashResult = { share: number; n: number; all: number[] };
+export type FlashResult = { share: number; n: number; all: number[]; deg?: number[]; outside?: number };
 
 export function summarize(shares: number[]): FlashResult | null {
   if (!shares.length) return null;
@@ -147,4 +158,44 @@ export function flashTransform(quad: number[][]): [number, number, number, numbe
   if (!det || !Number.isFinite(det)) return null;
   const ia = d / det, ib = -b / det, ic = -c / det, id = a / det;
   return [ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)];
+}
+
+/** 4 Punkte → Homographie (8 Unbekannte, Gauß mit Pivot). */
+function homography(src: number[][], dst: number[][]): number[][] | null {
+  const A: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  for (let c = 0; c < 8; c++) {
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-12) return null;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue;
+      const k = A[r][c] / A[c][c];
+      for (let j = c; j < 9; j++) A[r][j] -= k * A[c][j];
+    }
+  }
+  const h = A.map((row, i) => row[8] / row[i]);
+  return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+}
+
+/** Blickwinkel auf eine Karte (Grad): zwischen ihrer Senkrechten und der Richtung zur Kamera, aus
+ *  ihrem Umriss im Bild (TL, TR, BR, BL; Pixel eines Bilds w×h) und der Kartengröße. */
+export function viewAngle(quad: number[][], w: number, h: number, focal = FOCAL * Math.max(w, h)): number | null {
+  const [cw, ch] = CARD_MM;
+  const H = homography([[0, 0], [cw, 0], [cw, ch], [0, ch]], quad.map(([x, y]) => [(x - w / 2) / focal, (y - h / 2) / focal]));
+  if (!H) return null;
+  const c1 = [H[0][0], H[1][0], H[2][0]], c2 = [H[0][1], H[1][1], H[2][1]], c3 = [H[0][2], H[1][2], H[2][2]];
+  const lam = 1 / Math.hypot(...c1);
+  const r1 = c1.map((v) => v * lam), r2 = c2.map((v) => v * lam), t = c3.map((v) => v * lam);
+  const r3 = [r1[1] * r2[2] - r1[2] * r2[1], r1[2] * r2[0] - r1[0] * r2[2], r1[0] * r2[1] - r1[1] * r2[0]];
+  // Kamera in Kartenkoordinaten: −Rᵀ·t (Spalten von R: r1, r2, r3)
+  const cam = [r1, r2, r3].map((r) => -(r[0] * t[0] + r[1] * t[1] + r[2] * t[2]));
+  const d = [cam[0] - cw / 2, cam[1] - ch / 2, cam[2]];
+  const len = Math.hypot(...d);
+  return len ? (Math.acos(Math.min(1, Math.abs(d[2]) / len)) * 180) / Math.PI : null;
 }

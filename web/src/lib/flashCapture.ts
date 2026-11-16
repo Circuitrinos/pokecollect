@@ -1,8 +1,8 @@
 // Blitz-Test im Browser: die Lampe schalten lassen, jede Karte in jedem Kamerabild ausschneiden
 // (Umrisse fest, das Handy wird ruhig gehalten) und je Umschalten vergleichen (lib/flashCheck).
 import {
-  FLASH_H, FLASH_STEP_MS, FLASH_SWITCHES, FLASH_W, atlasPatch, flashPairs, flashShare, flashTransform, patchMean, summarize,
-  type FlashResult,
+  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_SWITCHES, FLASH_W, atlasPatch, flashPairs, flashShare, flashTransform,
+  patchMean, summarize, viewAngle, type FlashResult,
 } from "./flashCheck";
 
 export type FlashRun = { results: (FlashResult | null)[]; frames: number; fps: number | null; switches: number; ms: number };
@@ -22,6 +22,7 @@ export async function captureFlash(video: HTMLVideoElement, quads: number[][][],
   const inside = quads.map((q) => q.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
   const toMat = (q: number[][]) => flashTransform(q.map(([x, y]) => [x * vw, y * vh]));
   const mats = quads.map((q, i) => (inside[i] ? toMat(q) : null));
+  const cur = quads.map((q) => q.map(([x, y]) => [x * vw, y * vh]));          // Umrisse jetzt (Pixel)
   const use = mats.map((m, i) => (m ? i : -1)).filter((i) => i >= 0);
   const empty: FlashRun = { results: quads.map(() => null), frames: 0, fps: null, switches: 0, ms: 0 };
   if (!use.length || !vw || !vh) return empty;
@@ -37,11 +38,14 @@ export async function captureFlash(video: HTMLVideoElement, quads: number[][][],
   actx.imageSmoothingEnabled = true;
   actx.imageSmoothingQuality = "medium";
   const frames: Uint8ClampedArray[] = [], means: number[] = [], times: number[] = [];
+  const degs: (number | null)[][] = [];                                         // Blickwinkel je Bild und Karte
   const grab = () => {
     // die Umrisse wandern mit der Kamera mit (Bewegungsverfolgung), wo es sie gibt
     const now = quadsNow?.();
     if (now) now.forEach((q, i) => {
-      if (mats[i] && q.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1)) mats[i] = toMat(q) ?? mats[i];
+      if (!mats[i] || !q.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
+      mats[i] = toMat(q) ?? mats[i];
+      cur[i] = q.map(([x, y]) => [x * vw, y * vh]);
     });
     sctx.drawImage(video, 0, 0, vw, vh);
     use.forEach((ci, i) => {
@@ -56,6 +60,7 @@ export async function captureFlash(video: HTMLVideoElement, quads: number[][][],
     });
     const px = actx.getImageData(0, 0, atlas.width, atlas.height).data;
     frames.push(px);
+    degs.push(use.map((ci) => viewAngle(cur[ci], vw, vh)));
     means.push(patchMean(px));
     times.push(performance.now());
   };
@@ -80,15 +85,23 @@ export async function captureFlash(video: HTMLVideoElement, quads: number[][][],
     capturing = false;
   }
   const pairs = flashPairs(means, times);
-  const per = use.map(() => [] as number[]);
+  // nur Umschalter, bei denen die Karte fast gerade unter dem Handy lag (FLASH_MIN_DEG…FLASH_MAX_DEG)
+  const per = use.map(() => [] as number[]), deg = use.map(() => [] as number[]), outside = use.map(() => 0);
   for (const [off, on] of pairs) {
     use.forEach((_, i) => {
+      const d = degs[on][i];
+      if (d == null || d < FLASH_MIN_DEG || d > FLASH_MAX_DEG) { outside[i] += 1; return; }
       const s = flashShare(atlasPatch(frames[off], i, use.length), atlasPatch(frames[on], i, use.length));
-      if (s != null) per[i].push(s);
+      if (s == null) return;
+      per[i].push(s);
+      deg[i].push(Math.round(d * 10) / 10);
     });
   }
   const results: (FlashResult | null)[] = quads.map(() => null);
-  use.forEach((ci, i) => { results[ci] = summarize(per[i]); });
+  use.forEach((ci, i) => {
+    const r = summarize(per[i]);
+    results[ci] = r ? { ...r, deg: deg[i], outside: outside[i] } : null;
+  });
   const secs = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 0;
   return { results, frames: frames.length, fps: secs ? +(frames.length / secs).toFixed(1) : null, switches: pairs.length,
     ms: Math.round(performance.now() - t0) };
