@@ -1,11 +1,16 @@
 "use client";
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 
 // Gemeinsamer Listen-Kopf für Pokédex / Besessen / Katalog (Issue #8):
 // Sticky-Wrapper + Mobile-Statuszeile (Wert · Lupe · Wert) + Desktop-Kacheln
 // + Filter-Knopf + Steuerzeile mit Pager. Seiten liefern nur noch Inhalte.
+
+/** Höchstens so viel der Bildschirmhöhe darf der Kopf einnehmen, um oben stehen zu bleiben.
+ *  Mit offenen Filtern ist er auf dem Handy höher als der Bildschirm: angeheftet wären Sortierung,
+ *  „Filter zurücksetzen" und die Steuerzeile darunter nie erreichbar — dann scrollt er mit. */
+const PIN_MAX_SHARE = 0.6;
 
 export type PagerProps = {
   page: number;
@@ -60,8 +65,27 @@ export default function ListPageHeader({
 }: Props) {
   const { t } = useI18n();
   const showMobileRow = mobileLeft !== undefined || mobileRight !== undefined;
+  const ref = useRef<HTMLDivElement>(null);
+  const [pin, setPin] = useState(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => setPin(el.offsetHeight <= window.innerHeight * PIN_MAX_SHARE);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    window.addEventListener("resize", check);
+    return () => { ro.disconnect(); window.removeEventListener("resize", check); };
+  }, []);
+  // Losgelöst (Filter aufgeklappt, weiter unten in der Liste): dorthin scrollen, wo der Kopf
+  // eben angeheftet war — sonst springt er aus dem Bild an den Seitenanfang
+  useLayoutEffect(() => {
+    if (pin) return;
+    const top = ref.current?.getBoundingClientRect().top ?? 0;
+    if (top < 0) window.scrollBy(0, top);
+  }, [pin]);
   return (
-    <div className="sticky top-0 z-30 bg-pokemon-dark pt-1 pb-3">
+    <div ref={ref} className={`${pin ? "sticky top-0" : "relative"} z-30 bg-pokemon-dark pt-1 pb-3`} data-pinned={pin ? "1" : "0"}>
       {title}
 
       {/* Mobile: Statuswert + Lupe + Statuswert in einer Zeile */}
