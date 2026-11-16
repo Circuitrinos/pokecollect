@@ -34,7 +34,7 @@ import {
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
 import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
-import { FlashMonitor, type FlashCard } from "@/lib/flashCapture";
+import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
@@ -310,7 +310,7 @@ export default function ScanPage() {
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
     streamRef.current = null;
     setCameraOn(false);
-    setTorchOk(false);
+    setTorchState("unknown");
   };
 
   const startCamera = async () => {
@@ -328,10 +328,27 @@ export default function ScanPage() {
       });
       streamRef.current = stream;
       const st = stream.getVideoTracks()[0]?.getSettings?.();
-      // Lampe schaltbar? (Chrome auf Android ja; die Typen kennen „torch" nur in den Einstellungen)
-      const caps = stream.getVideoTracks()[0]?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
-      setTorchOk(!!caps?.torch);
-      dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode, torch: !!caps?.torch });
+      // Lampe schaltbar? (die Typen kennen „torch" nur in den Einstellungen.) Chrome auf Android
+      // meldet es teils erst, wenn die Kamera Bilder liefert oder nach getPhotoCapabilities —
+      // sonst bleibt es „unbekannt" und wird beim Einschalten des Blitz-Tests ausprobiert.
+      const track = stream.getVideoTracks()[0];
+      const caps = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
+      setTorchState(caps?.torch ? "yes" : "unknown");
+      dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode, torch: !!caps?.torch,
+        label: track?.label, caps: caps ? Object.keys(caps) : null });
+      if (track && !caps?.torch) {
+        void (async () => {
+          let fill: unknown = null;
+          try {
+            const IC = (window as unknown as { ImageCapture?: new (t: MediaStreamTrack) => { getPhotoCapabilities(): Promise<{ fillLightMode?: string[] }> } }).ImageCapture;
+            if (IC) fill = (await new IC(track).getPhotoCapabilities())?.fillLightMode ?? null;
+          } catch (e) { fill = `error: ${(e as Error)?.message}`; }
+          await new Promise((r) => window.setTimeout(r, 800));
+          const later = !!(track.getCapabilities?.() as { torch?: boolean } | undefined)?.torch;
+          dlog("camera.torch", { later, fill, setting: (track.getSettings?.() as { torch?: boolean } | undefined)?.torch ?? null });
+          if (later && streamRef.current?.getVideoTracks()[0] === track) setTorchState("yes");
+        })();
+      }
       setCameraOn(true); // Video wird erst jetzt gerendert → Stream im Effect anhängen
     } catch (e) {
       dlog("camera.error", { name: (e as Error)?.name, message: (e as Error)?.message });
@@ -543,7 +560,8 @@ export default function ScanPage() {
   // Blitz-Test (lib/flashCheck, lib/flashCapture): sind alle Karten erkannt, blinkt die Lampe;
   // jede Karte bleibt blau, bis ihre Folierung gemessen ist (Normal, Holo, Reverse Holo) — erst
   // dann wird sie grün und der Live-Scan schließt ab. Das Handy dabei über die Karten führen.
-  const [torchOk, setTorchOk] = useState(false);
+  // Lampe: gemeldet / ausprobiert und geht ("yes"), geht nicht ("no"), noch nicht bekannt
+  const [torchState, setTorchState] = useState<"yes" | "no" | "unknown">("unknown");
   const [flashTest, setFlashTest] = useState(false);
   useEffect(() => {
     try { setFlashTest(localStorage.getItem(FLASH_KEY) === "1"); } catch { /* privat */ }
@@ -551,9 +569,26 @@ export default function ScanPage() {
   const toggleFlashTest = () => {
     const on = !flashTest;
     setFlashTest(on);
+    if (on && torchState === "no") setTorchState("unknown");      // noch einmal ausprobieren
     try { localStorage.setItem(FLASH_KEY, on ? "1" : "0"); } catch { /* privat */ }
   };
-  const flashOn = flashTest && torchOk;
+  const flashOn = flashTest && torchState === "yes";
+  // Blitz-Test an, Lampe unbekannt: einmal ausprobieren, sobald die Kamera Bilder liefert
+  useEffect(() => {
+    if (!flashTest || torchState !== "unknown" || !cameraOn) return;
+    let cancelled = false;
+    const run = async () => {
+      const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
+      for (let i = 0; i < 20 && !cancelled && !(v?.videoWidth); i++) await new Promise((r) => window.setTimeout(r, 150));
+      if (cancelled || !v || !v.videoWidth || !track) return;
+      const r = await probeTorch(v, (on) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+        .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); }));
+      dlog("camera.torch.probe", r);
+      if (!cancelled) setTorchState(r.works ? "yes" : "no");
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [flashTest, torchState, cameraOn]);
   const flashOnRef = useRef(false);
   flashOnRef.current = flashOn;
   const flashRef = useRef<FlashMonitor | null>(null);
@@ -2123,12 +2158,16 @@ export default function ScanPage() {
                       <span className={live ? "text-green-300" : "text-gray-400"}>●</span> {t.scan_live}
                     </button>
                   )}
-                  {liveAvailable && step === "setup" && live && torchOk && (
-                    <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest} title={t.scan_flash_test_hint}
-                      data-testid="scan-flash-test"
+                  {liveAvailable && step === "setup" && live && (
+                    // Blitz-Test: auch wenn der Browser die Lampe nicht meldet — beim Einschalten wird sie ausprobiert
+                    <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest}
+                      title={torchState === "no" ? t.scan_flash_no_torch : t.scan_flash_test_hint}
+                      data-testid="scan-flash-test" data-torch={torchState}
                       className={`absolute top-20 left-2 rounded-full px-3 py-1.5 text-xs text-white ${flashTest
                         ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
-                      <span className={flashTest ? "text-yellow-300" : "text-gray-400"}>⚡</span> {t.scan_flash_test}
+                      <span className={flashTest && torchState !== "no" ? "text-yellow-300" : "text-gray-400"}>⚡</span>{" "}
+                      {flashTest && torchState === "no" ? t.scan_flash_no_torch_short : flashTest && torchState === "unknown" ? t.scan_flash_trying
+                        : t.scan_flash_test}
                     </button>
                   )}
                   {liveOn && livePick && (() => {

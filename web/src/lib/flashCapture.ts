@@ -167,3 +167,45 @@ export class FlashMonitor {
     if (added) this.onMeasure();
   }
 }
+
+const nextFrame = (v: HTMLVideoElement) => new Promise<void>((r) => {
+  if (typeof v.requestVideoFrameCallback === "function") v.requestVideoFrameCallback(() => r());
+  else requestAnimationFrame(() => r());
+});
+
+/**
+ * Lässt sich die Lampe schalten? Manche Android-Browser melden „torch" nicht als Fähigkeit,
+ * obwohl es geht (Brians Fairphone 6: torch false). Also ausprobieren: Lampe an und schauen,
+ * ob das Bild heller wird — kurz, bevor die Belichtung nachregelt (die Spitze zählt).
+ */
+export async function probeTorch(video: HTMLVideoElement, torch: (on: boolean) => Promise<void>): Promise<{ works: boolean; change: number }> {
+  const c = document.createElement("canvas");
+  const w = 24, h = Math.max(1, Math.round((24 * (video.videoHeight || 16)) / (video.videoWidth || 9)));
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx || !video.videoWidth) return { works: false, change: 0 };
+  const mean = () => {
+    ctx.drawImage(video, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let s = 0;
+    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
+    return s / (d.length / 4) / 3;
+  };
+  const sample = async (ms: number) => {
+    const out: number[] = [];
+    const end = performance.now() + ms;
+    while (performance.now() < end) { await nextFrame(video); out.push(mean()); }
+    return out;
+  };
+  const before = await sample(300);
+  const base = before.length ? before.reduce((a, b) => a + b, 0) / before.length : 0;
+  try {
+    await torch(true);
+    const lit = await sample(700);
+    const change = lit.length && base ? Math.max(...lit.map((m) => (m - base) / base)) : 0;
+    return { works: change >= 0.04, change: Math.round(change * 1000) / 1000 };
+  } finally {
+    await torch(false);
+  }
+}

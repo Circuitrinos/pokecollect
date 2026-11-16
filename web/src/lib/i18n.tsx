@@ -450,6 +450,9 @@ const DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `Bild und Rahmen haben das Licht der Lampe unterschiedlich zurückgeworfen (${share}, ${n}× geblitzt) — bitte auf der Karte nachsehen`,
   scan_flash_test: "Blitz-Test",
+  scan_flash_trying: "Blitz-Test · Lampe wird probiert …",
+  scan_flash_no_torch_short: "Blitz-Test · keine Lampe",
+  scan_flash_no_torch: "Dieser Browser kann die Lampe des Handys nicht schalten (Chrome auf Android kann es meist) — der Blitz-Test geht hier nicht",
   scan_flash_test_hint: "Live: sind alle Karten erkannt, blinkt die Lampe des Handys. Jede Karte bleibt blau, bis gemessen ist, ob sie Normal, Holo oder Reverse Holo ist — dazu das Handy langsam über die Karten führen (Folie glänzt nur fast gerade von oben). Erst dann wird sie grün.",
   scan_live_empty: "Nichts im Bild — Kamera auf die Karten richten",
   scan_live_checking: "Prüfe …",
@@ -1727,6 +1730,9 @@ const EN: typeof DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `The art and the frame threw the phone's light back differently (${share}, ${n} flashes) — check the card`,
   scan_flash_test: "Flash test",
+  scan_flash_trying: "Flash test · trying the light …",
+  scan_flash_no_torch_short: "Flash test · no light",
+  scan_flash_no_torch: "This browser can't switch the phone's light (Chrome on Android usually can) — the flash test doesn't work here",
   scan_flash_test_hint: "Live: once every card is recognised, the phone's light blinks. Each card stays blue until it's measured as Normal, Holo or Reverse Holo — move the phone slowly over the cards (foil only shines back from almost straight above). Then it turns green.",
   scan_live_empty: "Nothing in view — point the camera at the cards",
   scan_live_checking: "Checking …",
