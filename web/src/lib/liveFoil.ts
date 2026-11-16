@@ -22,6 +22,17 @@ const MIN_SECONDS = 2.5;      // ohne Lagesensor: so lange mindestens beobachtet
 const KEEP = 40;              // je Karte die letzten Ausschnitte
 export const FOIL_MIN = 0.18; // Antwort eines Bereichs ab hier: Folie (vorläufig — die Protokolle eichen es)
 export const FOIL_LEAD = 1.7; // … und so viel stärker als der andere Bereich
+// Brians Protokolle (15.11.): beim Scannen einer ganzen Seite antworten auch Karten ohne Folie mit
+// 0.2–0.4 (die Rahmen wackeln um einige Prozent, gemustertes Artwork ändert sich damit: Rare Candy
+// 1.0 auf der Seite, 0.05 allein). Folie heißt darum auch: deutlich stärker als die übliche Karte
+// desselben Scans (Median über alle) — bei ruhigen Scans bleibt es bei FOIL_MIN.
+export const FOIL_REL = 1.6;
+// Brians Testkarten mit bekannter Folie (15.11., Umrisse exakt aus dem Video nachgerechnet):
+// Firebreather und Tool Scrapper (Holo) 0.04 wie die vier normalen Karten daneben (0.03–0.11),
+// Rayquaza EX (ganze Karte glitzernd, bis 15° geneigt) 0.08–0.17. Das Maß trennt Folie nicht —
+// die Hinweise bleiben aus, gemessen und protokolliert („live.foil.final") wird weiter.
+export const LIVE_FOIL_HINTS = false;
+const REL_MIN_CARDS = 6;
 const CHROMA = 5;             // Gewicht des Farbtons gegenüber der Helligkeit
 
 export type FoilKind = "Holo" | "Reverse Holo" | "Normal";
@@ -145,14 +156,21 @@ export function scoreSamples(list: Sample[]): FoilScore | null {
  * Die Art der Folie aus den Werten — oder null, solange zu wenig gesehen wurde
  * (zu wenige Ausschnitte, zu wenig geneigt). wholeCard: Basis-Energie (eine Fläche).
  */
-export function judgeFoil(s: FoilScore | null, wholeCard: boolean): FoilKind | null {
+export function judgeFoil(s: FoilScore | null, wholeCard: boolean, bar = FOIL_MIN): FoilKind | null {
   if (!s) return null;
   if (s.spread != null ? s.spread < MIN_SPREAD : s.seconds < MIN_SECONDS) return null;
-  if (wholeCard) return s.whole >= FOIL_MIN ? "Holo" : "Normal";
-  if (s.art >= FOIL_MIN && s.art >= FOIL_LEAD * s.frame) return "Holo";
-  if (s.frame >= FOIL_MIN && s.frame >= FOIL_LEAD * s.art) return "Reverse Holo";
-  if (s.art < FOIL_MIN && s.frame < FOIL_MIN) return "Normal";
+  if (wholeCard) return s.whole >= bar ? "Holo" : "Normal";
+  if (s.art >= bar && s.art >= FOIL_LEAD * s.frame) return "Holo";
+  if (s.frame >= bar && s.frame >= FOIL_LEAD * s.art) return "Reverse Holo";
+  if (s.art < bar && s.frame < bar) return "Normal";
   return null;            // beides glänzt ähnlich: unklar (Vollbild-Karte, Spiegelung) — keine Aussage
+}
+
+/** Ab welcher Antwort ein Bereich in diesem Scan als Folie gilt: FOIL_MIN, oder FOIL_REL × die
+ *  übliche Antwort (Median „whole") der Karten, wenn genug genau genug gesehen wurden. */
+export function foilBar(scores: (FoilScore | null)[]): number {
+  const w = scores.filter((s): s is FoilScore => !!s && s.n >= MIN_SAMPLES).map((s) => s.whole);
+  return w.length >= REL_MIN_CARDS ? Math.max(FOIL_MIN, FOIL_REL * median(w)) : FOIL_MIN;
 }
 
 /** Basis-Energie: das Bild ist die ganze Karte — nur Holo oder nicht. Mega Evolution (MEE)

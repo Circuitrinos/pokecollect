@@ -29,7 +29,8 @@ _BARE_BAND = (0.88, 0.99)
 # video: the outline ~6 % too high, "006" just below its bottom edge, outside the strip.
 # Then the strip is read again a bit lower and a bit higher, past the card's edges
 # (detect.warp_wide, same scale), with the two preparations that read energies best and
-# only bottom left (energies with a number print it there; older ones have none).
+# only where the candidates print their number (number_side; not known: bottom left —
+# energies with a number print it there, older ones have none).
 WIDE_EXTRA = 120
 SHIFTED_BANDS = ((0.95, 1.06), (0.81, 0.92))
 SHIFTED_PREPS = 2
@@ -43,19 +44,39 @@ def available() -> bool:
     return shutil.which("tesseract") is not None
 
 
+# Where the number is printed, by the card's set (TCGdex set id): bottom left since Sun &
+# Moon (2017), bottom right before — with the set symbol beside it (BW, XY) or at the right
+# below the artwork (WotC to Platinum). Reprint collections keep each card's old layout.
+_LEFT_SETS = re.compile(r"^(sm|swsh|sv|me)|^(det1|pgo|cel25)$")
+_RIGHT_SETS = re.compile(r"^(base|gym|neo|lc|si\d|ecard|ex\d|pop|tk|dp|pl|hgss|col|bw|xy|g1|dc\d|ru\d|np$|wp$)")
+
+
+def number_side(card_ids: list[str]) -> str:
+    """Which bottom corner the candidates print their number in: "left", "right" or
+    "both" (mixed, or sets whose layout isn't known)."""
+    sides = set()
+    for cid in card_ids:
+        set_id = cid.rsplit("-", 1)[0].lower()
+        if _LEFT_SETS.search(set_id):
+            sides.add("left")
+        elif _RIGHT_SETS.search(set_id):
+            sides.add("right")
+    return sides.pop() if len(sides) == 1 else "both"
+
+
 def _rois(card: np.ndarray, upside_down: bool, band: tuple[float, float] = _BAND,
-          both_ways: bool = True, pad: int = PAD, sides: int = 2) -> list[np.ndarray]:
+          both_ways: bool = True, pad: int = PAD, side: str = "both") -> list[np.ndarray]:
     """Bottom-left and bottom-right number areas; likely orientation first (only that one
     if both_ways is False — a close-up's orientation is known). pad: where the card
     starts (PAD + extra from detect.warp_wide: the band may then reach past its edges);
-    sides=1: only the bottom-left area."""
+    side: "left" or "right" only that area, "both" both (left first)."""
     out = []
     flipped = cv2.rotate(card, cv2.ROTATE_180)
     ways = (flipped, card) if upside_down else (card, flipped)
     for img in ways if both_ways else ways[:1]:
         h, w = img.shape[:2]
         y0, y1 = (min(h, max(0, int(pad + f * (h - 2 * pad)))) for f in band)
-        for x0f, x1f in _XS[:sides]:
+        for x0f, x1f in {"left": _XS[:1], "right": _XS[1:]}.get(side, _XS):
             x0, x1 = (min(w, max(0, int(pad + f * (w - 2 * pad)))) for f in (x0f, x1f))
             out.append(img[y0:y1, x0:x1])
     return out
@@ -95,7 +116,7 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
                  wanted: set[str] | None = None, bare: bool = False,
                  prefixes: dict[str, str] | None = None, printed: dict[str, list[tuple[str, str]]] | None = None,
                  both_ways: bool = True, band: tuple[float, float] | None = None, pad: int = PAD,
-                 preps: int | None = None, sides: int = 2) -> list[tuple[str, str]]:
+                 preps: int | None = None, side: str = "both") -> list[tuple[str, str]]:
     """
     (number, total) pairs Tesseract finds, e.g. [('136', '197')]. Stops as soon
     as a number in `wanted` (num_key form, e.g. 'TG5', '136') shows up, so the
@@ -107,10 +128,11 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
     printed: per wanted number how candidates print it, (set code, digits)
     ({'16': [('SVE', '016'), ('MEE', '016')]}). With it, a bare number only counts
     with a fitting set code in front ("SV 16": confirmed at once) or digit for digit
-    as printed ("016": needs a second reading) — a lone "8" out of the holo pattern doesn't.
+    as printed ("016"; reading stops early once it's read twice) — a lone "8" out of
+    the holo pattern doesn't.
     both_ways: also try the card upside down (not needed when its orientation is known).
     band, pad: another strip (fractions of the card's height; pad as in _rois);
-    preps: only the first few preparations; sides=1: only the bottom-left number area.
+    preps: only the first few preparations; side: only that number area (see _rois).
     """
     if not available():
         return []
@@ -119,7 +141,7 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
     from .catalog import num_key
     found: list[tuple[str, str]] = []
     bare_seen: dict[str, int] = {}
-    for roi in _rois(card, upside_down, band or (_BARE_BAND if bare else _BAND), both_ways, pad, sides):
+    for roi in _rois(card, upside_down, band or (_BARE_BAND if bare else _BAND), both_ways, pad, side):
         if roi.size == 0:
             continue
         for img in _prep(roi, bare)[:preps]:
@@ -164,8 +186,7 @@ def read_numbers(card: np.ndarray, upside_down: bool = False,
                         bare_seen[code] = bare_seen.get(code, 0) + 1
                         if bare_seen[code] >= 2:           # read the same way twice (or with its set code): enough
                             return [(code, "")] + [p for p in found if p != (code, "")]
-    # a bare number read only once, without its set code, doesn't count (an "016" out of noise)
-    return [p for p in found if p[1] or not printed or bare_seen.get(p[0], 0) >= 2]
+    return found
 
 
 def read_set_code(card: np.ndarray, codes: list[str], upside_down: bool = False,

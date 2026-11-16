@@ -30,11 +30,12 @@ import { rematchAlternatives, rematchIsWeak, rematchSuggested } from "@/lib/rema
 import { MotionTracker, apply as applyM, inv as invM, mul as mulM, toFractions, toPixels, type Mat3 } from "@/lib/motionTrack";
 import { matrixKey, moveSvg, ptsAttr } from "@/lib/svgMove";
 import {
-  FoilWatch, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
+  FoilWatch, LIVE_FOIL_HINTS, foilBar, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
 } from "@/lib/liveFoil";
 import { FrameJudge } from "@/lib/frameQuality";
 import {
-  addFocus, reanchor, similarityFit, addFrame, allSure, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS, pick, signature,
+  addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
+  numberSide, pick, signature,
   skipPockets, skipSquares, verdict, viewQuad, type Level, type LiveState, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
@@ -625,10 +626,12 @@ export default function ScanPage() {
       watch.forget(new Set(st.tracks.map((t) => t.key)));
       let changed = false;
       const out: Record<string, LiveFoil> = {};
+      const scores = new Map(st.tracks.map((t) => [t.key, watch.score(t.key)]));
+      const bar = foilBar(Array.from(scores.values()));
       for (const t of st.tracks) {
-        const s = watch.score(t.key);
+        const s = scores.get(t.key) ?? null;
         const v = verdict(t);
-        const kind = judgeFoil(s, isBasicEnergy(String(v.cand?.suggested?.kartenname ?? v.cand?.match?.name ?? "")));
+        const kind = judgeFoil(s, isBasicEnergy(String(v.cand?.suggested?.kartenname ?? v.cand?.match?.name ?? "")), bar);
         if (s && kind) out[t.key] = { ...s, kind };
         if ((known.get(t.key) ?? null) !== kind) {
           changed = true;
@@ -718,15 +721,17 @@ export default function ScanPage() {
     commitLive(() => emptyLive());
     setLivePick(null);
     // Folie: mit allen bis jetzt gesammelten Ausschnitten urteilen (lib/liveFoil)
+    const scores = new Map(items.map((i) => [i.key, foilWatchRef.current.score(i.key)]));
+    const bar = foilBar(Array.from(scores.values()));
     const foils = new Map(items.map((i) => {
-      const s = foilWatchRef.current.score(i.key);
+      const s = scores.get(i.key) ?? null;
       const name = String(i.cand.suggested?.kartenname ?? i.cand.match?.name ?? "");
-      const kind = judgeFoil(s, isBasicEnergy(name));
+      const kind = judgeFoil(s, isBasicEnergy(name), bar);
       const opts = i.cand.foil_options ?? [];
-      if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind,
+      if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind, bar: +bar.toFixed(3),
         art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
-      if (!s || !kind || kind === "Normal") return [i.key, null] as const;
+      if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
         ? "Reverse Holo" : kind;
@@ -2754,12 +2759,13 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef }: {
         const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
-        const foil = foils[tr.key]?.kind;
+        const foil = LIVE_FOIL_HINTS ? foils[tr.key]?.kind : undefined;
         const shine = foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
         const name = (raw.length > 16 ? `${raw.slice(0, 15)}…` : raw) + shine;
         const label = [x0 + fs * 0.3, y0 + fs * 1.15];
         // unsicher: die Nummern-Ecke markieren — dort nah heran, dann liest der Abgleich die Nummer
-        const corner = v.level !== "green" ? cardPart(pts, NUMBER_CORNERS.left) : null;
+        // wo die Nummer dieser Karte steht (ältere Sätze: unten rechts)
+        const corner = v.level !== "green" ? cardPart(pts, NUMBER_CORNERS[numberSide(candidateIds(tr)) === "right" ? "right" : "left"]) : null;
         return (
           <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why}
             style={{ pointerEvents: "all", cursor: "pointer" }} onClick={() => onTap(tr.key)}>

@@ -76,9 +76,10 @@ tracking, which it also uses to check every placement before drawing with it.
 Close-ups (`mode=closeup`): the number is read where it's printed, also one
 without a total. Basic energies ("SVE 016"): the small bold italic digits read far
 better from a slightly taller strip with adaptive thresholds and sparse-text OCR; a
-bare number only counts as printed ("016") read twice, or right after a candidate's
-full set code ("SVE 16"). When one number fits two sets ("SVE 016" / "MEE 016"),
-that code decides, or the set code box read on its own (inverted and as is — light
+bare number only counts digit for digit as printed ("016" — reading stops early once
+it's read twice), or right after letters that fit a candidate's set code ("SVE 16",
+"MEEC 8"). When one number fits two sets ("SVE 016" / "MEE 016"), those letters
+decide if they fit just one of the codes, or the set code box read on its own (inverted and as is — light
 letters in a dark frame), twice and without the other code. A wrong print is worse
 than none: anything less leaves the card yellow for the next close-up.
 The outline is first snapped to the card (ORB against the candidates). Plain
@@ -86,7 +87,12 @@ energy art often has too little for that, and the app's corners then come from
 its motion tracking — 5–10 % of the card off after moving in close (a MEE 006
 close-up: "006" sat just below the outline). If the number isn't where the
 corners say, the strip is read once more a bit lower and once a bit higher, past
-the card's edges (`detect.warp_wide`, bottom left, two preparations).
+the card's edges (`detect.warp_wide`, two preparations).
+Older sets print the number bottom right (before Sun & Moon; the app aims its close-up
+box there too), newer ones bottom left — the number is read on the side the candidates'
+sets use (`numocr.number_side`), both when they're mixed or unknown. A reprint
+collection ("Classic Collection") prints the original card's number, not its own, so
+a number read never rules such a candidate out: that close-up stays open.
 
 ### Student model (`tools/distill_student.py`)
 

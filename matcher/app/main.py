@@ -963,9 +963,10 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
             lid = str(catalog[c].local_id or "").upper()
             printed.setdefault(num_key(lid), []).append((_set_code(catalog[c]), re.sub(r"^[A-Z]+", "", lid)))
     prefixes: dict[str, str] = {}
+    side = numocr.number_side(ids)      # older sets print it bottom right
     with timing.phase("ocr"):
         numbers = numocr.read_numbers(card, upside_down=False, wanted=wanted, bare=True, prefixes=prefixes,
-                                      printed=printed, both_ways=False)
+                                      printed=printed, both_ways=False, side=side)
     by_id = {c.card_id: c for c in found}
     order = [c.card_id for c in found if c.card_id in ids] + [c for c in ids if c not in by_id]
     cands = [by_id.get(c) or matcher.Candidate(c, 0.0, 0, 0, 0, 64) for c in order]
@@ -981,7 +982,8 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
             with timing.phase("ocr"):
                 got = numocr.read_numbers(wide, upside_down=False, wanted=wanted, bare=True, prefixes=more,
                                           printed=printed, both_ways=False, band=b,
-                                          pad=detect.PAD + numocr.WIDE_EXTRA, preps=numocr.SHIFTED_PREPS, sides=1)
+                                          pad=detect.PAD + numocr.WIDE_EXTRA, preps=numocr.SHIFTED_PREPS,
+                                          side="left" if side == "both" else side)
             if fits(got):
                 numbers, prefixes = got, more
                 strip, band, pad = wide, b, detect.PAD + numocr.WIDE_EXTRA
@@ -992,23 +994,27 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
     pre = prefixes.get(num_key(hit_num[0])) if hit_num and not hit_num[1] else None
     codes = sorted({_set_code(catalog.get(c.card_id)) for c in hits})
     if len(hits) > 1 and len(codes) == len(hits):   # the same number in two sets ("SVE 016" / "MEE 016"):
-        code = pre if pre in codes else None        # read right before the number, spelled out in full
+        fitting = [c for c in codes if pre and numocr._fits(pre, c)]   # read right before the number:
+        code = fitting[0] if len(fitting) == 1 else None                 # "MEEC 8" → MEE, "SVEG 16" → SVE
         if code is None:                            # or the logo itself, read twice
             with timing.phase("ocr"):
                 code = numocr.read_set_code(strip, codes, band=band, pad=pad)
         if code:
             pre = code
             hits = [c for c in hits if _set_code(catalog.get(c.card_id)) == code]
+    # a reprint collection prints the original card's number, not its own (a "30th Classic
+    # Collection" Rayquaza EX shows 85/124 — Dragons Exalted's): such a candidate can't be ruled out
+    reprints = [c for c in cands if c not in hits and _prints_other_number(catalog.get(c.card_id))]
     num = hit_num or (numbers[0] if numbers else None)
     shown = (f"{num[0]}/{num[1]}" if num[1] else num[0]) if num else None
     if shown and pre:
         shown = f"{pre} {shown}"
-    if len(hits) == 1:
+    if len(hits) == 1 and not reprints:
         hit = hits[0]
         n, t = next((n, t) for n, t in numbers if matcher._number_matches(catalog.get(hit.card_id), n, t))
         d = matcher.Decision(True, "number", 0.9, f"{n}/{t}" if t else n, [hit] + [c for c in cands if c is not hit])
     else:       # not decided: the prints the number fits first — the review offers those first
-        d = matcher.Decision(False, "close", 0.45, shown, hits + [c for c in cands if c not in hits])
+        d = matcher.Decision(False, "close", 0.45, shown, hits + reprints + [c for c in cands if c not in hits + reprints])
     log.debug("closeup: outline %s, %d ORB candidate(s), numbers read %s%s → %s",
               "snapped" if snapped else "as sent", len(found), numbers or "-",
               f" (strip {band[0]:.2f}-{band[1]:.2f})" if strip is not card else "",
@@ -1016,6 +1022,12 @@ def _closeup(img: np.ndarray, quad: np.ndarray, ids: list[str], top_k: int) -> d
     return {"mode": "closeup", "cards": [_result(d, q, img, None)] if cands else [],
             "ms": round((time.perf_counter() - t0) * 1000), "timing": timing.take(),
             "shortlist": "given", "snapped": snapped}
+
+
+def _prints_other_number(card) -> bool:
+    """A reprint collection: its cards carry the number they had in their original set."""
+    names = f"{card.set_name_en or ''} {card.set_name or ''}".lower() if card else ""
+    return "classic collection" in names or (card is not None and (card.set_id or "").lower() == "cel25c")
 
 
 def _set_code(card) -> str:

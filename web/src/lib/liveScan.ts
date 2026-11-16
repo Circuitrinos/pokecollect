@@ -221,9 +221,14 @@ export function addFrame(state: LiveState, cands: ScanCandidate[], mode: ScanMod
   let h: Mat3 | null = map?.located && map.h ? map.h : null;
   let placed: Placed = { how: h ? "server" : "none", off: null };
   if (h && expect) {
+    // die Bewegung prüft nur, wenn sie von einem Bild ausgeht, das der Matcher selbst eingeordnet
+    // hat: auf eine schon geschätzte Einordnung gerechnet, wächst ihr Fehler unbemerkt (Brians
+    // Video: zwei Bilder nacheinander von der Bewegung eingeordnet, das zweite 0.95 Bildgrößen
+    // daneben — die Rahmen lagen eine halbe Karte verschoben, die Energie bekam einen neuen Rahmen)
     const off = disagreement(h, expect);
-    placed = { how: off > MAP_DISAGREE ? "tracker" : "server", off: Math.round(off * 1000) / 1000 };
-    if (off > MAP_DISAGREE) h = expect;
+    const veto = off > MAP_DISAGREE && state.placed?.how !== "tracker";
+    placed = { how: veto ? "tracker" : "server", off: Math.round(off * 1000) / 1000 };
+    if (veto) h = expect;
   }
   if (sameMap && !h) {
     if (!expect || !cands.length) return { ...state, lost: state.lost + 1 };
@@ -457,6 +462,23 @@ export const NUMBER_CORNERS: Record<"left" | "right", [number, number, number, n
   left: [0.02, 0.895, 0.45, 0.985],
   right: [0.55, 0.895, 0.98, 0.985],
 };
+// Welche Ecke, nach dem Satz (TCGdex-Satz-ID): unten links seit Sun & Moon (2017), vorher
+// unten rechts — das Satzsymbol daneben (BW, XY) oder rechts unter dem Bild (WotC bis Platin).
+// Nachdruck-Sammlungen (Classic Collection) behalten das alte Layout jeder Karte: unbekannt.
+const LEFT_SETS = /^(sm|swsh|sv|me)|^(det1|pgo|cel25)$/;
+const RIGHT_SETS = /^(base|gym|neo|lc|si\d|ecard|ex\d|pop|tk|dp|pl|hgss|col|bw|xy|g1|dc\d|ru\d|np$|wp$)/;
+
+/** Wo die Kandidaten ihre Nummer drucken: "left", "right" oder "both" (gemischt/unbekannt). */
+export function numberSide(ids: string[]): "left" | "right" | "both" {
+  const sides = new Set<"left" | "right">();
+  for (const id of ids) {
+    const set = id.slice(0, Math.max(0, id.lastIndexOf("-"))).toLowerCase();
+    if (LEFT_SETS.test(set)) sides.add("left");
+    else if (RIGHT_SETS.test(set)) sides.add("right");
+  }
+  return sides.size === 1 ? Array.from(sides)[0] : "both";
+}
+
 export const FOCUS_MIN_WIDTH = 0.3;     // so viel der Bildbreite nimmt die Nummern-Ecke mindestens ein
 const FOCUS_ZOOM = 3;                   // eine solche Nahaufnahme zählt wie eine sehr nahe
 
@@ -488,7 +510,8 @@ export function focusTarget(state: LiveState, toNow: Mat3, minWidth = FOCUS_MIN_
     if (!ids.length) continue;
     const quad = applyH(toNow, viewQuad(state, t));
     const at = squareTo(quad);
-    for (const corner of ["left", "right"] as const) {
+    const side = numberSide(ids);
+    for (const corner of side === "both" ? (["left", "right"] as const) : [side]) {
       const [x0, y0, x1, y1] = NUMBER_CORNERS[corner];
       const pts = applyH(at, [0, 0.5, 1].flatMap((u) => [0, 1].map((v) => [x0 + u * (x1 - x0), y0 + v * (y1 - y0)])));
       if (!pts.every(([x, y]) => x >= -0.01 && x <= 1.01 && y >= -0.01 && y <= 1.01)) continue;
