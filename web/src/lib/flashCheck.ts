@@ -224,7 +224,12 @@ function homography(src: number[][], dst: number[][]): number[][] | null {
 
 /** Blickwinkel auf eine Karte (Grad): zwischen ihrer Senkrechten und der Richtung zur Kamera, aus
  *  ihrem Umriss im Bild (TL, TR, BR, BL; Pixel eines Bilds w×h) und der Kartengröße. */
-export function viewAngle(quad: number[][], w: number, h: number, focal = FOCAL * Math.max(w, h)): number | null {
+/** Brennweite in Pixeln bei dieser Bildgröße — mit Zoom entsprechend länger (2× Zoom: doppelt). */
+export function flashFocal(w: number, h: number, zoom = 1): number {
+  return FOCAL * Math.max(w, h) * zoom;
+}
+
+export function viewAngle(quad: number[][], w: number, h: number, focal = flashFocal(w, h)): number | null {
   const [cw, ch] = CARD_MM;
   const H = homography([[0, 0], [cw, 0], [cw, ch], [0, ch]], quad.map(([x, y]) => [(x - w / 2) / focal, (y - h / 2) / focal]));
   if (!H) return null;
@@ -280,8 +285,16 @@ export function flashKindDir(shares: number[], lightOn: boolean[]): FlashKind | 
   const k = flashKind(shares);
   if (k !== "Holo") return k;
   const offs = shares.filter((_, i) => !lightOn[i]);
-  if (offs.length < FLASH_OFF_MIN_N) return null;
-  return median(offs) >= FLASH_OFF_HOLO ? "Holo" : flashKind(offs);
+  // kommen keine Ausschalt-Messungen zustande, gilt nach langem Warten das Gesamtbild
+  if (offs.length < FLASH_OFF_MIN_N) return shares.length >= 2 * FLASH_LATE_N ? k : null;
+  const m = median(offs);
+  if (m >= FLASH_OFF_HOLO) return "Holo";
+  const ko = flashKind(offs);
+  if (ko) return ko;
+  // genug gemessen, die Ausschalt-Messungen bleiben dazwischen: ihre Seite entscheidet (wie spät in
+  // flashKind) — sonst bliebe die Karte für immer offen (Brians Test 16.11. im /e/OS-Browser: „halten … 11/3")
+  if (shares.length >= FLASH_LATE_N) return m <= -FLASH_LATE_CUT ? "Reverse Holo" : "Normal";
+  return null;
 }
 
 /** Gezählte Umschalter je Karte (Schlüssel der Live-Karte). */

@@ -34,6 +34,7 @@ import {
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
 import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraColors";
+import { ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, fmtZoom, lightSet, readZoomCaps, storedZoom } from "@/lib/cameraZoom";
 import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
@@ -91,7 +92,6 @@ const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: norm
 const LIVE_KEY = "scan_live";        // Live-Scan bleibt eingeschaltet (localStorage)
 const FLASH_KEY = "scan_flash_test"; // Blitz-Test vor der Prüfung (localStorage)
 const COLORS_KEY = "scan_fix_colors"; // Kamerafarben reparieren (vertauschte Farbebenen, lib/cameraColors)
-
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
   if (!m) return { cols: 3, rows: 3 };
@@ -248,6 +248,37 @@ export default function ScanPage() {
   useEffect(() => {
     try { setFixColors(localStorage.getItem(COLORS_KEY) === "1"); } catch { /* privat */ }
   }, []);
+  // Zoom (wo die Kamera es kann): Handy höher halten und hineinzoomen = gleiches Bild, aber das Licht
+  // des Blitz-Tests ist schwächer (Abstand²) und alle Karten liegen zugleich im Messbereich (3–14°)
+  const [zoomCaps, setZoomCaps] = useState<ZoomCaps | null>(null);
+  const [zoom, setZoom] = useState(1);              // jetzt angewandt, × gegenüber dem Start
+  const zoomRef = useRef(1);
+  zoomRef.current = zoomCaps ? zoom : 1;
+  const zoomValRef = useRef<number | null>(null);   // angewandter Zoom-Wert (absolut), null: nie gezoomt
+  const applyZoom = async (track: MediaStreamTrack, caps: ZoomCaps, factor: number) => {
+    const want = Math.min(caps.max, Math.max(caps.min, caps.base * factor));
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: want } as MediaTrackConstraintSet] });
+      const got = (track.getSettings?.() as { zoom?: number } | undefined)?.zoom;
+      const f = (got && got > 0 ? got : want) / caps.base;
+      if (streamRef.current?.getVideoTracks()[0] === track) {
+        setZoom(f);
+        zoomValRef.current = got && got > 0 ? got : want;
+      }
+      dlog("camera.zoom", { want, got: got ?? null, factor: Math.round(f * 100) / 100 });
+    } catch (e) {
+      dlog("camera.zoom.error", { want, name: (e as Error)?.name, message: (e as Error)?.message });
+    }
+  };
+  const zoomSteps = zoomCaps ? ZOOM_STEPS.filter((s) => zoomCaps.base * s <= zoomCaps.max + 1e-6) : [1];
+  const cycleZoom = () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || !zoomCaps) return;
+    const i = zoomSteps.findIndex((s) => Math.abs(s - zoom) < 0.05);
+    const next = zoomSteps[(i + 1) % zoomSteps.length];
+    try { localStorage.setItem(ZOOM_KEY, String(next)); } catch { /* privat */ }
+    void applyZoom(track, zoomCaps, next);
+  };
   const toggleFixColors = () => {
     const on = !fixColors;
     setFixColors(on);
@@ -326,6 +357,9 @@ export default function ScanPage() {
     streamRef.current = null;
     setCameraOn(false);
     setTorchState("unknown");
+    setZoomCaps(null);
+    setZoom(1);
+    zoomValRef.current = null;
   };
 
   const startCamera = async () => {
@@ -338,7 +372,8 @@ export default function ScanPage() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        // zoom: true — Chrome zeigt Zoom erst, wenn danach gefragt wurde (andere Browser übergehen es)
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, zoom: true } as MediaTrackConstraints,
         audio: false,
       });
       streamRef.current = stream;
@@ -349,8 +384,30 @@ export default function ScanPage() {
       const track = stream.getVideoTracks()[0];
       const caps = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
       setTorchState(caps?.torch ? "yes" : "unknown");
+      const zc = track ? readZoomCaps(track) : null;
+      setZoomCaps(zc);
+      setZoom(1);
+      zoomValRef.current = null;
+      const z = (caps as { zoom?: unknown } | undefined)?.zoom;
       dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode, torch: !!caps?.torch,
-        label: track?.label, caps: caps ? Object.keys(caps) : null });
+        label: track?.label, caps: caps ? Object.keys(caps) : null, zoom: z ?? null,
+        zoomNow: (st as { zoom?: number } | undefined)?.zoom ?? null });
+      if (track) {
+        // gemerkte Zoom-Stufe wieder anwenden; meldet die Kamera Zoom erst später, noch einmal nachsehen
+        void (async () => {
+          let zz = zc;
+          if (!zz) {
+            await new Promise((r) => window.setTimeout(r, 800));
+            if (streamRef.current?.getVideoTracks()[0] !== track) return;
+            zz = readZoomCaps(track);
+            dlog("camera.zoom.later", { caps: zz });
+            if (!zz) return;
+            setZoomCaps(zz);
+          }
+          const want = storedZoom();
+          if (want > 1) await applyZoom(track, zz, want);
+        })();
+      }
       if (track && !caps?.torch) {
         void (async () => {
           let fill: unknown = null;
@@ -598,7 +655,7 @@ export default function ScanPage() {
       const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
       for (let i = 0; i < 20 && !cancelled && !(v?.videoWidth); i++) await new Promise((r) => window.setTimeout(r, 150));
       if (cancelled || !v || !v.videoWidth || !track) return;
-      const r = await probeTorch(v, (on) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+      const r = await probeTorch(v, (on) => lightSet(track, on, zoomValRef.current)
         .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); }));
       dlog("camera.torch.probe", r);
       if (!cancelled) setTorchState(r.works ? "yes" : "no");
@@ -861,7 +918,7 @@ export default function ScanPage() {
     if (!liveOn || !flashOn) return;
     const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
     if (!v || !track) return;
-    const torch = (on: boolean) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+    const torch = (on: boolean) => lightSet(track, on, zoomValRef.current)
       .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); });
     // offen: erkannte Karten, die noch keine Folierung haben — erst, wenn alle Karten erkannt sind
     const cards = (): FlashCard[] | null => {
@@ -887,6 +944,7 @@ export default function ScanPage() {
       dlog("live.flash.blink", { on });
     }, setFlashAngles);
     mon.colorFix = () => fixColorsRef.current;
+    mon.zoom = () => zoomRef.current;
     flashRef.current = mon;
     mon.start();
     return () => {
@@ -2202,6 +2260,15 @@ export default function ScanPage() {
                       <span className={flashTest && torchState !== "no" ? "text-yellow-300" : "text-gray-400"}>⚡</span>{" "}
                       {flashTest && torchState === "no" ? t.scan_flash_no_torch_short : flashTest && torchState === "unknown" ? t.scan_flash_trying
                         : t.scan_flash_test}
+                    </button>
+                  )}
+                  {step === "setup" && zoomCaps && (
+                    // Zoom: höher halten + hineinzoomen — gleiches Bild, sanfteres Licht beim Blitz-Test
+                    <button type="button" onClick={cycleZoom} title={t.scan_zoom_hint}
+                      data-testid="scan-zoom" data-zoom={fmtZoom(zoom)}
+                      className={`absolute top-20 right-2 rounded-full px-3 py-1.5 text-xs text-white ${zoom > 1.05
+                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                      🔍 {fmtZoom(zoom)}×
                     </button>
                   )}
                   {liveOn && livePick && (() => {

@@ -4,7 +4,7 @@
 // aber nur für Karten, die gerade fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
   FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, atlasPatch, flashShare,
-  flashTransform, litLevel, viewAngle,
+  flashFocal, flashTransform, litLevel, viewAngle,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
 import { dlog } from "./debugLog";
@@ -32,6 +32,8 @@ export class FlashMonitor {
   private means: number[] = [];       // Helligkeit der letzten Bilder (fürs Protokoll)
   /** Kamerafarben reparieren (lib/cameraColors) — die Seite setzt das. */
   colorFix: () => boolean = () => false;
+  /** Zoom der Kamera gegenüber dem Start (für den Blickwinkel) — die Seite setzt das. */
+  zoom: () => number = () => 1;
 
   /**
    * cards(): die Karten, deren Folierung noch offen ist — null oder leer: nicht blinken.
@@ -130,6 +132,7 @@ export class FlashMonitor {
         actx.imageSmoothingEnabled = true;
         actx.imageSmoothingQuality = "medium";
         const px = list.map((c) => c.quad.map(([x, y]) => [x * vw, y * vh]));
+        const focal = flashFocal(vw, vh, this.zoom());
         px.forEach((q, i) => {
           const m = flashTransform(q);
           if (!m) return;
@@ -143,7 +146,7 @@ export class FlashMonitor {
         });
         if (this.colorFix()) fixCanvasColors(actx, this.atlas.width, this.atlas.height);
         const data = actx.getImageData(0, 0, this.atlas.width, this.atlas.height).data;
-        list.forEach((c, i) => shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: viewAngle(px[i], vw, vh) }));
+        list.forEach((c, i) => shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: viewAngle(px[i], vw, vh, focal) }));
       }
     }
     const t = performance.now();
@@ -175,7 +178,7 @@ export class FlashMonitor {
       this.tally.add(key, s, b.deg, sw.lightOn);
       added = true;
     });
-    dlog("live.flash.switch", { on: sw.lightOn, means: this.means.slice(), cards: seen });
+    dlog("live.flash.switch", { on: sw.lightOn, zoom: this.zoom(), means: this.means.slice(), cards: seen });
     if (added) this.onMeasure();
   }
 }
