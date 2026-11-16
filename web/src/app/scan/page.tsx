@@ -32,7 +32,7 @@ import { matrixKey, moveSvg, ptsAttr } from "@/lib/svgMove";
 import {
   FoilWatch, LIVE_FOIL_HINTS, foilBar, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
 } from "@/lib/liveFoil";
-import { FrameJudge } from "@/lib/frameQuality";
+import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
@@ -150,6 +150,12 @@ const conflictDetail = (e: unknown): string | null => {
   const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
   return r?.status === 409 && typeof r.data?.detail === "string" ? r.data.detail : null;
 };
+
+/** Prize-Pack-Drucke (Play!-Stempel) gibt es auch als Holo, selbst wenn der Katalog für die
+ *  Karte nur Normal / Reverse Holo kennt (Brians Firebreather me02-089, Tool Scrapper sv10.5w-085). */
+function withPrizePackHolo(options: string[], prizePack: boolean): string[] {
+  return prizePack && options.length && !options.includes("Holo") ? [...options, "Holo"] : options;
+}
 
 export default function ScanPage() {
   const { t, lang } = useI18n();
@@ -486,7 +492,7 @@ export default function ScanPage() {
     setLiveState(next);
     return next;
   };
-  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | null;
+  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | "empty" | null;
   const [liveChip, setLiveChip] = useState<LiveChip>(null);
   // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
   // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
@@ -727,7 +733,7 @@ export default function ScanPage() {
       const s = scores.get(i.key) ?? null;
       const name = String(i.cand.suggested?.kartenname ?? i.cand.match?.name ?? "");
       const kind = judgeFoil(s, isBasicEnergy(name), bar);
-      const opts = i.cand.foil_options ?? [];
+      const opts = withPrizePackHolo(i.cand.foil_options ?? [], !!i.cand.stamp?.sure);
       if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind, bar: +bar.toFixed(3),
         art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
@@ -786,7 +792,7 @@ export default function ScanPage() {
       while (!stop) {
         // 1. auf ein ruhiges, scharfes Bild warten — Sensor (falls da) und Kamerabild;
         //    nach ein paar Sekunden genügt ein ruhiges, zur Not irgendein Bild
-        const t0 = performance.now();
+        let t0 = performance.now();
         let v: HTMLVideoElement | null = null;
         while (!stop) {
           v = videoRef.current;
@@ -796,6 +802,8 @@ export default function ScanPage() {
           if (small.width !== w || small.height !== h) { small.width = w; small.height = h; }
           sctx.drawImage(v, 0, 0, w, h);
           const q = judge.judge(toGray(sctx.getImageData(0, 0, w, h).data, w, h), w, h, performance.now());
+          // nichts im Bild (Linse verdeckt, Handy liegt): nichts senden, die Wartezeit beginnt neu
+          if (q.s < MIN_VIEW_SHARP) { showChip("empty"); t0 = performance.now(); await sleep(250); continue; }
           const sensor = motion.still();
           const calm = q.still && sensor !== false;
           const waited = performance.now() - t0;
@@ -860,14 +868,21 @@ export default function ScanPage() {
               ? back.reduce((a, [x, y], i) => a + Math.hypot(x - focus.quad[i][0], (y - focus.quad[i][1]) * (16 / 9)), 0) / 4 : 0;
             const toFocus = mulM(sendInfo.cum, sinceLast!);
             const undo = fit ? invM(fit.m) : null, unTo = invM(toFocus);
-            const usable = !!fit && !!undo && !!unTo && fit.residual < 0.06 && scale > 0.85 && scale < 1.18
-              && Math.abs(Math.atan2(fit.m[1][0] * (16 / 9), fit.m[0][0])) < 0.14 && shift > 0.004 && shift < 0.3;
+            const angle = fit ? Math.atan2(fit.m[1][0] * (16 / 9), fit.m[0][0]) : 0;
+            // warum die Rahmen nicht nachgerückt werden (null = sie werden es)
+            let why: string | null = back?.length !== 4 ? "no-outline" : !fit || !undo || !unTo ? "no-fit"
+              : fit.residual >= 0.06 ? "residual" : scale <= 0.85 || scale >= 1.18 ? "scale"
+              : Math.abs(angle) >= 0.14 ? "angle" : shift <= 0.004 ? "aligned" : shift >= 0.3 ? "jump" : null;
+            const usable = why === null;
             const framesAtSend = focusFrames;
             if (c && res.data.engine === "local") {
               let moved = false;
               commitLive((st) => {
                 const next = addFocus(st, focus.key, c);
-                if (!usable || !st.view || st.frames !== framesAtSend) return next;
+                if (!usable || !st.view || st.frames !== framesAtSend) {
+                  if (usable) why = !st.view ? "no-view" : "newer-frame";
+                  return next;
+                }
                 moved = true;
                 return reanchor(next, mulM(st.view, mulM(unTo!, undo!)));
               });
@@ -875,6 +890,10 @@ export default function ScanPage() {
                 sendCumRef.current.set(liveRef.current.frames, sendInfo);   // die Rahmen gehen jetzt von diesem Bild aus
                 dlog("live.focus.fix", { n: frameNo, key: focus.key, scale: Math.round(scale * 1000) / 1000,
                   shift: Math.round(shift * 1000) / 1000, residual: Math.round(fit!.residual * 1000) / 1000 });
+              } else {
+                const r = (x: number) => Math.round(x * 1000) / 1000;
+                dlog("live.focus.nofix", { n: frameNo, key: focus.key, why, ...(fit ? { scale: r(scale), shift: r(shift),
+                  angle: r(angle), residual: r(fit.residual) } : {}) });
               }
             }
             liveInFlightRef.current = false;
@@ -918,7 +937,7 @@ export default function ScanPage() {
             n: frameNo, ms: Math.round(performance.now() - tSend), engine: res.data.engine, hint: res.data.hinweis_art,
             cards: res.data.candidates.length, map: res.data.live_map ?? null,
             found: res.data.candidates.map((c) => [c.position, c.match?.tcgdex_card_id ?? null,
-              c.needs_choice ? (c.print_choice ? "print" : "pick") : "sure", Math.round((c.confidence ?? 0) * 100)]),
+              c.print_choice ? "print" : c.needs_choice ? "pick" : "sure", Math.round((c.confidence ?? 0) * 100)]),
           });
           if (res.data.engine !== "local") {
             liveInFlightRef.current = false;
@@ -1336,7 +1355,7 @@ export default function ScanPage() {
       });
       dlog("scan.result", { ms: Math.round(performance.now() - tScan), engine: res.data.engine, hint: res.data.hinweis_art,
         cards: res.data.candidates.length,
-        found: res.data.candidates.map((c) => [c.position, c.match?.tcgdex_card_id ?? null, c.needs_choice ? "pick" : "sure"]) });
+        found: res.data.candidates.map((c) => [c.position, c.match?.tcgdex_card_id ?? null, c.print_choice ? "print" : c.needs_choice ? "pick" : "sure"]) });
       const list = res.data.candidates.map((c) => toEditableRef.current(c));
       const art = res.data.hinweis_art;
       if (art) {
@@ -1975,7 +1994,7 @@ export default function ScanPage() {
                     const text = finishWanted ? t.scan_live_finishing
                       : liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
                       : same ? t.scan_live_same
-                      : liveChip === "hold" ? t.scan_live_hold
+                      : liveChip === "hold" ? t.scan_live_hold : liveChip === "empty" ? t.scan_live_empty
                       : liveChip === "checking" ? t.scan_live_checking : liveChip === "reading" ? t.scan_live_reading
                       : !total ? t.scan_live_looking : null;
                     return (
@@ -2296,7 +2315,7 @@ export default function ScanPage() {
                 c.saved ? "bg-green-500" : "bg-pokemon-yellow"}`} data-testid="scan-card-no">{photoNo}</span>
             );
             const uncertain = c.uncertain_fields.length > 0;
-            const foilOptions = c.foil_options.length ? c.foil_options : (enums?.folierung ?? ["Normal"]);
+            const foilOptions = c.foil_options.length ? withPrizePackHolo(c.foil_options, c.prizePack) : (enums?.folierung ?? ["Normal"]);
             const pokedexNr = (s.pokedex_nr as number) ?? c.match?.dex_id ?? null;
             const catalogImg = matchImage(c);
             const baseImgLang = imageLangOf(c.match?.image_url);

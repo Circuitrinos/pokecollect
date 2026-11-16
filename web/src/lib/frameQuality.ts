@@ -21,6 +21,10 @@ export function sharpness(g: Float32Array, w: number, h: number): number {
   return sq / n - mean * mean;
 }
 
+/** Darunter ist nichts im Bild (Linse verdeckt, Handy liegt): Brians Protokolle — Bilder mit Karten
+ *  hatten 1079 und mehr, leere Bilder 0–129 (40 s lang 35 leere Bilder an den Bild-Abgleich). */
+export const MIN_VIEW_SHARP = 300;
+
 /** Bewegung zwischen zwei Graubildern gleicher Größe: mittlere Helligkeitsänderung (0–255). */
 export function frameDiff(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length || !a.length) return Infinity;
