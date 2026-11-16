@@ -54,7 +54,7 @@ type EditableCandidate = ScanCandidate & {
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — angehakt (von Hand oder vom Stempel-Fund)
   prizePackSet?: boolean;   // von Hand gesetzt: ein neuer Stempel-Befund ändert es nicht mehr
-  foil?: Pick<FoilCheck, "hint" | "score"> | null;   // Reverse holo? (undefined = noch nicht geprüft)
+  foil?: Pick<FoilCheck, "hint" | "score" | "holo"> | null;   // Reverse holo? / Holo? (undefined = noch nicht geprüft)
   liveFoil?: LiveFoil | null;                         // Live-Scan: so hat die Karte beim Neigen geglänzt
   firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
   condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
@@ -1820,8 +1820,8 @@ export default function ScanPage() {
     window.scrollTo({ top: 0 });
   };
 
-  // Reverse holo? — mit einem Folien-Modell im Bild-Abgleich wird jede normale Karte,
-  // die es als Reverse Holo gibt, einmal geprüft: im Hintergrund, eine nach der anderen.
+  // Reverse holo? / Holo? — mit einem Folien-Modell im Bild-Abgleich wird jede normale Karte,
+  // die es als Reverse Holo oder Holo gibt, einmal geprüft: im Hintergrund, eine nach der anderen.
   const foilModelRef = useRef<boolean | null>(null);     // false = kein Modell → nicht mehr fragen
   const foilKeyRef = useRef<string | null>(null);         // läuft gerade
   const [foilTick, setFoilTick] = useState(0);
@@ -1831,7 +1831,7 @@ export default function ScanPage() {
       const f = String((c.suggested as Record<string, unknown>)?.folierung ?? "") || "Normal";
       // Basis-Energien: das Bild ist die ganze Karte — Holo oder nicht, kein Reverse Holo zu erkennen
       return c.foil === undefined && !c.saved && !c.variantOf && !!c.cropUrl && !!c.match?.tcgdex_card_id
-        && f === "Normal" && c.match?.variants_reverse !== false
+        && f === "Normal" && (c.match?.variants_reverse !== false || withPrizePackHolo(c.foil_options, c.prizePack).includes("Holo"))
         && !isBasicEnergy(String((c.suggested as Record<string, unknown>)?.kartenname ?? c.match?.name ?? ""));
     });
     if (!next) return;
@@ -1842,7 +1842,8 @@ export default function ScanPage() {
         const r = await scanApi.foil(crop, next.match?.tcgdex_card_id as string);
         if (!r.data.model) { foilModelRef.current = false; return; }
         foilModelRef.current = true;
-        patchCand(next.key, (cc) => ({ ...cc, foil: r.data.aligned ? { hint: !!r.data.hint, score: r.data.score ?? 0 } : null }));
+        patchCand(next.key, (cc) => ({ ...cc, foil: r.data.aligned
+          ? { hint: !!r.data.hint, score: r.data.score ?? 0, holo: !!r.data.holo } : null }));
       } catch {
         patchCand(next.key, (cc) => ({ ...cc, foil: null }));
       } finally {
@@ -2316,6 +2317,9 @@ export default function ScanPage() {
             );
             const uncertain = c.uncertain_fields.length > 0;
             const foilOptions = c.foil_options.length ? withPrizePackHolo(c.foil_options, c.prizePack) : (enums?.folierung ?? ["Normal"]);
+            // Folien-Hinweise nur, solange keine Folierung gewählt ist (Normal ist die Vorgabe)
+            const foilOpen = ["", "Normal"].includes(String(s.folierung ?? ""));
+            const foilHolo = !!c.foil?.holo && foilOpen && foilOptions.includes("Holo");
             const pokedexNr = (s.pokedex_nr as number) ?? c.match?.dex_id ?? null;
             const catalogImg = matchImage(c);
             const baseImgLang = imageLangOf(c.match?.image_url);
@@ -2568,7 +2572,16 @@ export default function ScanPage() {
                         ✨ {t.scan_live_foil_hint(c.liveFoil.kind)} <span className="text-purple-300/80">— {t.scan_foil_set}</span>
                       </button>
                     )}
-                    {c.foil?.hint && String(s.folierung ?? "") !== "Reverse Holo" && (
+                    {foilHolo && (
+                      // das Bild glänzt deutlich mehr als der Rahmen darum — antippen setzt Holo
+                      <button type="button" data-testid="scan-foil-holo-hint"
+                        onClick={() => { updateField(idx, "folierung", "Holo"); }}
+                        title={t.scan_foil_holo_title}
+                        className="w-full rounded border border-purple-500/60 bg-purple-950/40 px-2 py-1 text-left text-xs text-purple-200 hover:bg-purple-900/40">
+                        ✨ {t.scan_foil_holo_hint} <span className="text-purple-300/80">— {t.scan_foil_set}</span>
+                      </button>
+                    )}
+                    {c.foil?.hint && !foilHolo && foilOpen && (c.foil_options.length === 0 || foilOptions.includes("Reverse Holo")) && (
                       // Folien-Modell: der Rahmen glänzt wie bei einer Reverse Holo — antippen setzt es
                       <button type="button" data-testid="scan-foil-hint"
                         onClick={() => { updateField(idx, "folierung", "Reverse Holo"); }}

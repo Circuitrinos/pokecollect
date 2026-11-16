@@ -81,9 +81,13 @@ def load(path: Path) -> list[dict]:
 
 try:   # the scan computes the same numbers (app/foil.py); standalone copy otherwise
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app.foil import FEATURES, feature_values  # noqa: E402
+    from app.foil import FEATURES, HOLO_GAP, feature_values, holo_look  # noqa: E402
 except ImportError:
     FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr", "box_corr"]
+    HOLO_GAP = 8.0
+
+    def holo_look(art: float, frame: float) -> bool:
+        return frame <= 22.0 and art <= 45.0 and art - frame >= HOLO_GAP
 
     def feature_values(art: float, frame: float, code: float | None = None, box: float | None = None) -> dict[str, float]:
         a, f = max(float(art), 0.1), max(float(frame), 0.1)
@@ -394,6 +398,18 @@ def main() -> None:
               f"(medians {np.median(pa):.2f} vs {np.median(pb):.2f})")
         if (a, b, key) == ("Reverse Holo", "Normal", "ratio"):
             verdict_rule = bacc
+    # the scan's "Holo?" (app/foil.py holo_look): the art shines clearly more than the frame
+    calm = [r for r in cat if r["frame"] <= 22 and r["art"] <= 45]          # no glare over the whole card
+    gap = {f: np.array([r["art"] - r["frame"] for r in calm if r["foiling"] == f]) for f in CLASSES}
+    if len(gap["Holo"]) >= 5 and len(gap["Normal"]) >= 5:
+        n_all = {f: sum(r["foiling"] == f for r in cat) for f in CLASSES}
+        asks = {f: sum(holo_look(r["art"], r["frame"]) for r in cat if r["foiling"] == f) for f in CLASSES}
+        print(f"   {'Holo':>12} vs {'Normal':<7} by art−frame  AUC {auc(gap['Holo'], gap['Normal']):.2f}   "
+              f"(no glare; medians {np.median(gap['Holo']):.1f} vs {np.median(gap['Normal']):.1f}, "
+              f"Normal 95% below {np.quantile(gap['Normal'], 0.95):.1f})")
+        print(f"   scan asks \"Holo?\" (art−frame ≥ {HOLO_GAP:g}, no glare): "
+              + ", ".join(f"{f} {asks[f]}/{n_all[f]}" for f in CLASSES if n_all[f])
+              + "  — Holo counts every holo, also full-art cards where the frame shines too")
     # set code corner: lower = foil. "corner" = lowest window anywhere there (foil texture,
     # but also halos), "box" = the set code box itself (inverted on reverse holos of newer sets)
     for key, label in (("code", "corner"), ("boxc", "set code box")):

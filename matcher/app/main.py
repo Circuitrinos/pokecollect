@@ -723,7 +723,8 @@ async def foil_check(file: UploadFile = File(...), ref: UploadFile = File(...)) 
     """
     Reverse holo? A straightened card photo against the card's plain catalog
     image (app/foil.py). Without a model (tools/foil_eval.py --save, then
-    PUT /foil/model) only {"model": false}.
+    PUT /foil/model) only {"model": false}. "holo": the art shines and the
+    frame doesn't (foil.holo_look) — the scan asks "Holo?" where a card has one.
     """
     photo, reference = await file.read(), await ref.read()
     if not photo or not reference or len(photo) > MAX_BYTES or len(reference) > MAX_BYTES:
@@ -742,7 +743,7 @@ def _foil_request(photo: bytes, reference: bytes) -> dict:
         m = foil.measure(img, ref)
     if m is None:
         return {"model": True, "aligned": False}
-    return {"model": True, "aligned": True, **m,
+    return {"model": True, "aligned": True, **m, "holo": foil.holo_look(m["art"], m["frame"]),
             **foil.judge(model, m["art"], m["frame"], m.get("code_corr"), m.get("box_corr"))}
 
 

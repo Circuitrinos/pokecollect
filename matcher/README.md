@@ -334,7 +334,12 @@ the majority), in `labels_to_check.csv` and, with
 the asks were right, `--precision`). Uploaded in the app (Admin → Reverse holo
 detection, → `PUT /foil/model`), the scan review checks each plain card whose
 print exists as reverse holo (`POST /foil`: crop + catalog image → score, hint)
-and offers "Reverse holo? — tap to set". On 382 Normal / 85 Reverse Holo scans
+and offers "Reverse holo? — tap to set"; where the card exists as Holo (also a
+Prize Pack print) and the art shines clearly more than the frame around it
+(`holo_look`: art − frame ≥ 8, frame ≤ 22, art ≤ 45 — brighter is glare over the
+whole card), "Holo?" instead. Six Ethan's Adventure (Holo, Normal, Reverse Holo,
+each sleeved and not; 36 stills per finish): Normal and Reverse Holo never
+asked, Holo in 15 of 36; `foil_eval.py` prints the same count for your scans. On 382 Normal / 85 Reverse Holo scans
 with the set code box: 98 % balanced accuracy on unseen cards; at 9 in 10 asks
 right it asks about 98 % of the reverse holos (the box alone: AUC 0.99).
 

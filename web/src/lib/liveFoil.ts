@@ -29,7 +29,8 @@ export const FOIL_LEAD = 1.7; // … und so viel stärker als der andere Bereich
 export const FOIL_REL = 1.6;
 // Brians Testkarten mit bekannter Folie (15.11., Umrisse exakt aus dem Video nachgerechnet):
 // Firebreather und Tool Scrapper (Holo) 0.04 wie die vier normalen Karten daneben (0.03–0.11),
-// Rayquaza EX (ganze Karte glitzernd, bis 15° geneigt) 0.08–0.17. Das Maß trennt Folie nicht —
+// Rayquaza EX (ganze Karte glitzernd, bis 15° geneigt) 0.08–0.17. Sechsmal Ethan's Adventure
+// (16.11.): Bild-Wert Normal 0.10/0.11, Holo 0.05/0.08, Reverse Holo 0.07/0.08. Das Maß trennt Folie nicht —
 // die Hinweise bleiben aus, gemessen und protokolliert („live.foil.final") wird weiter.
 export const LIVE_FOIL_HINTS = false;
 const REL_MIN_CARDS = 6;

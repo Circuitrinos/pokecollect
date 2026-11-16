@@ -33,6 +33,14 @@ W, H = 630, 880
 # Art box of a modern card (fractions of the card) — rough, era-dependent
 ART = (0.08, 0.11, 0.92, 0.55)
 FEATURES = ["log_art", "log_frame", "log_frame_art", "code_corr", "box_corr"]   # all a model may use
+# Holo: the art shines clearly more than the frame around it. Brian's six Ethan's Adventure
+# (sv10-165: Holo Prize Pack, Normal, Reverse Holo — each sleeved and not; 36 stills per
+# finish at the scan's crop size, 270 and 370 px wide): art − frame for Normal at most 6.7,
+# Reverse Holo below 0 (its frame shines), Holo 8 or more in 15 of 36 (the others washed out
+# or caught at a dull angle). Too bright a frame is glare over the whole card: no judgement.
+HOLO_GAP = 8.0
+HOLO_MAX_FRAME = 22.0
+HOLO_MAX_ART = 45.0
 # set code box: bottom left (regulation mark, set code, number) — searched with
 # windows about the size of the box, where the catalog image has print
 CODE_BAND = (0.02, 0.88, 0.48, 0.99)          # x0, y0, x1, y1 (card fractions)
@@ -232,6 +240,11 @@ def measure(photo: np.ndarray, ref: np.ndarray) -> dict | None:
     art, frame = regions(difference(match_light(warped, ref), ref))
     return {"art": round(art, 2), "frame": round(frame, 2), "code_corr": code_corr(warped, ref),
             "box_corr": box_corr(warped, ref)[0], "inliers": inl}
+
+
+def holo_look(art: float, frame: float) -> bool:
+    """The art shines clearly more than the frame around it, without glare over the whole card."""
+    return frame <= HOLO_MAX_FRAME and art <= HOLO_MAX_ART and art - frame >= HOLO_GAP
 
 
 def feature_values(art: float, frame: float, code: float | None = None, box: float | None = None) -> dict[str, float]:

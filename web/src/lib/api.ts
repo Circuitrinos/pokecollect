@@ -678,7 +678,8 @@ export interface FoilModel {
   trained_on?: Record<string, number>; saved_at?: string | null; features?: string[];
 }
 // Ergebnis der Folien-Prüfung eines Scan-Zuschnitts
-export type FoilCheck = { model: boolean; reference?: boolean; aligned?: boolean; hint?: boolean; score?: number };
+export type FoilCheck = { model: boolean; reference?: boolean; aligned?: boolean; hint?: boolean; score?: number;
+  holo?: boolean };   // holo: das Bild glänzt deutlich mehr als der Rahmen
 export interface StampLearnResult { samples: number; marked: number; guessed: number; built_at: string }
 
 export type StampOverview = { counts: { photos: number; marked: number; unmarked: number }; items: StampItem[] };

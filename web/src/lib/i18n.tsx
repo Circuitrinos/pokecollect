@@ -524,6 +524,8 @@ const DE = {
   scan_photo_title: "Dein Foto",
   scan_img_photo: "Foto",
   scan_foil_hint: "Reverse Holo?",
+  scan_foil_holo_hint: "Holo?",
+  scan_foil_holo_title: "Das Bild glänzt deutlich mehr als der Rahmen darum, wie bei einer Holo — bitte auf der Karte nachsehen",
   scan_foil_set: "antippen zum Setzen",
   scan_live_foil_hint: (kind: string): string => `Live: glänzte beim Neigen wie ${kind}`,
   scan_live_foil_title: (art: string, frame: string): string =>
@@ -1786,6 +1788,8 @@ const EN: typeof DE = {
   scan_photo_title: "Your photo",
   scan_img_photo: "Photo",
   scan_foil_hint: "Reverse holo?",
+  scan_foil_holo_hint: "Holo?",
+  scan_foil_holo_title: "The art shines clearly more than the frame around it, like a holo — check the card",
   scan_foil_set: "tap to set",
   scan_live_foil_hint: (kind: string): string => `Live: shone like ${kind} when tilted`,
   scan_live_foil_title: (art: string, frame: string): string =>
