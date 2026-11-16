@@ -33,12 +33,12 @@ import {
   FoilWatch, LIVE_FOIL_HINTS, foilBar, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
-import { type FlashResult } from "@/lib/flashCheck";
-import { captureFlash } from "@/lib/flashCapture";
+import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
+import { FlashMonitor, type FlashCard } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
-  skipPockets, skipSquares, verdict, viewQuad, type Level, type LiveState, type Verdict,
+  skipPockets, skipSquares, verdict, viewQuad, type Level, type LiveState, type LiveTrack, type Verdict,
 } from "@/lib/liveScan";
 import { safeReturnPath } from "@/lib/navRegistry";
 import { useI18n } from "@/lib/i18n";
@@ -58,6 +58,7 @@ type EditableCandidate = ScanCandidate & {
   prizePackSet?: boolean;   // von Hand gesetzt: ein neuer Stempel-Befund ändert es nicht mehr
   foil?: Pick<FoilCheck, "hint" | "score" | "holo"> | null;   // Reverse holo? / Holo? (undefined = noch nicht geprüft)
   liveFoil?: LiveFoil | null;                         // Live-Scan: so hat die Karte beim Neigen geglänzt
+  flash?: { kind: FlashKind; share: number; n: number } | null;   // Live-Scan mit Blitz-Test: so hat sie das Licht zurückgeworfen
   firstEdition: boolean;    // 1st-Edition-Stempel — vom Nutzer angehakt
   condition: string;        // Zustand (leer = nicht angegeben); bleibt beim Neu-Auflösen
   copies: number;           // so viele gleiche Exemplare anlegen (alle mit demselben Bild)
@@ -158,6 +159,15 @@ const conflictDetail = (e: unknown): string | null => {
  *  Karte nur Normal / Reverse Holo kennt (Brians Firebreather me02-089, Tool Scrapper sv10.5w-085). */
 function withPrizePackHolo(options: string[], prizePack: boolean): string[] {
   return prizePack && options.length && !options.includes("Holo") ? [...options, "Holo"] : options;
+}
+
+/** Blitz-Test: braucht diese Karte eine Messung? Erkannt, mehr als eine mögliche Folierung (laut
+ *  Katalog, Prize Pack auch Holo), keine Basis-Energie (das Bild ist die ganze Karte). */
+function flashNeed(t: LiveTrack): boolean {
+  const v = verdict(t);
+  if (v.level !== "green" || !v.cand) return false;
+  if (isBasicEnergy(String(v.cand.suggested?.kartenname ?? v.cand.match?.name ?? ""))) return false;
+  return withPrizePackHolo(v.cand.foil_options ?? [], !!v.cand.stamp?.sure).length !== 1;
 }
 
 export default function ScanPage() {
@@ -499,7 +509,7 @@ export default function ScanPage() {
     setLiveState(next);
     return next;
   };
-  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | "empty" | "flash" | null;
+  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | "empty" | null;
   const [liveChip, setLiveChip] = useState<LiveChip>(null);
   // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
   // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
@@ -530,8 +540,9 @@ export default function ScanPage() {
     try { localStorage.setItem(LIVE_KEY, on ? "1" : "0"); } catch { /* privat */ }
     if (on) void motion.ask();     // iOS gibt den Bewegungssensor nur nach einem Tipp frei
   };
-  // Blitz-Test (lib/flashCheck): vor der Prüfung blinkt die Lampe, je Karte wird gemessen und
-  // protokolliert, wie Bild und Rahmen aufhellen — für die Holo-Erkennung, noch ohne Hinweise
+  // Blitz-Test (lib/flashCheck, lib/flashCapture): sind alle Karten erkannt, blinkt die Lampe;
+  // jede Karte bleibt blau, bis ihre Folierung gemessen ist (Normal, Holo, Reverse Holo) — erst
+  // dann wird sie grün und der Live-Scan schließt ab. Das Handy dabei über die Karten führen.
   const [torchOk, setTorchOk] = useState(false);
   const [flashTest, setFlashTest] = useState(false);
   useEffect(() => {
@@ -542,10 +553,13 @@ export default function ScanPage() {
     setFlashTest(on);
     try { localStorage.setItem(FLASH_KEY, on ? "1" : "0"); } catch { /* privat */ }
   };
-  const flashTestRef = useRef(false);
-  flashTestRef.current = flashTest && torchOk;
-  const flashRunningRef = useRef(false);
-  const flashResultRef = useRef<Map<string, FlashResult> | null>(null);
+  const flashOn = flashTest && torchOk;
+  const flashOnRef = useRef(false);
+  flashOnRef.current = flashOn;
+  const flashRef = useRef<FlashMonitor | null>(null);
+  const [flashView, setFlashView] = useState<Record<string, { kind: FlashKind | null; n: number }>>({});
+  const [flashBlinking, setFlashBlinking] = useState(false);
+  const [flashAngles, setFlashAngles] = useState<Record<string, number | null>>({});   // je offene Karte: Blickwinkel jetzt
   // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
   const liveGrid = mode === "multi" ? multiGrid : mode === "binder" ? layout : "";
   useEffect(() => {
@@ -554,6 +568,8 @@ export default function ScanPage() {
     setLiveState(liveRef.current);
     setLivePick(null);
     setLiveChip(null);
+    flashRef.current?.tally.clear();
+    setFlashView({});
     finishWantedRef.current = false;
     setFinishWanted(false);
     trackerRef.current.reset();
@@ -720,51 +736,16 @@ export default function ScanPage() {
   }, [liveOn]);
   useEffect(() => { lastDoneRef.current = null; }, [mode, liveGrid]);
   // Alle sicher → von selbst weiter, außer es ist genau das, was gerade schon abgeschlossen wurde
+  // (mit Blitz-Test: erst, wenn jede Karte auch ihre Folierung hat)
   const autoFinish = (st: LiveState): boolean => {
     if (!allSure(st, mode)) return false;
+    if (flashOnRef.current && st.tracks.some((t) => flashNeed(t) && !flashRef.current?.tally.kind(t.key))) return false;
     if (signature(st) === lastDoneRef.current) { dlog("live.same-as-last"); return false; }
     finishLiveRef.current();
     return true;
   };
   const autoFinishRef = useRef(autoFinish);
   autoFinishRef.current = autoFinish;
-
-  /** Lampe ein paar Mal an und aus; je Karte (Umrisse von jetzt, das Handy wird ruhig gehalten)
-   *  vergleichen, wie Bild und Rahmen aufhellen (lib/flashCapture, lib/flashCheck). */
-  const runFlashTest = async (st: LiveState): Promise<Map<string, FlashResult>> => {
-    const res = new Map<string, FlashResult>();
-    const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
-    const tr = trackerRef.current;
-    const last = sendCumRef.current.get(st.frames);
-    const back = last && last.epoch === tr.epoch ? invM(last.cum) : null;
-    if (!v || !v.videoWidth || !track || !back) {
-      dlog("live.flash.skip", { why: !back ? "not-tracked" : "no-video" });
-      return res;
-    }
-    const toNow = mulM(tr.cum, back);
-    const quads = st.tracks.map((t) => applyM(toNow, viewQuad(st, t)));
-    const torch = (on: boolean) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
-      .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); });
-    flashRunningRef.current = true;
-    setLiveChip("flash");
-    try {
-      // die Bewegungsverfolgung läuft weiter (sie vergleicht Ausschnitte ohne ihre Helligkeit)
-      const now = () => {
-        const b = sendCumRef.current.get(st.frames);
-        if (!b || b.epoch !== tr.epoch) return null;
-        const i = invM(b.cum);
-        return i ? st.tracks.map((t) => applyM(mulM(tr.cum, i), viewQuad(st, t))) : null;
-      };
-      const run = await captureFlash(v, quads, torch, now);
-      st.tracks.forEach((t, i) => { const r = run.results[i]; if (r) res.set(t.key, r); });
-      dlog("live.flash", { ms: run.ms, frames: run.frames, fps: run.fps, switches: run.switches, cards: st.tracks.length,
-        measured: res.size });
-    } finally {
-      flashRunningRef.current = false;
-      setLiveChip(null);
-    }
-    return res;
-  };
 
   const finishLive = () => {
     const st = liveRef.current;
@@ -778,22 +759,14 @@ export default function ScanPage() {
     }
     finishWantedRef.current = false;
     setFinishWanted(false);
-    // Blitz-Test zuerst (ein paar Sekunden, das Handy über die Karten führen), dann geht es mit seinem Ergebnis weiter
-    if (flashTestRef.current && !flashResultRef.current) {
-      if (flashRunningRef.current) return;
-      void runFlashTest(st).then((r) => {
-        if (!videoRef.current || !liveRef.current.tracks.length) return;    // inzwischen abgebrochen
-        flashResultRef.current = r;
-        finishLiveRef.current();
-      });
-      return;
-    }
-    const flash = flashResultRef.current;
-    flashResultRef.current = null;
     const { frame, items } = finish(st, Array.from(liveFramesRef.current.keys()));
     const photo = frame != null ? liveFramesRef.current.get(frame) : null;
     dlog("live.finish.review", { photoFrame: frame, hasPhoto: !!photo, items: items.length });
     if (!photo || !items.length) return;
+    // Blitz-Test: was je Karte gemessen wurde (die Zählung beginnt mit der nächsten Seite neu)
+    const flash = new Map(items.map((i) => [i.key, flashRef.current?.tally.result(i.key) ?? null] as const));
+    flashRef.current?.tally.clear();
+    setFlashView({});
     lastDoneRef.current = signature(st);
     liveFramesRef.current = new Map();
     commitLive(() => emptyLive());
@@ -809,9 +782,9 @@ export default function ScanPage() {
       if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind, bar: +bar.toFixed(3),
         art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
-      const fl = flash?.get(i.key);
-      if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, share: +fl.share.toFixed(3), n: fl.n,
-        all: fl.all, deg: fl.deg, outside: fl.outside, options: opts });
+      const fl = flash.get(i.key);
+      if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: fl.kind,
+        share: +fl.share.toFixed(3), n: fl.n, all: fl.all, deg: fl.deg, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
@@ -822,12 +795,55 @@ export default function ScanPage() {
     openReviewRef.current(photo, items.map((i) => {
       const e = toEditableRef.current(i.cand, i.chosenId);
       const f = foils.get(i.key);
-      return f ? { ...e, liveFoil: f } : e;
+      const fl = flash.get(i.key);
+      const lit = fl?.kind ? { kind: fl.kind, share: fl.share, n: fl.n } : null;
+      return { ...e, ...(f ? { liveFoil: f } : {}), ...(lit ? { flash: lit } : {}) };
     }));
     foilWatchRef.current.clear();
   };
   const finishLiveRef = useRef(finishLive);
   finishLiveRef.current = finishLive;
+
+  // Blitz-Test: solange der Live-Scan läuft, die Lampe schalten und messen (lib/flashCapture)
+  useEffect(() => {
+    if (!liveOn || !flashOn) return;
+    const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
+    if (!v || !track) return;
+    const torch = (on: boolean) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+      .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); });
+    // offen: erkannte Karten, die noch keine Folierung haben — erst, wenn alle Karten erkannt sind
+    const cards = (): FlashCard[] | null => {
+      const st = liveRef.current;
+      if (!st.tracks.length || st.tracks.some((t) => verdict(t).level !== "green") || livePickRef.current || busyRef.current) return null;
+      const tr = trackerRef.current;
+      const last = sendCumRef.current.get(st.frames);
+      const back = last && last.epoch === tr.epoch ? invM(last.cum) : null;
+      if (!back) return null;                         // Spur verloren: erst wieder einordnen lassen
+      const toNow = mulM(tr.cum, back);
+      return st.tracks.filter((t) => flashNeed(t) && !mon.tally.kind(t.key))
+        .map((t) => ({ key: t.key, quad: applyM(toNow, viewQuad(st, t)) }));
+    };
+    const onMeasure = () => {
+      const st = liveRef.current;
+      mon.tally.forget(new Set(st.tracks.map((t) => t.key)));
+      setFlashView(Object.fromEntries(st.tracks.map((t) => [t.key, { kind: mon.tally.kind(t.key), n: mon.tally.n(t.key) }])));
+      if (!liveInFlightRef.current) autoFinishRef.current(st);
+    };
+    const mon = new FlashMonitor(v, torch, cards, onMeasure, (on) => {
+      setFlashBlinking(on);
+      if (!on) setFlashAngles({});
+      dlog("live.flash.blink", { on });
+    }, setFlashAngles);
+    flashRef.current = mon;
+    mon.start();
+    return () => {
+      void mon.stop();
+      if (flashRef.current === mon) flashRef.current = null;
+      setFlashBlinking(false);
+      setFlashView({});
+      setFlashAngles({});
+    };
+  }, [liveOn, flashOn]);
 
   // Kandidat von Hand: die Karte gilt dann als sicher
   const pickLive = async (key: string, alt: ScanAlternative, v: Verdict) => {
@@ -871,7 +887,8 @@ export default function ScanPage() {
         let v: HTMLVideoElement | null = null;
         while (!stop) {
           v = videoRef.current;
-          if (!v || !v.videoWidth || busyRef.current || livePickRef.current || flashRunningRef.current) { await sleep(250); continue; }
+          // blinkt die Lampe (Blitz-Test), wird nichts geschickt — erkannt sind dann ohnehin alle
+          if (!v || !v.videoWidth || busyRef.current || livePickRef.current || flashRef.current?.blinking) { await sleep(250); continue; }
           const k = 240 / Math.max(v.videoWidth, v.videoHeight);
           const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
           if (small.width !== w || small.height !== h) { small.width = w; small.height = h; }
@@ -2061,13 +2078,14 @@ export default function ScanPage() {
                   )}
                   {vidSize && liveOn && (
                     <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} foils={liveFoils} onTap={(k) => setLivePick(k)}
+                      flash={flashOn ? flashView : null} flashAngles={flashAngles} flashBlinking={flashBlinking}
                       gRef={overlayGRef} />
                   )}
                   {vidSize && liveOn && !busy && (() => {
                     const n = counts(liveState);
                     const total = n.green + n.yellow + n.red;
                     const same = allSure(liveState, mode) && signature(liveState) === lastDoneRef.current;
-                    const text = liveChip === "flash" ? t.scan_live_flash : finishWanted ? t.scan_live_finishing
+                    const text = flashBlinking ? t.scan_live_flash : finishWanted ? t.scan_live_finishing
                       : liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
                       : same ? t.scan_live_same
                       : liveChip === "hold" ? t.scan_live_hold : liveChip === "empty" ? t.scan_live_empty
@@ -2646,6 +2664,15 @@ export default function ScanPage() {
                         </select>
                       )}
                     </div>
+                    {c.flash && c.flash.kind !== "Normal" && foilOpen && (
+                      // Live-Scan mit Blitz-Test: so hat die Karte das Licht der Lampe zurückgeworfen
+                      <button type="button" data-testid="scan-flash-hint"
+                        onClick={() => { updateField(idx, "folierung", c.flash!.kind); }}
+                        title={t.scan_flash_hint_title(c.flash.share.toFixed(2), c.flash.n)}
+                        className="w-full rounded border border-blue-500/60 bg-blue-950/40 px-2 py-1 text-left text-xs text-blue-200 hover:bg-blue-900/40">
+                        ⚡ {t.scan_flash_hint(c.flash.kind)} <span className="text-blue-300/80">— {t.scan_foil_set}</span>
+                      </button>
+                    )}
                     {c.liveFoil && c.liveFoil.kind !== "Normal" && String(s.folierung ?? "") !== c.liveFoil.kind && (
                       // Live-Scan: beim Neigen glänzte das Bildfenster (Holo) bzw. der Rest (Reverse Holo)
                       <button type="button" data-testid="scan-live-foil-hint"
@@ -2851,6 +2878,7 @@ function TiltedGuide({ w, h, cols, rows, quad, found, steady, boxes }: {
  * wird unverzerrt in voller Breite gezeigt): Bereich außerhalb abgedunkelt,
  * bei der Mappe das Raster, und die gefundene Karte als grüne Kontur.
  */
+const FLASH_PENDING = { stroke: "#3b82f6", fill: "rgba(59,130,246,0.18)" };   // erkannt, Folierung noch offen
 const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
   green: { stroke: "#22c55e", fill: "rgba(34,197,94,0.18)" },
   yellow: { stroke: "#facc15", fill: "rgba(250,204,21,0.16)" },
@@ -2858,10 +2886,14 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 };
 
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
-function LiveOverlay({ w, h, state, foils, onTap, gRef }: {
+function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flashBlinking }: {
   w: number; h: number; state: LiveState; foils: Record<string, LiveFoil>; onTap: (key: string) => void;
+  flash?: Record<string, { kind: FlashKind | null; n: number }> | null;   // Blitz-Test an: je Karte gemessen / offen
+  flashAngles?: Record<string, number | null>;                           // … Blickwinkel jetzt (Anleitung auf der Karte)
+  flashBlinking?: boolean;
   gRef?: React.MutableRefObject<SVGGElement | null>;   // folgt der Kamera seit dem letzten geprüften Bild (lib/svgMove)
 }) {
+  const { t } = useI18n();
   const fs = Math.max(w, h) * 0.024;
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
@@ -2869,20 +2901,34 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef }: {
       <g ref={gRef} data-testid="scan-live-moving">
       {state.tracks.map((tr) => {
         const v = verdict(tr);
-        const c = LIVE_COLOURS[v.level];
+        // Blitz-Test: erkannt, Folierung noch offen → blau, bis sie gemessen ist
+        const fm = flash && flashNeed(tr) ? flash[tr.key] ?? { kind: null, n: 0 } : null;
+        const pending = !!fm && !fm.kind;
+        const c = pending ? FLASH_PENDING : LIVE_COLOURS[v.level];
         const pts = viewQuad(state, tr).map(([x, y]) => [x * w, y * h]);
         const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
         const foil = LIVE_FOIL_HINTS ? foils[tr.key]?.kind : undefined;
         const shine = foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
-        const name = (raw.length > 16 ? `${raw.slice(0, 15)}…` : raw) + shine;
+        const lit = fm?.kind ? ` · ${fm.kind === "Reverse Holo" ? "Rev." : fm.kind}` : pending ? " ⚡" : "";
+        // Anleitung mitten auf der Karte: was hier noch zu tun ist
+        const a = flashAngles?.[tr.key];
+        const todo = pending
+          ? [t.scan_flash_card_title, !flashBlinking ? t.scan_flash_card_wait
+            : a == null || a > FLASH_MAX_DEG ? t.scan_flash_card_move
+              : a < FLASH_MIN_DEG ? t.scan_flash_card_side : t.scan_flash_card_hold(fm.n, FLASH_MIN_N)]
+          : v.level !== "green" ? [t.scan_live_card_number, t.scan_live_card_tap] : null;
+        const cx = pts.reduce((s2, p) => s2 + p[0], 0) / 4, cy = pts.reduce((s2, p) => s2 + p[1], 0) / 4;
+        const tfs = Math.min(fs, Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * 0.085);   // längste Zeile passt auf die Karte
+        const lines = todo && tfs >= Math.max(w, h) * 0.011 ? todo : null;
+        const name = (raw.length > 16 ? `${raw.slice(0, 15)}…` : raw) + shine + lit;
         const label = [x0 + fs * 0.3, y0 + fs * 1.15];
         // unsicher: die Nummern-Ecke markieren — dort nah heran, dann liest der Abgleich die Nummer
         // wo die Nummer dieser Karte steht (ältere Sätze: unten rechts)
         const corner = v.level !== "green" ? cardPart(pts, NUMBER_CORNERS[numberSide(candidateIds(tr)) === "right" ? "right" : "left"]) : null;
         return (
-          <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why}
+          <g key={tr.key} data-testid="scan-live-card" data-level={v.level} data-why={v.why} data-flash={fm ? fm.kind ?? "open" : undefined}
             style={{ pointerEvents: "all", cursor: "pointer" }} onClick={() => onTap(tr.key)}>
             <polygon points={ptsAttr(pts)} data-pts={ptsAttr(pts)} fill={c.fill} stroke={c.stroke}
               strokeWidth={3} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
@@ -2892,8 +2938,18 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef }: {
             )}
             <text x={label[0]} y={label[1]} data-at={ptsAttr([label])} fontSize={fs} fill="#fff" stroke="rgba(0,0,0,0.75)"
               strokeWidth={fs * 0.16} paintOrder="stroke" fontWeight={600}>
-              {v.level === "green" ? "✓ " : ""}{name}
+              {v.level === "green" && !pending ? "✓ " : ""}{name}
             </text>
+            {lines?.map((line, i) => {
+              const at = [cx, cy + (i === 0 ? -0.55 : 0.75) * tfs];
+              return (
+                <text key={i} x={at[0]} y={at[1]} data-at={ptsAttr([at])} fontSize={i === 0 ? tfs : tfs * 0.85} textAnchor="middle"
+                  fill={i === 0 ? "#fff" : "#e5e7eb"} stroke="rgba(0,0,0,0.8)" strokeWidth={tfs * 0.18} paintOrder="stroke"
+                  fontWeight={i === 0 ? 700 : 500} data-testid={i === 0 ? "scan-live-card-todo" : undefined}>
+                  {line}
+                </text>
+              );
+            })}
           </g>
         );
       })}

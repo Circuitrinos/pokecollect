@@ -1,108 +1,169 @@
-// Blitz-Test im Browser: die Lampe schalten lassen, jede Karte in jedem Kamerabild ausschneiden
-// (Umrisse fest, das Handy wird ruhig gehalten) und je Umschalten vergleichen (lib/flashCheck).
+// Blitz-Test im Live-Scan: sind alle Karten erkannt, blinkt die Lampe, bis jede Karte ihre
+// Folierung hat. Jedes Kamerabild: die noch offenen Karten ausschneiden (Umrisse folgen der
+// Bewegungsverfolgung), an jedem Umschalten Bild vorher / nachher vergleichen (lib/flashCheck) —
+// aber nur für Karten, die gerade fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
-  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_SWITCHES, FLASH_W, atlasPatch, flashPairs, flashShare, flashTransform,
-  patchMean, summarize, viewAngle, type FlashResult,
+  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, atlasPatch, flashShare,
+  flashTransform, viewAngle,
 } from "./flashCheck";
 
-export type FlashRun = { results: (FlashResult | null)[]; frames: number; fps: number | null; switches: number; ms: number };
+/** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
+export type FlashCard = { key: string; quad: number[][] };
 
-const pause = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+type Shot = { n: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
+const ANGLE_MS = 250;
 
-/**
- * quads: je Karte vier Ecken (TL, TR, BR, BL) als Anteile des Kamerabilds (0..1).
- * torch(on): schaltet die Lampe (Fehler fängt der Aufrufer ab). Ergebnis je Karte in derselben
- * Reihenfolge — null, wo kein Umschalten messbar war (überstrahlt, außerhalb des Bilds).
- */
-export async function captureFlash(video: HTMLVideoElement, quads: number[][][], torch: (on: boolean) => Promise<void>,
-  quadsNow: (() => number[][][] | null) | null = null, switches = FLASH_SWITCHES, stepMs = FLASH_STEP_MS): Promise<FlashRun> {
-  const t0 = performance.now();
-  const k = Math.min(1, 720 / Math.max(video.videoWidth, video.videoHeight));
-  const vw = Math.round(video.videoWidth * k), vh = Math.round(video.videoHeight * k);
-  const inside = quads.map((q) => q.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
-  const toMat = (q: number[][]) => flashTransform(q.map(([x, y]) => [x * vw, y * vh]));
-  const mats = quads.map((q, i) => (inside[i] ? toMat(q) : null));
-  const cur = quads.map((q) => q.map(([x, y]) => [x * vw, y * vh]));          // Umrisse jetzt (Pixel)
-  const use = mats.map((m, i) => (m ? i : -1)).filter((i) => i >= 0);
-  const empty: FlashRun = { results: quads.map(() => null), frames: 0, fps: null, switches: 0, ms: 0 };
-  if (!use.length || !vw || !vh) return empty;
-  const src = document.createElement("canvas");
-  src.width = vw;
-  src.height = vh;
-  const atlas = document.createElement("canvas");
-  atlas.width = use.length * FLASH_W;
-  atlas.height = FLASH_H;
-  const sctx = src.getContext("2d");
-  const actx = atlas.getContext("2d", { willReadFrequently: true });
-  if (!sctx || !actx) return empty;
-  actx.imageSmoothingEnabled = true;
-  actx.imageSmoothingQuality = "medium";
-  const frames: Uint8ClampedArray[] = [], means: number[] = [], times: number[] = [];
-  const degs: (number | null)[][] = [];                                         // Blickwinkel je Bild und Karte
-  const grab = () => {
-    // die Umrisse wandern mit der Kamera mit (Bewegungsverfolgung), wo es sie gibt
-    const now = quadsNow?.();
-    if (now) now.forEach((q, i) => {
-      if (!mats[i] || !q.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
-      mats[i] = toMat(q) ?? mats[i];
-      cur[i] = q.map(([x, y]) => [x * vw, y * vh]);
-    });
-    sctx.drawImage(video, 0, 0, vw, vh);
-    use.forEach((ci, i) => {
-      const m = mats[ci]!;
-      actx.save();
-      actx.beginPath();
-      actx.rect(i * FLASH_W, 0, FLASH_W, FLASH_H);
-      actx.clip();
-      actx.setTransform(m[0], m[1], m[2], m[3], m[4] + i * FLASH_W, m[5]);
-      actx.drawImage(src, 0, 0);
-      actx.restore();
-    });
-    const px = actx.getImageData(0, 0, atlas.width, atlas.height).data;
-    frames.push(px);
-    degs.push(use.map((ci) => viewAngle(cur[ci], vw, vh)));
-    means.push(patchMean(px));
-    times.push(performance.now());
-  };
-  let capturing = true;
-  const next = () => {
-    if (!capturing) return;
-    grab();
-    // jedes neue Kamerabild (wo es das gibt), sonst mit der Bildwiederholung
-    if (typeof video.requestVideoFrameCallback === "function") video.requestVideoFrameCallback(next);
-    else requestAnimationFrame(next);
-  };
-  next();
-  try {
-    await pause(300);
-    for (let i = 0; i < switches; i++) {
-      await torch(i % 2 === 0);
-      await pause(stepMs);
+export class FlashMonitor {
+  readonly tally = new FlashTally();
+  blinking = false;                  // die Lampe wird gerade geschaltet (der Live-Scan schickt solange keine Bilder)
+  private running = false;
+  private torchOn = false;
+  private switching = false;
+  private asked: { at: number; on: boolean } | null = null;
+  private finder = new SwitchFinder();
+  private shots: Shot[] = [];
+  private count = 0;
+  private timer = 0;
+  private src = document.createElement("canvas");
+  private tiny = document.createElement("canvas");
+  private atlas = document.createElement("canvas");
+
+  /**
+   * cards(): die Karten, deren Folierung noch offen ist — null oder leer: nicht blinken.
+   * onMeasure(): eine Karte hat ein Umschalten mehr. onBlink(on): blinkt ab jetzt / nicht mehr.
+   * onAngles(deg): Blickwinkel je offener Karte (höchstens alle ANGLE_MS), für die Anleitung auf der Karte.
+   */
+  constructor(private video: HTMLVideoElement, private torch: (on: boolean) => Promise<void>,
+    private cards: () => FlashCard[] | null, private onMeasure: () => void, private onBlink: (on: boolean) => void,
+    private onAngles: (deg: Record<string, number | null>) => void = () => {}) {}
+  private anglesAt = 0;
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.next();
+    this.timer = window.setInterval(() => { void this.tick(); }, FLASH_STEP_MS);
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    window.clearInterval(this.timer);
+    this.setBlinking(false);
+    if (this.torchOn) await this.set(false);
+  }
+
+  private setBlinking(on: boolean) {
+    if (this.blinking === on) return;
+    this.blinking = on;
+    this.onBlink(on);
+    if (!on) { this.finder.reset(); this.shots = []; }
+  }
+
+  private async set(on: boolean) {
+    this.switching = true;
+    this.asked = { at: performance.now(), on };
+    try {
+      await this.torch(on);
+      this.torchOn = on;
+    } finally {
+      this.switching = false;
     }
-  } finally {
-    await torch(false);
-    await pause(150);
-    capturing = false;
   }
-  const pairs = flashPairs(means, times);
-  // nur Umschalter, bei denen die Karte fast gerade unter dem Handy lag (FLASH_MIN_DEG…FLASH_MAX_DEG)
-  const per = use.map(() => [] as number[]), deg = use.map(() => [] as number[]), outside = use.map(() => 0);
-  for (const [off, on] of pairs) {
-    use.forEach((_, i) => {
-      const d = degs[on][i];
-      if (d == null || d < FLASH_MIN_DEG || d > FLASH_MAX_DEG) { outside[i] += 1; return; }
-      const s = flashShare(atlasPatch(frames[off], i, use.length), atlasPatch(frames[on], i, use.length));
+
+  private async tick() {
+    if (!this.running || this.switching) return;
+    const list = document.hidden ? null : this.cards();
+    if (!list || !list.length) {
+      if (this.torchOn) await this.set(false);
+      this.setBlinking(false);
+      return;
+    }
+    this.setBlinking(true);
+    await this.set(!this.torchOn);
+  }
+
+  private next = () => {
+    if (!this.running) return;
+    try {
+      this.grab();
+    } finally {
+      // jedes neue Kamerabild (wo es das gibt), sonst mit der Bildwiederholung
+      if (typeof this.video.requestVideoFrameCallback === "function") this.video.requestVideoFrameCallback(this.next);
+      else requestAnimationFrame(this.next);
+    }
+  };
+
+  private grab() {
+    const v = this.video;
+    if (!this.blinking || !v.videoWidth) return;
+    const k = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight));
+    const vw = Math.round(v.videoWidth * k), vh = Math.round(v.videoHeight * k);
+    if (this.src.width !== vw || this.src.height !== vh) { this.src.width = vw; this.src.height = vh; }
+    const sctx = this.src.getContext("2d");
+    if (!sctx) return;
+    sctx.drawImage(v, 0, 0, vw, vh);
+    // Helligkeit des ganzen Bilds (klein): daran ist das Umschalten zu sehen
+    const tw = 24, th = Math.max(1, Math.round((24 * vh) / vw));
+    if (this.tiny.width !== tw || this.tiny.height !== th) { this.tiny.width = tw; this.tiny.height = th; }
+    const tctx = this.tiny.getContext("2d", { willReadFrequently: true });
+    if (!tctx) return;
+    tctx.drawImage(this.src, 0, 0, tw, th);
+    const tp = tctx.getImageData(0, 0, tw, th).data;
+    let sum = 0;
+    for (let i = 0; i < tp.length; i += 4) sum += tp[i] + tp[i + 1] + tp[i + 2];
+    const mean = sum / (tp.length / 4) / 3;
+    // die offenen Karten ausschneiden
+    const list = (this.cards() ?? []).filter((c) => c.quad.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
+    const shot: Shot = { n: this.count++, cards: new Map() };
+    if (list.length) {
+      if (this.atlas.width !== list.length * FLASH_W || this.atlas.height !== FLASH_H) {
+        this.atlas.width = list.length * FLASH_W;
+        this.atlas.height = FLASH_H;
+      }
+      const actx = this.atlas.getContext("2d", { willReadFrequently: true });
+      if (actx) {
+        actx.imageSmoothingEnabled = true;
+        actx.imageSmoothingQuality = "medium";
+        const px = list.map((c) => c.quad.map(([x, y]) => [x * vw, y * vh]));
+        px.forEach((q, i) => {
+          const m = flashTransform(q);
+          if (!m) return;
+          actx.save();
+          actx.beginPath();
+          actx.rect(i * FLASH_W, 0, FLASH_W, FLASH_H);
+          actx.clip();
+          actx.setTransform(m[0], m[1], m[2], m[3], m[4] + i * FLASH_W, m[5]);
+          actx.drawImage(this.src, 0, 0);
+          actx.restore();
+        });
+        const data = actx.getImageData(0, 0, this.atlas.width, this.atlas.height).data;
+        list.forEach((c, i) => shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: viewAngle(px[i], vw, vh) }));
+      }
+    }
+    const t = performance.now();
+    if (t - this.anglesAt >= ANGLE_MS) {
+      this.anglesAt = t;
+      this.onAngles(Object.fromEntries(Array.from(shot.cards, ([key, c]) => [key, c.deg])));
+    }
+    this.shots.push(shot);
+    if (this.shots.length > 3) this.shots.shift();
+    const sw = this.finder.push(mean, performance.now());
+    if (!sw) return;
+    // nur ein Umschalten, um das gebeten wurde (richtige Richtung, kurz danach) — kein Schwenk ins Helle
+    const asked = this.asked;
+    if (!asked || asked.on !== sw.lightOn || performance.now() - asked.at > 1.5 * FLASH_STEP_MS) return;
+    this.asked = null;
+    const off = this.shots.find((s) => s.n === sw.off), on = this.shots.find((s) => s.n === sw.on);
+    if (!off || !on) return;
+    let added = false;
+    on.cards.forEach((b, key) => {
+      const a = off.cards.get(key);
+      if (!a || b.deg == null || b.deg < FLASH_MIN_DEG || b.deg > FLASH_MAX_DEG) return;
+      const s = flashShare(a.px, b.px);
       if (s == null) return;
-      per[i].push(s);
-      deg[i].push(Math.round(d * 10) / 10);
+      this.tally.add(key, s, b.deg);
+      added = true;
     });
+    if (added) this.onMeasure();
   }
-  const results: (FlashResult | null)[] = quads.map(() => null);
-  use.forEach((ci, i) => {
-    const r = summarize(per[i]);
-    results[ci] = r ? { ...r, deg: deg[i], outside: outside[i] } : null;
-  });
-  const secs = times.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 0;
-  return { results, frames: frames.length, fps: secs ? +(frames.length / secs).toFixed(1) : null, switches: pairs.length,
-    ms: Math.round(performance.now() - t0) };
 }
