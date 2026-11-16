@@ -33,6 +33,8 @@ import {
   FoilWatch, LIVE_FOIL_HINTS, foilBar, isBasicEnergy, judgeFoil, patchTransform, PATCH_H, PATCH_W, tiltAngles, type FoilKind, type LiveFoil,
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
+import { type FlashResult } from "@/lib/flashCheck";
+import { captureFlash } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
@@ -85,6 +87,7 @@ const TILT_KEY = "scan_tilt_grid";
 const MULTI_GRID_KEY = "scan_multi_grid";   // Raster-Hilfe bei losen Karten (localStorage)   // „Raster neigen" bleibt eingeschaltet (localStorage)
 const TILT_MIN_DEG = 2;              // darunter gilt das Handy als gerade: normales Raster, keine Ecken an den Server
 const LIVE_KEY = "scan_live";        // Live-Scan bleibt eingeschaltet (localStorage)
+const FLASH_KEY = "scan_flash_test"; // Blitz-Test vor der Prüfung (localStorage)
 
 function parseLayout(layout: string): { cols: number; rows: number } {
   const m = layout.match(/^(\d+)x(\d+)$/);
@@ -297,6 +300,7 @@ export default function ScanPage() {
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
     streamRef.current = null;
     setCameraOn(false);
+    setTorchOk(false);
   };
 
   const startCamera = async () => {
@@ -314,7 +318,10 @@ export default function ScanPage() {
       });
       streamRef.current = stream;
       const st = stream.getVideoTracks()[0]?.getSettings?.();
-      dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode });
+      // Lampe schaltbar? (Chrome auf Android ja; die Typen kennen „torch" nur in den Einstellungen)
+      const caps = stream.getVideoTracks()[0]?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
+      setTorchOk(!!caps?.torch);
+      dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode, torch: !!caps?.torch });
       setCameraOn(true); // Video wird erst jetzt gerendert → Stream im Effect anhängen
     } catch (e) {
       dlog("camera.error", { name: (e as Error)?.name, message: (e as Error)?.message });
@@ -492,7 +499,7 @@ export default function ScanPage() {
     setLiveState(next);
     return next;
   };
-  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | "empty" | null;
+  type LiveChip = "hold" | "checking" | "reading" | "paused" | "lost" | "empty" | "flash" | null;
   const [liveChip, setLiveChip] = useState<LiveChip>(null);
   // Zuletzt abgeschlossen: liegt danach noch dieselbe Seite/Karte da, geht es nicht
   // von selbst noch einmal weiter (sonst doppelt) — ✓ von Hand geht trotzdem.
@@ -523,6 +530,22 @@ export default function ScanPage() {
     try { localStorage.setItem(LIVE_KEY, on ? "1" : "0"); } catch { /* privat */ }
     if (on) void motion.ask();     // iOS gibt den Bewegungssensor nur nach einem Tipp frei
   };
+  // Blitz-Test (lib/flashCheck): vor der Prüfung blinkt die Lampe, je Karte wird gemessen und
+  // protokolliert, wie Bild und Rahmen aufhellen — für die Holo-Erkennung, noch ohne Hinweise
+  const [torchOk, setTorchOk] = useState(false);
+  const [flashTest, setFlashTest] = useState(false);
+  useEffect(() => {
+    try { setFlashTest(localStorage.getItem(FLASH_KEY) === "1"); } catch { /* privat */ }
+  }, []);
+  const toggleFlashTest = () => {
+    const on = !flashTest;
+    setFlashTest(on);
+    try { localStorage.setItem(FLASH_KEY, on ? "1" : "0"); } catch { /* privat */ }
+  };
+  const flashTestRef = useRef(false);
+  flashTestRef.current = flashTest && torchOk;
+  const flashRunningRef = useRef(false);
+  const flashResultRef = useRef<Map<string, FlashResult> | null>(null);
   // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
   const liveGrid = mode === "multi" ? multiGrid : mode === "binder" ? layout : "";
   useEffect(() => {
@@ -706,6 +729,43 @@ export default function ScanPage() {
   const autoFinishRef = useRef(autoFinish);
   autoFinishRef.current = autoFinish;
 
+  /** Lampe ein paar Mal an und aus; je Karte (Umrisse von jetzt, das Handy wird ruhig gehalten)
+   *  vergleichen, wie Bild und Rahmen aufhellen (lib/flashCapture, lib/flashCheck). */
+  const runFlashTest = async (st: LiveState): Promise<Map<string, FlashResult>> => {
+    const res = new Map<string, FlashResult>();
+    const v = videoRef.current, track = streamRef.current?.getVideoTracks()[0];
+    const tr = trackerRef.current;
+    const last = sendCumRef.current.get(st.frames);
+    const back = last && last.epoch === tr.epoch ? invM(last.cum) : null;
+    if (!v || !v.videoWidth || !track || !back) {
+      dlog("live.flash.skip", { why: !back ? "not-tracked" : "no-video" });
+      return res;
+    }
+    const toNow = mulM(tr.cum, back);
+    const quads = st.tracks.map((t) => applyM(toNow, viewQuad(st, t)));
+    const torch = (on: boolean) => track.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+      .catch((e) => { dlog("live.flash.torch-error", { on, message: (e as Error)?.message }); });
+    flashRunningRef.current = true;
+    setLiveChip("flash");
+    try {
+      // die Bewegungsverfolgung läuft weiter (sie vergleicht Ausschnitte ohne ihre Helligkeit)
+      const now = () => {
+        const b = sendCumRef.current.get(st.frames);
+        if (!b || b.epoch !== tr.epoch) return null;
+        const i = invM(b.cum);
+        return i ? st.tracks.map((t) => applyM(mulM(tr.cum, i), viewQuad(st, t))) : null;
+      };
+      const run = await captureFlash(v, quads, torch, now);
+      st.tracks.forEach((t, i) => { const r = run.results[i]; if (r) res.set(t.key, r); });
+      dlog("live.flash", { ms: run.ms, frames: run.frames, fps: run.fps, switches: run.switches, cards: st.tracks.length,
+        measured: res.size });
+    } finally {
+      flashRunningRef.current = false;
+      setLiveChip(null);
+    }
+    return res;
+  };
+
   const finishLive = () => {
     const st = liveRef.current;
     dlog("live.finish", { tracks: st.tracks.length, frames: st.frames, counts: counts(st), inFlight: liveInFlightRef.current,
@@ -718,6 +778,18 @@ export default function ScanPage() {
     }
     finishWantedRef.current = false;
     setFinishWanted(false);
+    // Blitz-Test zuerst (ein paar Sekunden ruhig halten), dann geht es mit seinem Ergebnis weiter
+    if (flashTestRef.current && !flashResultRef.current) {
+      if (flashRunningRef.current) return;
+      void runFlashTest(st).then((r) => {
+        if (!videoRef.current || !liveRef.current.tracks.length) return;    // inzwischen abgebrochen
+        flashResultRef.current = r;
+        finishLiveRef.current();
+      });
+      return;
+    }
+    const flash = flashResultRef.current;
+    flashResultRef.current = null;
     const { frame, items } = finish(st, Array.from(liveFramesRef.current.keys()));
     const photo = frame != null ? liveFramesRef.current.get(frame) : null;
     dlog("live.finish.review", { photoFrame: frame, hasPhoto: !!photo, items: items.length });
@@ -737,6 +809,9 @@ export default function ScanPage() {
       if (s) dlog("live.foil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind, bar: +bar.toFixed(3),
         art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
+      const fl = flash?.get(i.key);
+      if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, share: +fl.share.toFixed(3), n: fl.n,
+        all: fl.all, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
@@ -796,7 +871,7 @@ export default function ScanPage() {
         let v: HTMLVideoElement | null = null;
         while (!stop) {
           v = videoRef.current;
-          if (!v || !v.videoWidth || busyRef.current || livePickRef.current) { await sleep(250); continue; }
+          if (!v || !v.videoWidth || busyRef.current || livePickRef.current || flashRunningRef.current) { await sleep(250); continue; }
           const k = 240 / Math.max(v.videoWidth, v.videoHeight);
           const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
           if (small.width !== w || small.height !== h) { small.width = w; small.height = h; }
@@ -1992,7 +2067,7 @@ export default function ScanPage() {
                     const n = counts(liveState);
                     const total = n.green + n.yellow + n.red;
                     const same = allSure(liveState, mode) && signature(liveState) === lastDoneRef.current;
-                    const text = finishWanted ? t.scan_live_finishing
+                    const text = liveChip === "flash" ? t.scan_live_flash : finishWanted ? t.scan_live_finishing
                       : liveChip === "paused" ? t.scan_live_paused : liveChip === "lost" ? t.scan_live_lost
                       : same ? t.scan_live_same
                       : liveChip === "hold" ? t.scan_live_hold : liveChip === "empty" ? t.scan_live_empty
@@ -2028,6 +2103,14 @@ export default function ScanPage() {
                       className={`absolute top-10 left-2 rounded-full px-3 py-1.5 text-xs text-white ${live
                         ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
                       <span className={live ? "text-green-300" : "text-gray-400"}>●</span> {t.scan_live}
+                    </button>
+                  )}
+                  {liveAvailable && step === "setup" && live && torchOk && (
+                    <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest} title={t.scan_flash_test_hint}
+                      data-testid="scan-flash-test"
+                      className={`absolute top-20 left-2 rounded-full px-3 py-1.5 text-xs text-white ${flashTest
+                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                      <span className={flashTest ? "text-yellow-300" : "text-gray-400"}>⚡</span> {t.scan_flash_test}
                     </button>
                   )}
                   {liveOn && livePick && (() => {
