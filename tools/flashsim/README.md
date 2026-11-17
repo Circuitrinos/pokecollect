@@ -68,6 +68,6 @@ python3 sweep.py new 0 1         # whole scans: 3 rooms × 2 heights × 2 hand p
 ## Test mat (17.11.)
 
 `python3 make_mat.py` → `mat.pdf` (US Letter landscape, print at 100 %) and `mat.json` (marker corners and
-card centres in mm). The 3×2 card slots sit between 20 ArUco markers (DICT_4X4_50). From the markers in a
+card centres in mm). The 3×2 card slots (sleeve size, 71×99, measured on Brian's sleeves) sit between 18 ArUco markers (DICT_4X4_50, 9.5 mm). From the markers in a
 video, the camera pose is known in every frame. That gives true camera positions for each reading, so the
 renderer can be refitted to footage from any room, and the app's own position estimate can be checked.
