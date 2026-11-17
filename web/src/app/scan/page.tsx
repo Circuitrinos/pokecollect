@@ -271,6 +271,7 @@ export default function ScanPage() {
   // Debug: ein aufgenommenes Video statt der Kamera (der Live-Scan läuft darauf wie auf dem Kamerabild)
   const videoFileInputRef = useRef<HTMLInputElement | null>(null);
   const fileSrcRef = useRef<string | null>(null);   // Objekt-URL des Videos
+  const fileVidRef = useRef<HTMLVideoElement | null>(null);   // spielt die Datei ab (Weg „stream", s. startVideoFile)
   const fileTimeRef = useRef(0);                    // Stelle im Video (über die Prüfung hinweg weiter)
   const [fromFile, setFromFile] = useState<string | null>(null);
   const [fileBlank, setFileBlank] = useState(false);   // der Browser liefert aus dem Video nur leere Bilder
@@ -424,11 +425,15 @@ export default function ScanPage() {
     streamRef.current = null;
     if (fileSrcRef.current) {
       const v = videoRef.current;
-      if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+      if (v) { v.pause(); v.srcObject = null; v.removeAttribute("src"); v.load(); }
+      const fv = fileVidRef.current;
+      if (fv) { fv.pause(); fv.removeAttribute("src"); fv.load(); fv.remove(); }
+      fileVidRef.current = null;
       URL.revokeObjectURL(fileSrcRef.current);
       fileSrcRef.current = null;
       setFromFile(null);
       setFileBlank(false);
+      setFileMode(null);
     }
     setCameraOn(false);
     setTorchState("unknown");
@@ -511,64 +516,127 @@ export default function ScanPage() {
     }
   };
 
-  // Debug: Video aus einer Datei statt der Kamera
+  // Debug: Video aus einer Datei statt der Kamera. Brian 17.11.: Firefox (Android) zeigt ein Video aus
+  // einer Datei, liefert beim Abgreifen (drawImage) aber nur leere Bilder — bei 4K wie bei 1080p; der
+  // Live-Scan sah nichts. Bilder aus einem MediaStream (wie von der Kamera) kommen dort an. Darum spielt
+  // ein verstecktes Video die Datei ab und gibt sein Bild als Stream weiter (captureStream bzw.
+  // mozCaptureStream) — für den Scan sieht das aus wie eine Kamera. Bleibt auch das leer, wird die Datei
+  // direkt versucht; sonst sagt es ein Hinweis (camera.file.probe zeigt, welcher Weg ging).
+  const [fileMode, setFileMode] = useState<"stream" | "direct" | null>(null);
+  const dropFileVideo = () => {
+    const fv = fileVidRef.current;
+    if (fv) { fileTimeRef.current = fv.currentTime || fileTimeRef.current; fv.pause(); fv.removeAttribute("src"); fv.load(); fv.remove(); }
+    fileVidRef.current = null;
+  };
   const startVideoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     if (fileSrcRef.current) URL.revokeObjectURL(fileSrcRef.current);
-    fileSrcRef.current = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
+    fileSrcRef.current = url;
     fileTimeRef.current = 0;
     setFromFile(file.name);
     setFileBlank(false);
     setCamMsg(null);
     setTorchState("no");
     setZoomCaps(null);
-    dlog("camera.file", { name: file.name, size: file.size, type: file.type, mode });
-    setCameraOn(true);
+    void (async () => {
+      const fv = document.createElement("video");
+      fv.muted = true;
+      fv.playsInline = true;
+      fv.preload = "auto";
+      fv.src = url;
+      // im Dokument (winzig, fast unsichtbar): manche Browser spielen Videos außerhalb nicht weiter ab
+      fv.setAttribute("aria-hidden", "true");
+      Object.assign(fv.style, { position: "fixed", left: "0", bottom: "0", width: "2px", height: "2px", opacity: "0.01", pointerEvents: "none" });
+      document.body.appendChild(fv);
+      fv.ontimeupdate = () => { fileTimeRef.current = fv.currentTime; };
+      fv.onended = () => dlog("camera.file.ended", { t: Math.round(fv.currentTime * 10) / 10 });
+      let stream: MediaStream | null = null;
+      try {
+        await fv.play();
+        const m = fv as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureStream?: () => MediaStream };
+        stream = m.captureStream?.() ?? m.mozCaptureStream?.() ?? null;
+      } catch (err) {
+        dlog("camera.file.stream-error", { message: (err as Error)?.message });
+      }
+      if (fileSrcRef.current !== url) { fv.pause(); fv.remove(); return; }
+      if (stream && stream.getVideoTracks().length) {
+        fileVidRef.current = fv;
+        streamRef.current = stream;
+        setFileMode("stream");
+      } else {
+        fv.pause();
+        fv.remove();
+        setFileMode("direct");
+      }
+      dlog("camera.file", { name: file.name, size: file.size, type: file.type, mode, via: stream ? "stream" : "direct" });
+      setCameraOn(true);
+    })();
   };
 
-  // Stream (oder Video-Datei) an das Video hängen, sobald es im DOM ist (sonst bleibt das Bild schwarz)
+  // Ist im Video etwas zu sehen? (ein kleines Bild abgreifen; ganz flach = leer)
+  const probeVideo = (v: HTMLVideoElement, via: string, onBlank: () => void) => {
+    let tries = 0;
+    const url = fileSrcRef.current;
+    const c = document.createElement("canvas");
+    c.width = 48; c.height = 64;
+    const pctx = c.getContext("2d", { willReadFrequently: true });
+    const check = () => {
+      if (fileSrcRef.current !== url || !pctx) return;
+      if (v.readyState < 2 || v.paused || !v.videoWidth) { if (tries++ < 40) window.setTimeout(check, 250); return; }
+      let sd = 0, mean = 0;
+      try {
+        pctx.drawImage(v, 0, 0, c.width, c.height);
+        const d = pctx.getImageData(0, 0, c.width, c.height).data;
+        let s1 = 0, s2 = 0;
+        for (let i = 0; i < d.length; i += 4) { const y = (d[i] + d[i + 1] + d[i + 2]) / 3; s1 += y; s2 += y * y; }
+        const n = d.length / 4;
+        mean = s1 / n; sd = Math.sqrt(Math.max(0, s2 / n - mean ** 2));
+      } catch (err) {
+        dlog("camera.file.probe-error", { via, message: (err as Error)?.message });
+      }
+      dlog("camera.file.probe", { via, mean: Math.round(mean), sd: Math.round(sd * 10) / 10, w: v.videoWidth, h: v.videoHeight });
+      if (sd < 2) onBlank(); else setFileBlank(false);
+    };
+    window.setTimeout(check, 700);
+  };
+
+  // Stream (Kamera oder abgegriffene Video-Datei) bzw. die Datei direkt an das Video hängen, sobald es im
+  // DOM ist (sonst bleibt das Bild schwarz)
   useEffect(() => {
     const v = videoRef.current;
+    const fv = fileVidRef.current;
+    if (fv && (!cameraOn || step !== "setup")) fv.pause();   // während der Prüfung steht das Testvideo
     if (!cameraOn || step !== "setup" || !v) return;
     if (streamRef.current) {
       v.srcObject = streamRef.current;
       v.play().catch(() => {});
+      if (fv && fileMode === "stream") {
+        fv.play().catch(() => {});
+        probeVideo(v, "stream", () => {
+          // leer: die Datei direkt versuchen
+          streamRef.current?.getTracks().forEach((tr) => tr.stop());
+          streamRef.current = null;
+          dropFileVideo();
+          setFileMode("direct");
+        });
+      }
     } else if (fileSrcRef.current) {
       v.srcObject = null;
       if (v.src !== fileSrcRef.current) v.src = fileSrcRef.current;
       const at = fileTimeRef.current;   // nach der Prüfung dort weiter, wo das Video war
-      const url = fileSrcRef.current;
-      // Brian 17.11.: ein 4K-Video lief sichtbar, aber Firefox (Android) lieferte beim Abgreifen nur leere
-      // Bilder — der Live-Scan sah nichts. Einmal nachsehen und es dann sagen, statt still „nichts im Bild".
-      const probe = () => {
-        let tries = 0;
-        const c = document.createElement("canvas");
-        c.width = 48; c.height = 64;
-        const pctx = c.getContext("2d", { willReadFrequently: true });
-        const check = () => {
-          if (fileSrcRef.current !== url || !pctx) return;
-          if (v.readyState < 2 || v.paused) { if (tries++ < 40) window.setTimeout(check, 250); return; }
-          pctx.drawImage(v, 0, 0, c.width, c.height);
-          const d = pctx.getImageData(0, 0, c.width, c.height).data;
-          let s1 = 0, s2 = 0;
-          for (let i = 0; i < d.length; i += 4) { const y = (d[i] + d[i + 1] + d[i + 2]) / 3; s1 += y; s2 += y * y; }
-          const n = d.length / 4, sd = Math.sqrt(Math.max(0, s2 / n - (s1 / n) ** 2));
-          dlog("camera.file.probe", { mean: Math.round(s1 / n), sd: Math.round(sd * 10) / 10, w: v.videoWidth, h: v.videoHeight });
-          setFileBlank(sd < 2);
-        };
-        window.setTimeout(check, 500);
-      };
       const go = () => {
         if (at > 0 && Math.abs(v.currentTime - at) > 0.5) v.currentTime = at;
         v.play().catch(() => {});
         dlog("camera.file.play", { w: v.videoWidth, h: v.videoHeight, duration: Math.round(v.duration * 10) / 10, at: Math.round(at * 10) / 10 });
-        probe();
+        probeVideo(v, "direct", () => setFileBlank(true));
       };
       if (v.readyState >= 1) go(); else v.addEventListener("loadedmetadata", go, { once: true });
     }
-  }, [cameraOn, step]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOn, step, fileMode]);
 
   // Live-Umrisse aus dem Bild-Abgleich (mehrere Karten, Mappenseite): ~1–2 Bilder/s
   // klein an den Server, nacheinander (nie parallel). Ohne matcher-Dienst
@@ -2549,8 +2617,8 @@ export default function ScanPage() {
                     style={fixColors ? { filter: `url(#${SWAP_FILTER_ID})` } : undefined}
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
-                    onTimeUpdate={(e) => { if (fileSrcRef.current) fileTimeRef.current = e.currentTarget.currentTime; }}
-                    onEnded={() => { if (fileSrcRef.current) dlog("camera.file.ended", { t: Math.round(fileTimeRef.current * 10) / 10 }); }} />
+                    onTimeUpdate={(e) => { if (fileSrcRef.current && fileMode === "direct") fileTimeRef.current = e.currentTarget.currentTime; }}
+                    onEnded={() => { if (fileSrcRef.current && fileMode === "direct") dlog("camera.file.ended", { t: Math.round(fileTimeRef.current * 10) / 10 }); }} />
                   {fromFile && fileBlank && (
                     <p data-testid="scan-video-blank"
                       className="absolute inset-x-2 top-28 z-10 rounded bg-red-900/85 px-3 py-2 text-center text-xs text-white">
@@ -2560,7 +2628,7 @@ export default function ScanPage() {
                   {fromFile && (
                     <button type="button" data-testid="scan-video-restart" title={t.scan_video_restart}
                       onClick={() => {
-                        const v = videoRef.current;
+                        const v = fileVidRef.current ?? videoRef.current;   // Weg „stream": das versteckte Video
                         if (v) { v.currentTime = 0; fileTimeRef.current = 0; v.play().catch(() => {}); }
                         dlog("camera.file.restart");
                       }}
