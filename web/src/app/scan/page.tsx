@@ -34,7 +34,9 @@ import {
 } from "@/lib/liveFoil";
 import { FrameJudge, MIN_VIEW_SHARP } from "@/lib/frameQuality";
 import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraColors";
-import { ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, fmtZoom, lightSet, readZoomCaps, storedZoom } from "@/lib/cameraZoom";
+import {
+  ZOOM_DEAD_KEY, ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, checkZoom, fmtZoom, grayThumb, lightSet, readZoomCaps, storedZoom,
+} from "@/lib/cameraZoom";
 import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
@@ -255,26 +257,57 @@ export default function ScanPage() {
   const zoomRef = useRef(1);
   zoomRef.current = zoomCaps ? zoom : 1;
   const zoomValRef = useRef<number | null>(null);   // angewandter Zoom-Wert (absolut), null: nie gezoomt
+  // Kamera nimmt Zoom an, das Bild bleibt aber gleich (Brians Fairphone im /e/OS-Browser) — je Kamera gemerkt
+  const [zoomDead, setZoomDead] = useState(false);
+  const [zoomChecking, setZoomChecking] = useState(false);
+  const zoomBusyRef = useRef(false);
   const applyZoom = async (track: MediaStreamTrack, caps: ZoomCaps, factor: number) => {
+    if (zoomBusyRef.current) return;
+    zoomBusyRef.current = true;
+    setZoomChecking(true);
     const want = Math.min(caps.max, Math.max(caps.min, caps.base * factor));
+    const from = zoomRef.current;                      // bestätigter Zoom bisher
+    const r = want / caps.base / from;
+    const v = videoRef.current;
+    const before = v ? grayThumb(v) : null;
+    const same = () => streamRef.current?.getVideoTracks()[0] === track;
     try {
       await track.applyConstraints({ advanced: [{ zoom: want } as MediaTrackConstraintSet] });
-      const got = (track.getSettings?.() as { zoom?: number } | undefined)?.zoom;
-      const f = (got && got > 0 ? got : want) / caps.base;
-      if (streamRef.current?.getVideoTracks()[0] === track) {
-        setZoom(f);
-        zoomValRef.current = got && got > 0 ? got : want;
+      const got = (track.getSettings?.() as { zoom?: number } | undefined)?.zoom ?? null;
+      // nur ein Zoom, der im Bild zu sehen ist, zählt (sonst stimmen die Blickwinkel des Blitz-Tests nicht)
+      const check = Math.abs(r - 1) < 0.02 ? null : v && before ? await checkZoom(v, before, r) : null;
+      const took = Math.abs(r - 1) < 0.02 ? true : check?.took ?? (got != null && Math.abs(got - want) < 1e-3);
+      dlog("camera.zoom", { want, got, r: Math.round(r * 100) / 100, check, took });
+      if (!same()) return;
+      if (took) {
+        setZoom(want / caps.base);
+        zoomValRef.current = want;
+        setZoomDead(false);
+        try { localStorage.removeItem(ZOOM_DEAD_KEY); } catch { /* privat */ }
+      } else {
+        await track.applyConstraints({ advanced: [{ zoom: caps.base } as MediaTrackConstraintSet] }).catch(() => {});
+        setZoom(1);
+        zoomValRef.current = null;
+        setZoomDead(true);
+        try {
+          localStorage.setItem(ZOOM_DEAD_KEY, track.label || "?");
+          localStorage.setItem(ZOOM_KEY, "1");
+        } catch { /* privat */ }
+        toast(t.scan_zoom_none, { icon: "🔍", duration: 6000 });
       }
-      dlog("camera.zoom", { want, got: got ?? null, factor: Math.round(f * 100) / 100 });
     } catch (e) {
       dlog("camera.zoom.error", { want, name: (e as Error)?.name, message: (e as Error)?.message });
+    } finally {
+      zoomBusyRef.current = false;
+      setZoomChecking(false);
     }
   };
   const zoomSteps = zoomCaps ? ZOOM_STEPS.filter((s) => zoomCaps.base * s <= zoomCaps.max + 1e-6) : [1];
   const cycleZoom = () => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || !zoomCaps) return;
-    const i = zoomSteps.findIndex((s) => Math.abs(s - zoom) < 0.05);
+    if (zoomBusyRef.current) return;
+    const i = zoomDead ? 0 : zoomSteps.findIndex((s) => Math.abs(s - zoom) < 0.05);
     const next = zoomSteps[(i + 1) % zoomSteps.length];
     try { localStorage.setItem(ZOOM_KEY, String(next)); } catch { /* privat */ }
     void applyZoom(track, zoomCaps, next);
@@ -360,6 +393,7 @@ export default function ScanPage() {
     setZoomCaps(null);
     setZoom(1);
     zoomValRef.current = null;
+    setZoomDead(false);
   };
 
   const startCamera = async () => {
@@ -388,6 +422,9 @@ export default function ScanPage() {
       setZoomCaps(zc);
       setZoom(1);
       zoomValRef.current = null;
+      let dead = false;
+      try { dead = !!track && localStorage.getItem(ZOOM_DEAD_KEY) === (track.label || "?"); } catch { /* privat */ }
+      setZoomDead(dead);
       const z = (caps as { zoom?: unknown } | undefined)?.zoom;
       dlog("camera.start", { w: st?.width, h: st?.height, fps: st?.frameRate, facing: st?.facingMode, mode, torch: !!caps?.torch,
         label: track?.label, caps: caps ? Object.keys(caps) : null, zoom: z ?? null,
@@ -405,7 +442,11 @@ export default function ScanPage() {
             setZoomCaps(zz);
           }
           const want = storedZoom();
-          if (want > 1) await applyZoom(track, zz, want);
+          if (want <= 1 || dead) return;
+          // erst, wenn das Bild läuft — sonst lässt sich nicht nachsehen, ob der Zoom wirkt
+          for (let i = 0; i < 30 && !videoRef.current?.videoWidth; i++) await new Promise((r) => window.setTimeout(r, 100));
+          if (streamRef.current?.getVideoTracks()[0] !== track) return;
+          await applyZoom(track, zz, want);
         })();
       }
       if (track && !caps?.torch) {
@@ -2264,11 +2305,11 @@ export default function ScanPage() {
                   )}
                   {step === "setup" && zoomCaps && (
                     // Zoom: höher halten + hineinzoomen — gleiches Bild, sanfteres Licht beim Blitz-Test
-                    <button type="button" onClick={cycleZoom} title={t.scan_zoom_hint}
-                      data-testid="scan-zoom" data-zoom={fmtZoom(zoom)}
-                      className={`absolute top-20 right-2 rounded-full px-3 py-1.5 text-xs text-white ${zoom > 1.05
+                    <button type="button" onClick={cycleZoom} title={zoomDead ? t.scan_zoom_dead_hint : t.scan_zoom_hint}
+                      data-testid="scan-zoom" data-zoom={fmtZoom(zoom)} data-dead={zoomDead || undefined}
+                      className={`absolute top-20 right-2 rounded-full px-3 py-1.5 text-xs ${zoomDead ? "text-gray-400" : "text-white"} ${zoom > 1.05
                         ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
-                      🔍 {fmtZoom(zoom)}×
+                      🔍 {zoomChecking ? "…" : zoomDead ? "✕" : `${fmtZoom(zoom)}×`}
                     </button>
                   )}
                   {liveOn && livePick && (() => {
