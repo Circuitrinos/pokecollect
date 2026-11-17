@@ -37,3 +37,24 @@ def plane_share(off, on, mode=1, lift=A.LIFT):
     if mode == 1:
         return float((ra > lift).mean() - (ra < -lift).mean())
     return float((ra > lift).mean() - (rf > lift).mean())
+
+
+def ratio_lift(room, r=2.24):
+    """threshold on the log lift that means 'reflects the flash r× more, relative to room light, than the
+    card's median' — room = lit/dark at equal exposure (1 + c·ρ_med); bright room (1.15) → 0.15, dark → log r"""
+    m = max(room - 1.0, 0.02)
+    return float(np.log((1 + r * m) / (1 + m)))
+
+
+def share_ratio(off, on, room, flat=False):
+    lift = ratio_lift(room)
+    if flat:
+        return plane_share(off, on, 1, lift=lift)
+    off = np.asarray(off, np.uint8).reshape(H, W, 4); on = np.asarray(on, np.uint8).reshape(H, W, 4)
+    use = (A.ART | A.FRAME) & (off[..., :3].max(-1) < A.CLIP) & (on[..., :3].max(-1) < A.CLIP)
+    a, b = A._lum(off), A._lum(on); use &= a > 0.01
+    if use[A.ART].sum() < 0.3 * A.ART.sum() or use[A.FRAME].sum() < 0.3 * A.FRAME.sum():
+        return None
+    g = np.full(a.shape, np.nan, np.float32); g[use] = np.log(np.maximum(b[use], 1e-3) / a[use])
+    base = np.median(g[use]); up = use & (g - base > lift)
+    return float(up[A.ART].sum() / use[A.ART].sum() - up[A.FRAME].sum() / use[A.FRAME].sum())

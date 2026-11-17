@@ -19,7 +19,7 @@
 // wo sie stand (lib/flashCheck: das Urteil vergleicht mit dem dort erwarteten Messwert).
 import {
   FLASH_H, FLASH_W, FlashTally, alignPatch, atlasPatch, averagePatch, cardOffset, flashFocal, flashReachable,
-  flashRoom, flashShare, flashShareFlat, flashTransform, litLevel,
+  flashLift, flashRoom, flashShare, flashShareFlat, flashTransform, litLevel,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
 import { FLASH_ROOM_SPLIT } from "./flashTable";
@@ -35,6 +35,7 @@ type Phase = { lit: boolean; endN: number; means: number[]; cards: Patches };
 type Request = { on: boolean; at: number; seenAt: number | null; seenN: number | null };
 
 export const EVENT_STEP = 0.06;      // so viel heller/dunkler von einem Bild zum nächsten (mindestens): die Lampe hat geschaltet
+const JUMP_CAP = 0.25;              // die gelernte Mindestschwelle höchstens so hoch (|ln|, ≈ +28 %)
 export const PHASE_MS = 450;         // so lange bleibt die Lampe, nachdem das Umschalten zu sehen war
 const SETTLE_MS = 300;               // bis dahin regelt die Belichtung nach dem Umschalten noch nach
 const STEADY = 0.08;                 // |ln| Abstand zum Median der Phase: so ruhig muss ein verwendetes Bild sein
@@ -81,6 +82,7 @@ export class FlashLoop {
   private phase: Phase | null = null; // Ende der letzten Phase (Lampe an oder aus)
   private jumps: number[] = [];       // |ln| der zuletzt gesehenen Sprünge beim Umschalten (diese Kamera)
   private rooms = new Map<string, number[]>();   // je Karte: Lampe / Raum (die letzten Umschalter)
+  private near: { j1: number; j2: number; means: number[] } | null = null;   // größter Sprung seit der Bitte (Protokoll, wenn verpasst)
   /** Ausschnitte (Lampe aus / an) je Messung mitprotokollieren — zum Nachrechnen anderer Maße (Debug). */
   dumpPatches = false;
   /** Protokoll (im Browser: dlog) */
@@ -96,7 +98,7 @@ export class FlashLoop {
     const base = Math.log(1 + EVENT_STEP);
     if (this.jumps.length < 2) return base;
     const s = [...this.jumps].sort((a, b) => a - b);
-    return Math.max(base, 0.4 * s[s.length >> 1]);
+    return Math.max(base, Math.min(JUMP_CAP, 0.4 * s[s.length >> 1]));
   }
 
   /** Jetzt um das Umschalten bitten? → der gewünschte Zustand der Lampe, sonst null. */
@@ -105,7 +107,8 @@ export class FlashLoop {
     if (r && r.seenAt == null) {
       // noch nicht im Bild: warten — zu lange, dann gilt es als verpasst (die Kette der Phasen reißt)
       if (now - r.at < EVENT_TIMEOUT_MS) return null;
-      this.log("live.flash.missed", { on: r.on, ms: Math.round(now - r.at) });
+      this.log("live.flash.missed", { on: r.on, ms: Math.round(now - r.at), need: Math.round(this.eventThreshold() * 100) / 100,
+        best: this.near ? { j1: Math.round(this.near.j1 * 100) / 100, j2: Math.round(this.near.j2 * 100) / 100, means: this.near.means } : null });
       this.phase = null;
       this.lastSeen = null;
     } else if (r && r.seenAt != null && now - r.seenAt < PHASE_MS) {
@@ -117,6 +120,7 @@ export class FlashLoop {
   /** Um das Umschalten wurde gebeten (vor dem Schalten aufrufen). */
   asked(on: boolean, at: number): void {
     this.req = { on, at, seenAt: null, seenN: null };
+    this.near = null;
   }
 
   /** Neues Bild → true, wenn dabei mindestens eine Karte eine Messung bekommen hat. */
@@ -133,7 +137,11 @@ export class FlashLoop {
     const dir = r.on ? 1 : -1;
     const j1 = Math.log(Math.max(ev.mean, 1) / Math.max(pre.mean, 1)), j2 = Math.log(Math.max(shot.mean, 1) / Math.max(pre.mean, 1));
     const minJump = this.eventThreshold();
-    if (dir * j1 < minJump || dir * j2 < minJump / 2) return false;
+    if (dir * j1 > (this.near?.j1 ?? 0)) this.near = { j1: dir * j1, j2: dir * j2, means: [pre, ev, shot].map((x) => Math.round(x.mean)) };
+    // bestätigt, wenn das nächste Bild noch ein Viertel des Sprungs hält (mindestens EVENT_STEP): die Kamera
+    // regelt im dunklen Raum schon im Bild danach kräftig nach (Brian 17.11.: 120 → 177 → 136; mit
+    // „halbe Mindestschwelle" nach großen Sprüngen 24 Umschalter hintereinander verpasst, 50 s ohne Messung)
+    if (dir * j1 < minJump || dir * j2 < Math.max(Math.log(1 + EVENT_STEP), 0.25 * dir * j1)) return false;
     this.jumps.push(Math.abs(j1));
     if (this.jumps.length > 8) this.jumps.shift();
     r.seenAt = ev.t;
@@ -175,7 +183,7 @@ export class FlashLoop {
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
     const seen: Record<string, unknown[]> = {};
-    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flashShareFlat]
+    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flat, flat mit Raum-Schwelle]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
@@ -186,7 +194,8 @@ export class FlashLoop {
       // dunkler Raum (Lampe ≥ FLASH_ROOM_SPLIT × Raumlicht): ohne den Verlauf über die Karte (Schatten), sonst wie bisher
       const shNow = ok ? flashShare(a.px, lit) : null;
       const shFlat = ok ? flashShareFlat(a.px, lit) : null;
-      const sh = room0 != null && room0 >= FLASH_ROOM_SPLIT ? shFlat : shNow;
+      const shRoom = ok ? flashShareFlat(a.px, lit, FLASH_W, FLASH_H, flashLift(room0)) : null;
+      const sh = room0 != null && room0 >= FLASH_ROOM_SPLIT ? shFlat : shNow;   // shRoom: nur protokolliert (Vergleich)
       const deg = (a.deg + b.deg) / 2;
       const tx = a.pos && b.pos ? (a.pos.tx + b.pos.tx) / 2 : null, ty = a.pos && b.pos ? (a.pos.ty + b.pos.ty) / 2 : null;
       const room = room0;
@@ -194,15 +203,19 @@ export class FlashLoop {
       const q3 = (q?: number[][]) => (q ? q.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]) : null);
       const r3 = (x: number | null) => (x == null ? null : Math.round(x * 1000) / 1000);
       seen[key] = [r3(sh), Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
-        q3(a.q), q3(b.q), r3(shNow), r3(shFlat)];
-      if (this.dumpPatches) patches[key] = [lumaB64(a.px), lumaB64(lit)];
+        q3(a.q), q3(b.q), r3(shNow), r3(shFlat), r3(shRoom)];
+      if (this.dumpPatches) { patches[key] = [lumaB64(a.px), lumaB64(lit)]; }
       if (sh == null || tx == null || ty == null) return;
       this.tally.add(key, { share: sh, tx, ty, room }, deg, r.on);
       added = true;
     });
     const turn = ev.turn ? ev.turn.map((x) => Math.round(x * 10000) / 10000) : null;
     this.log("live.flash.switch", { ...seenLog, ends: { dark: darkPh.means, lit: litPh.means }, frames: [usable.length, window.length], cards: seen, turn });
-    if (this.dumpPatches) this.log("live.flash.patches", { n: ev.n, cards: patches });
+    // je Karte und Phase ein Ereignis (≤ 3000 Zeichen): {n, k, p: "d" aus / "l" an, b64}
+    if (this.dumpPatches) for (const [k, [d, l]] of Object.entries(patches)) {
+      this.log("live.flash.px", { n: ev.n, k, p: "d", b64: d });
+      this.log("live.flash.px", { n: ev.n, k, p: "l", b64: l });
+    }
     return added;
   }
 }

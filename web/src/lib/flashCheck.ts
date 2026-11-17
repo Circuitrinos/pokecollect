@@ -147,8 +147,23 @@ export function flashShare(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FL
  * Anteil, der deutlich stärker aufhellt, weniger Anteil, der deutlich schwächer aufhellt.
  * In der Nachbildung mit Schatten (bis 60 %): im dunklen Raum 98–100 % der Karten richtig aus 8 Messungen
  * (flashShare 91–94 %); im hellen Raum schlechter — dort zählt weiter flashShare (FLASH_ROOM_SPLIT).
+ * lift: Schwelle (flashLift(Raum) wird nur zum Vergleich protokolliert: an v66 und in der Nachbildung
+ * schlechter — der Glanzpunkt hebt „Raum" an und damit die Schwelle, Reverse Holo geht verloren).
  */
-export function flashShareFlat(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): number | null {
+/**
+ * Schwelle fürs „hellt deutlich stärker auf", passend zum Raum: room = Karte mit / ohne Lampe bei gleicher
+ * Belichtung. Gemeint ist immer „wirft die Lampe (gegen das Raumlicht) 2.24× so stark zurück wie die Karte im
+ * Mittel" — im hellen Raum (room ≈ 1.15) ist das LIFT 0.15 wie bisher, im dunklen bis log 2.24 = 0.81. Mit
+ * fester Schwelle zählte im dunklen Raum schon 16 % Unterschied zwischen Druckfarbe und Rand (Brian 17.11.:
+ * normale Karte +0.4 auch ohne Verlauf; in v66, hell, +0.07).
+ */
+export function flashLift(room: number | null): number {
+  if (room == null || !Number.isFinite(room)) return LIFT;
+  const m = Math.max(room - 1, 0.02);
+  return Math.log((1 + 2.24 * m) / (1 + m));
+}
+
+export function flashShareFlat(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FLASH_W, h = FLASH_H, lift = LIFT): number | null {
   const { art, frame } = masks(w, h);
   const n = w * h;
   const g = new Float32Array(n).fill(NaN);
@@ -187,7 +202,7 @@ export function flashShareFlat(off: Uint8ClampedArray, on: Uint8ClampedArray, w 
     if (!art[i] || !Number.isFinite(g[i])) continue;
     const res = g[i] - (c[0] + c[1] * uu(i) + c[2] * vv(i));
     cnt++;
-    if (res > LIFT) up++; else if (res < -LIFT) down++;
+    if (res > lift) up++; else if (res < -lift) down++;
   }
   return cnt ? (up - down) / cnt : null;
 }

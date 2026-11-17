@@ -42,15 +42,17 @@ export function debugFromUrl() {
   if (v === "1" || v === "0") setDebug(v === "1");
 }
 
-// Zahlen kürzen, damit eine Zeile lesbar bleibt
-function tidy(v: unknown, depth = 0): unknown {
+// Zahlen kürzen, damit eine Zeile lesbar bleibt. Unter dem Schlüssel „b64" stehen Bilddaten (Debug,
+// lib/flashCapture): die bleiben ganz — der Server nimmt je Ereignis bis 3000 Zeichen.
+function tidy(v: unknown, depth = 0, key = ""): unknown {
   if (typeof v === "number") return Number.isInteger(v) ? v : Math.round(v * 1000) / 1000;
-  if (depth > 4) return "…";
+  if (depth > 6) return "…";
   if (Array.isArray(v)) return v.slice(0, 40).map((x) => tidy(x, depth + 1));
   if (v && typeof v === "object") {
-    return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 40).map(([k, x]) => [k, tidy(x, depth + 1)]));
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 40).map(([k, x]) => [k, tidy(x, depth + 1, k)]));
   }
-  return typeof v === "string" && v.length > 300 ? `${v.slice(0, 300)}…` : v;
+  const max = key === "b64" ? 2950 : 300;
+  return typeof v === "string" && v.length > max ? `${v.slice(0, max)}…` : v;
 }
 
 export function dlog(event: string, data?: Record<string, unknown>) {
