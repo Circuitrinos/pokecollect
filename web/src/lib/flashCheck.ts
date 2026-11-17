@@ -19,7 +19,7 @@ import { ART_BOX } from "./liveFoil";
 
 export const FLASH_W = 40;
 export const FLASH_H = 55;
-export const FLASH_STEP_MS = 400;     // so lange bleibt die Lampe je Zustand (an, aus, …)
+export const FLASH_STEP_MS = 500;     // so lange bleibt die Lampe je Zustand — die Belichtung regelt in ~0.35 s nach (Brave-Test)
 // Die Folie wirft das Licht nur zurück, wenn die Karte fast gerade unter dem Handy liegt (Brian:
 // „nicht aus jedem Winkel"). In seinem Video, je Umschalten und Karte nach dem Blickwinkel: bis 14°
 // Holo +0.45, Reverse Holo −0.22; darüber Holo +0.00…+0.07, Reverse Holo −0.02…−0.05 — die Folie
@@ -247,54 +247,85 @@ export function viewAngle(quad: number[][], w: number, h: number, focal = flashF
 // ── Urteil je Karte ─────────────────────────────────────────────────────────
 
 export type FlashKind = "Holo" | "Reverse Holo" | "Normal";
-// Vorläufig, aus Brians einem Versuch (16.11., 3–14°, je Umschalten): Normal −0.03…+0.06,
-// Holo +0.10…+0.76, Reverse Holo −0.34…+0.01. Die Protokolle („live.flash.final") eichen es nach.
-export const FLASH_MIN_N = 3;         // so viele gezählte Umschalter mindestens
-const FLASH_CUT = 0.12;               // Median darüber: Holo, darunter (negativ): Reverse Holo
-const FLASH_FLAT = 0.05;              // Median so nah an 0 (ab 4 Umschaltern): Normal
-const FLASH_LATE_N = 8;               // danach entscheidet die Seite (±0.06), sonst Normal
-const FLASH_LATE_CUT = 0.06;
+// Gemessen wird je Umschalten zwischen den Enden zweier Phasen (Lampe aus / an, je die beiden letzten
+// Bilder gemittelt — da hat die Belichtung nachgeregelt, beide Bilder sind gleich hell belichtet).
+// Eingestellt an Brians Video (16.11., Enden der Phasen, je Karte 18 Messungen) und denselben Paaren
+// mit stärkerer Lampe (×1.6–×3, auch mit gestauchten Lichtern) — dort hebt Glanz auf dem Bild auch
+// normale Karten auf +0.11…+0.14 (Holo +0.23…+0.41, Reverse Holo −0.14…−0.34). Über jeden Startpunkt
+// der Folgen: mit diesen Grenzen und „hält noch 2 Messungen" 21 von 522 falsch (vorher 91).
+// Die Protokolle („live.flash.final") eichen es nach.
+export const FLASH_MIN_N = 4;         // so viele gezählte Umschalter mindestens
+export const FLASH_HOLD = 2;          // ein Urteil gilt, wenn es noch so viele Messungen später gleich ist
+const FLASH_HOLO = 0.22;              // Median ab hier: Holo
+const FLASH_REV = -0.08;              // Median bis hier: Reverse Holo
+const FLASH_FLAT_LO = -0.04;          // Median dazwischen (ab FLASH_FLAT_N Umschaltern): Normal
+const FLASH_FLAT_HI = 0.06;
+const FLASH_FLAT_N = 6;
+const FLASH_LATE_N = 10;              // danach: Holo ab +0.18, Reverse Holo bis −0.05, sonst Normal
+const FLASH_LATE_HOLO = 0.18;
+const FLASH_LATE_REV = -0.05;
 
 /** Normal / Holo / Reverse Holo aus den gezählten Umschaltern einer Karte — null: noch offen. */
 export function flashKind(shares: number[]): FlashKind | null {
   const n = shares.length;
   if (n < FLASH_MIN_N) return null;
   const m = median(shares);
-  if (m >= FLASH_CUT) return "Holo";
-  if (m <= -FLASH_CUT) return "Reverse Holo";
-  if (n >= 4 && Math.abs(m) <= FLASH_FLAT) return "Normal";
-  if (n >= FLASH_LATE_N) return m >= FLASH_LATE_CUT ? "Holo" : m <= -FLASH_LATE_CUT ? "Reverse Holo" : "Normal";
+  if (m >= FLASH_HOLO) return "Holo";
+  if (m <= FLASH_REV) return "Reverse Holo";
+  if (n >= FLASH_FLAT_N && m >= FLASH_FLAT_LO && m <= FLASH_FLAT_HI) return "Normal";
+  if (n >= FLASH_LATE_N) return m >= FLASH_LATE_HOLO ? "Holo" : m <= FLASH_LATE_REV ? "Reverse Holo" : "Normal";
   return null;
 }
 
-/**
- * Holo nur, wenn es auch beim Ausschalten so aussieht. Beim Einschalten ist die Belichtung noch auf
- * das dunkle Bild gestellt: das erste helle Bild ist überbelichtet, die Kamera staucht die hellen
- * Stellen (Schulter der Tonkurve) — der helle Rahmen legt weniger zu als das dunklere Bild, und auch
- * eine normale Karte sieht nach Holo aus. Beim Ausschalten ist das helle Bild das nachgeregelte.
- * Brians Brave-Test (16.11.): alle sechs „Holo"; im Kamerabild springt die Karte beim Einschalten
- * von Median 157 auf 204 (90 %: 175 → 228) und regelt in ~0.3 s auf 163 zurück. Nachgestellt an den
- * echten Paaren (Lampe ×2.2, Schulter ab 40 %): Einschalten normal +0.29/+0.35, Ausschalten
- * +0.01/+0.05; Holo beim Ausschalten so gefilmt +0.12/+0.50.
- */
-const FLASH_OFF_HOLO = 0.06;
-const FLASH_OFF_MIN_N = 2;
-
-/** Wie flashKind, mit Richtung je Umschalten (true: Lampe ging an). */
-export function flashKindDir(shares: number[], lightOn: boolean[]): FlashKind | null {
+/** Das Urteil gilt erst, wenn es FLASH_HOLD Messungen später noch dasselbe ist — neue Messungen können es kippen. */
+export function flashSettled(shares: number[]): FlashKind | null {
   const k = flashKind(shares);
-  if (k !== "Holo") return k;
-  const offs = shares.filter((_, i) => !lightOn[i]);
-  // kommen keine Ausschalt-Messungen zustande, gilt nach langem Warten das Gesamtbild
-  if (offs.length < FLASH_OFF_MIN_N) return shares.length >= 2 * FLASH_LATE_N ? k : null;
-  const m = median(offs);
-  if (m >= FLASH_OFF_HOLO) return "Holo";
-  const ko = flashKind(offs);
-  if (ko) return ko;
-  // genug gemessen, die Ausschalt-Messungen bleiben dazwischen: ihre Seite entscheidet (wie spät in
-  // flashKind) — sonst bliebe die Karte für immer offen (Brians Test 16.11. im /e/OS-Browser: „halten … 11/3")
-  if (shares.length >= FLASH_LATE_N) return m <= -FLASH_LATE_CUT ? "Reverse Holo" : "Normal";
-  return null;
+  return k && shares.length > FLASH_HOLD && flashKind(shares.slice(0, -FLASH_HOLD)) === k ? k : null;
+}
+
+/** Zwei Ausschnitte (RGBA) mitteln — die beiden letzten Bilder einer Phase. */
+export function averagePatch(a: Uint8ClampedArray, b: Uint8ClampedArray): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i] + 1) >> 1;
+  return out;
+}
+
+/**
+ * `mov` auf `ref` ausrichten (ganze Pixel, ±r): die Phasen liegen ~0.5 s auseinander, die Umrisse
+ * folgen der Hand nicht ganz genau. Vergleich der Helligkeit (Korrelation, Lampe an/aus egal).
+ */
+export function alignPatch(ref: Uint8ClampedArray, mov: Uint8ClampedArray, w = FLASH_W, h = FLASH_H, r = 2): Uint8ClampedArray {
+  const lum = (p: Uint8ClampedArray) => {
+    const o = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) o[i] = 0.299 * p[4 * i] + 0.587 * p[4 * i + 1] + 0.114 * p[4 * i + 2];
+    return o;
+  };
+  const A = lum(ref), B = lum(mov);
+  let best = -2, bx = 0, by = 0;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+      for (let y = r; y < h - r; y++) {
+        for (let x = r; x < w - r; x++) {
+          const a = A[y * w + x], b = B[(y + dy) * w + x + dx];
+          n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+        }
+      }
+      const va = saa - (sa * sa) / n, vb = sbb - (sb * sb) / n;
+      const c = va > 0 && vb > 0 ? (sab - (sa * sb) / n) / Math.sqrt(va * vb) : -1;
+      if (c > best + 1e-6) { best = c; bx = dx; by = dy; }
+    }
+  }
+  if (!bx && !by) return mov;
+  const out = new Uint8ClampedArray(mov.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(w - 1, Math.max(0, x + bx)), sy = Math.min(h - 1, Math.max(0, y + by));
+      const o = 4 * (y * w + x), q = 4 * (sy * w + sx);
+      out[o] = mov[q]; out[o + 1] = mov[q + 1]; out[o + 2] = mov[q + 2]; out[o + 3] = 255;
+    }
+  }
+  return out;
 }
 
 /** Gezählte Umschalter je Karte (Schlüssel der Live-Karte). */
@@ -313,18 +344,25 @@ export class FlashTally {
     return this.m.get(key)?.s.length ?? 0;
   }
 
+  /** vorläufig (kann noch kippen) */
   kind(key: string): FlashKind | null {
     const e = this.m.get(key);
-    return e ? flashKindDir(e.s, e.on) : null;
+    return e ? flashKind(e.s) : null;
   }
 
-  result(key: string): (FlashResult & { kind: FlashKind | null; offShare: number | null }) | null {
+  /** gilt (hat FLASH_HOLD weitere Messungen gehalten) */
+  settled(key: string): FlashKind | null {
+    const e = this.m.get(key);
+    return e ? flashSettled(e.s) : null;
+  }
+
+  result(key: string): (FlashResult & { kind: FlashKind | null; tentative: FlashKind | null; offShare: number | null }) | null {
     const e = this.m.get(key);
     const r = e ? summarize(e.s) : null;
     if (!r || !e) return null;
     const offs = e.s.filter((_, i) => !e.on[i]);
     const offShare = offs.length ? Math.round(median(offs) * 1000) / 1000 : null;
-    return { ...r, deg: e.deg, kind: flashKindDir(e.s, e.on), offShare };
+    return { ...r, deg: e.deg, kind: flashSettled(e.s), tentative: flashKind(e.s), offShare };
   }
 
   forget(keep: Set<string>): void {

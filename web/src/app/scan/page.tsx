@@ -37,7 +37,7 @@ import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraC
 import {
   ZOOM_DEAD_KEY, ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, checkZoom, fmtZoom, grayThumb, lightSet, readZoomCaps, storedZoom,
 } from "@/lib/cameraZoom";
-import { FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
+import { FLASH_HOLD, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
@@ -707,7 +707,8 @@ export default function ScanPage() {
   const flashOnRef = useRef(false);
   flashOnRef.current = flashOn;
   const flashRef = useRef<FlashMonitor | null>(null);
-  const [flashView, setFlashView] = useState<Record<string, { kind: FlashKind | null; n: number }>>({});
+  // je Karte: Urteil (vorläufig), ob es gilt (hat gehalten), Zahl der Messungen
+  const [flashView, setFlashView] = useState<Record<string, { kind: FlashKind | null; settled: boolean; n: number }>>({});
   const [flashBlinking, setFlashBlinking] = useState(false);
   const [flashAngles, setFlashAngles] = useState<Record<string, number | null>>({});   // je offene Karte: Blickwinkel jetzt
   // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
@@ -889,7 +890,7 @@ export default function ScanPage() {
   // (mit Blitz-Test: erst, wenn jede Karte auch ihre Folierung hat)
   const autoFinish = (st: LiveState): boolean => {
     if (!allSure(st, mode)) return false;
-    if (flashOnRef.current && st.tracks.some((t) => flashNeed(t) && !flashRef.current?.tally.kind(t.key))) return false;
+    if (flashOnRef.current && st.tracks.some((t) => flashNeed(t) && !flashRef.current?.tally.settled(t.key))) return false;
     if (signature(st) === lastDoneRef.current) { dlog("live.same-as-last"); return false; }
     finishLiveRef.current();
     return true;
@@ -933,7 +934,7 @@ export default function ScanPage() {
         art: +s.art.toFixed(3), frame: +s.frame.toFixed(3), whole: +s.whole.toFixed(3), n: s.n,
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
       const fl = flash.get(i.key);
-      if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: fl.kind,
+      if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: fl.kind, tentative: fl.tentative,
         share: +fl.share.toFixed(3), off: fl.offShare, n: fl.n, all: fl.all, deg: fl.deg, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
@@ -970,13 +971,18 @@ export default function ScanPage() {
       const back = last && last.epoch === tr.epoch ? invM(last.cum) : null;
       if (!back) return null;                         // Spur verloren: erst wieder einordnen lassen
       const toNow = mulM(tr.cum, back);
-      return st.tracks.filter((t) => flashNeed(t) && !mon.tally.kind(t.key))
+      // geblinkt wird, solange ein Urteil noch nicht gehalten hat — gemessen werden dabei alle Karten,
+      // auch schon entschiedene: neue Messungen können ein Urteil kippen (Brian 16.11.: falsches Holo blieb)
+      const need = st.tracks.filter((t) => flashNeed(t));
+      if (!need.some((t) => !mon.tally.settled(t.key))) return null;
+      return need
         .map((t) => ({ key: t.key, quad: applyM(toNow, viewQuad(st, t)) }));
     };
     const onMeasure = () => {
       const st = liveRef.current;
       mon.tally.forget(new Set(st.tracks.map((t) => t.key)));
-      setFlashView(Object.fromEntries(st.tracks.map((t) => [t.key, { kind: mon.tally.kind(t.key), n: mon.tally.n(t.key) }])));
+      setFlashView(Object.fromEntries(st.tracks.map((t) => [t.key,
+        { kind: mon.tally.kind(t.key), settled: !!mon.tally.settled(t.key), n: mon.tally.n(t.key) }])));
       if (!liveInFlightRef.current) autoFinishRef.current(st);
     };
     const mon = new FlashMonitor(v, torch, cards, onMeasure, (on) => {
@@ -3069,7 +3075,7 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
 function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flashBlinking }: {
   w: number; h: number; state: LiveState; foils: Record<string, LiveFoil>; onTap: (key: string) => void;
-  flash?: Record<string, { kind: FlashKind | null; n: number }> | null;   // Blitz-Test an: je Karte gemessen / offen
+  flash?: Record<string, { kind: FlashKind | null; settled: boolean; n: number }> | null;   // Blitz-Test an: je Karte gemessen / offen
   flashAngles?: Record<string, number | null>;                           // … Blickwinkel jetzt (Anleitung auf der Karte)
   flashBlinking?: boolean;
   gRef?: React.MutableRefObject<SVGGElement | null>;   // folgt der Kamera seit dem letzten geprüften Bild (lib/svgMove)
@@ -3083,8 +3089,8 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flas
       {state.tracks.map((tr) => {
         const v = verdict(tr);
         // Blitz-Test: erkannt, Folierung noch offen → blau, bis sie gemessen ist
-        const fm = flash && flashNeed(tr) ? flash[tr.key] ?? { kind: null, n: 0 } : null;
-        const pending = !!fm && !fm.kind;
+        const fm = flash && flashNeed(tr) ? flash[tr.key] ?? { kind: null, settled: false, n: 0 } : null;
+        const pending = !!fm && !fm.settled;      // blau, bis das Urteil gehalten hat
         const c = pending ? FLASH_PENDING : LIVE_COLOURS[v.level];
         const pts = viewQuad(state, tr).map(([x, y]) => [x * w, y * h]);
         const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
@@ -3092,13 +3098,15 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flas
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
         const foil = LIVE_FOIL_HINTS ? foils[tr.key]?.kind : undefined;
         const shine = foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
-        const lit = fm?.kind ? ` · ${fm.kind === "Reverse Holo" ? "Rev." : fm.kind}` : pending ? " ⚡" : "";
+        const kindShort = fm?.kind === "Reverse Holo" ? "Rev." : fm?.kind;
+        const lit = fm?.kind ? ` · ${kindShort}${fm.settled ? "" : "?"}` : pending ? " ⚡" : "";   // „?": vorläufig
         // Anleitung mitten auf der Karte: was hier noch zu tun ist
         const a = flashAngles?.[tr.key];
         const todo = pending
           ? [t.scan_flash_card_title, !flashBlinking ? t.scan_flash_card_wait
             : a == null || a > FLASH_MAX_DEG ? t.scan_flash_card_move
-              : a < FLASH_MIN_DEG ? t.scan_flash_card_side : t.scan_flash_card_hold(fm.n, FLASH_MIN_N)]
+              : a < FLASH_MIN_DEG ? t.scan_flash_card_side
+                : t.scan_flash_card_hold(Math.min(fm.n, FLASH_MIN_N + FLASH_HOLD), FLASH_MIN_N + FLASH_HOLD)]
           : v.level !== "green" ? [t.scan_live_card_number, t.scan_live_card_tap] : null;
         const cx = pts.reduce((s2, p) => s2 + p[0], 0) / 4, cy = pts.reduce((s2, p) => s2 + p[1], 0) / 4;
         const tfs = Math.min(fs, Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * 0.085);   // längste Zeile passt auf die Karte

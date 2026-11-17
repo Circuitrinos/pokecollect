@@ -1,10 +1,13 @@
 // Blitz-Test im Live-Scan: sind alle Karten erkannt, blinkt die Lampe, bis jede Karte ihre
 // Folierung hat. Jedes Kamerabild: die noch offenen Karten ausschneiden (Umrisse folgen der
-// Bewegungsverfolgung), an jedem Umschalten Bild vorher / nachher vergleichen (lib/flashCheck) —
-// aber nur für Karten, die gerade fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
+// Bewegungsverfolgung). Verglichen werden die Enden zweier Phasen (Lampe aus / an): je die beiden
+// letzten Bilder vor einem Umschalten, gemittelt — dann hat die Belichtung nachgeregelt. Direkt nach
+// dem Umschalten ist das Bild über- oder unterbelichtet (Brave/Fairphone: Median 157 → 204 → 163 in
+// ~0.35 s), und das verzerrt Bild gegen Rahmen. Nur Karten, die in beiden Phasen fast gerade unter dem
+// Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
-  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, atlasPatch, flashShare,
-  flashFocal, flashTransform, litLevel, viewAngle,
+  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, alignPatch, atlasPatch,
+  averagePatch, flashFocal, flashShare, flashTransform, litLevel, viewAngle,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
 import { dlog } from "./debugLog";
@@ -13,6 +16,7 @@ import { dlog } from "./debugLog";
 export type FlashCard = { key: string; quad: number[][] };
 
 type Shot = { n: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
+type Phase = { lit: boolean; at: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
 const ANGLE_MS = 250;
 
 export class FlashMonitor {
@@ -30,6 +34,7 @@ export class FlashMonitor {
   private tiny = document.createElement("canvas");
   private atlas = document.createElement("canvas");
   private means: number[] = [];       // Helligkeit der letzten Bilder (fürs Protokoll)
+  private phase: Phase | null = null; // Ende der letzten Phase (Lampe an oder aus)
   /** Kamerafarben reparieren (lib/cameraColors) — die Seite setzt das. */
   colorFix: () => boolean = () => false;
   /** Zoom der Kamera gegenüber dem Start (für den Blickwinkel) — die Seite setzt das. */
@@ -63,7 +68,7 @@ export class FlashMonitor {
     if (this.blinking === on) return;
     this.blinking = on;
     this.onBlink(on);
-    if (!on) { this.finder.reset(); this.shots = []; this.means = []; }
+    if (!on) { this.finder.reset(); this.shots = []; this.means = []; this.phase = null; }
   }
 
   private async set(on: boolean) {
@@ -155,7 +160,7 @@ export class FlashMonitor {
       this.onAngles(Object.fromEntries(Array.from(shot.cards, ([key, c]) => [key, c.deg])));
     }
     this.shots.push(shot);
-    if (this.shots.length > 3) this.shots.shift();
+    if (this.shots.length > 5) this.shots.shift();
     this.means.push(Math.round(mean));
     if (this.means.length > 4) this.means.shift();
     const sw = this.finder.push(mean, performance.now());
@@ -164,18 +169,33 @@ export class FlashMonitor {
     const asked = this.asked;
     if (!asked || asked.on !== sw.lightOn || performance.now() - asked.at > 1.5 * FLASH_STEP_MS) return;
     this.asked = null;
-    const off = this.shots.find((s) => s.n === sw.off), on = this.shots.find((s) => s.n === sw.on);
-    if (!off || !on) return;
+    // die Phase, die gerade zu Ende ging: die beiden letzten Bilder vor dem Sprung (davor das halb belichtete)
+    const pre = sw.lightOn ? sw.off : sw.on;
+    const last = this.shots.find((x) => x.n === pre), prev = this.shots.find((x) => x.n === pre - 1);
+    if (!last) { this.phase = null; return; }
+    const ended: Phase = { lit: !sw.lightOn, at: performance.now(), cards: new Map() };
+    last.cards.forEach((c, key) => {
+      const p = prev?.cards.get(key);
+      ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg });
+    });
+    const before = this.phase;
+    this.phase = ended;
+    // ein Umschalten verpasst (gleicher Zustand oder zu lange her): erst mit der nächsten Phase vergleichen
+    if (!before || before.lit === ended.lit || ended.at - before.at > 2.5 * FLASH_STEP_MS) return;
+    const darkPh = ended.lit ? before : ended, litPh = ended.lit ? ended : before;
     let added = false;
     const seen: Record<string, (number | null)[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel]
-    on.cards.forEach((b, key) => {
-      const a = off.cards.get(key);
-      if (!a || b.deg == null) return;
-      const ok = b.deg >= FLASH_MIN_DEG && b.deg <= FLASH_MAX_DEG;
-      const s = ok ? flashShare(a.px, b.px) : null;
-      seen[key] = [s == null ? null : Math.round(s * 1000) / 1000, Math.round(litLevel(b.px)), Math.round(litLevel(a.px)), Math.round(b.deg)];
+    litPh.cards.forEach((b, key) => {
+      const a = darkPh.cards.get(key);
+      if (!a || b.deg == null || a.deg == null) return;
+      const inBand = (d: number) => d >= FLASH_MIN_DEG && d <= FLASH_MAX_DEG;
+      const ok = inBand(b.deg) && inBand(a.deg);
+      const lit = ok ? alignPatch(a.px, b.px) : b.px;
+      const s = ok ? flashShare(a.px, lit) : null;
+      const deg = (a.deg + b.deg) / 2;
+      seen[key] = [s == null ? null : Math.round(s * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg)];
       if (s == null) return;
-      this.tally.add(key, s, b.deg, sw.lightOn);
+      this.tally.add(key, s, deg, sw.lightOn);
       added = true;
     });
     dlog("live.flash.switch", { on: sw.lightOn, zoom: this.zoom(), means: this.means.slice(), cards: seen });
