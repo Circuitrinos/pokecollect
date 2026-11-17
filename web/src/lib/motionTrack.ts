@@ -36,6 +36,13 @@ export function apply(m: Mat3, pts: number[][]): number[][] {
   });
 }
 
+/** Wie weit sich die Ansicht geändert hat (Matrix in Anteilen): Maßstab (>1: näher) und Verschiebung der Bildmitte. */
+export function viewChange(m: Mat3): { scale: number; shift: number } {
+  const [[cx, cy]] = apply(m, [[0.5, 0.5]]);
+  const scale = Math.sqrt(Math.abs(m[0][0] * m[1][1] - m[0][1] * m[1][0]) / (m[2][2] * m[2][2] || 1));
+  return { scale, shift: Number.isFinite(cx) && Number.isFinite(cy) ? Math.hypot(cx - 0.5, cy - 0.5) : Infinity };
+}
+
 /** Pixel-Matrix (Bild w×h) ↔ Anteile (0..1). */
 export const toFractions = (m: Mat3, w: number, h: number): Mat3 =>
   mul(mul([[1 / w, 0, 0], [0, 1 / h, 0], [0, 0, 1]], m), [[w, 0, 0], [0, h, 0], [0, 0, 1]]);
@@ -80,29 +87,38 @@ export function pickPoints(g: Float32Array, w: number, h: number, cols = 8, rows
 /** Punkt im nächsten Bild wiederfinden: Ausschnitt-Vergleich (mittelwertfrei) im Umkreis radius. */
 export function findPoint(a: Float32Array, b: Float32Array, w: number, h: number, px: number, py: number,
   radius: number, gx = 0, gy = 0): [number, number, number] | null {
+  // Vergleich nach Abzug des Mittels UND auf den Kontrast des alten Ausschnitts gebracht: die Lampe des
+  // Blitz-Tests ändert Helligkeit und Kontrast von Bild zu Bild (Fairphone: im ersten Bild nach dem
+  // Umschalten ×1.9 bzw. ×0.45) — nur das Mittel abzuziehen ließ die Punkte dann nicht wiederfinden
   const n = (2 * PATCH + 1) ** 2;
-  let ma = 0;
-  for (let dy = -PATCH; dy <= PATCH; dy++) for (let dx = -PATCH; dx <= PATCH; dx++) ma += a[(py + dy) * w + px + dx];
+  let ma = 0, qa = 0;
+  for (let dy = -PATCH; dy <= PATCH; dy++) for (let dx = -PATCH; dx <= PATCH; dx++) { const v = a[(py + dy) * w + px + dx]; ma += v; qa += v * v; }
   ma /= n;
+  const sa = Math.sqrt(Math.max(qa / n - ma * ma, 0));
   const cx = Math.round(px + gx), cy = Math.round(py + gy);
   const size = 2 * radius + 1;
-  const cost = new Float32Array(size * size).fill(Infinity);
-  let best = Infinity, bi = -1, bj = -1;
+  let best = Infinity, bi = -radius - 1, bj = -radius - 1;
+  // Mittel und Verstärkung eines Ausschnitts im neuen Bild (Verstärkung: auf den Kontrast des alten)
+  const stats = (x: number, y: number): [number, number] => {
+    let mb = 0, qb = 0;
+    for (let dy = -PATCH; dy <= PATCH; dy++) for (let dx = -PATCH; dx <= PATCH; dx++) { const v = b[(y + dy) * w + x + dx]; mb += v; qb += v * v; }
+    mb /= n;
+    const sb = Math.sqrt(Math.max(qb / n - mb * mb, 0));
+    const g = sb > 1e-3 ? Math.min(3, Math.max(1 / 3, sa / sb)) : 1;
+    return [mb, g];
+  };
   for (let j = -radius; j <= radius; j++) {
     const y = cy + j;
     if (y - PATCH < 0 || y + PATCH >= h) continue;
     for (let i = -radius; i <= radius; i++) {
       const x = cx + i;
       if (x - PATCH < 0 || x + PATCH >= w) continue;
-      let mb = 0;
-      for (let dy = -PATCH; dy <= PATCH; dy++) for (let dx = -PATCH; dx <= PATCH; dx++) mb += b[(y + dy) * w + x + dx];
-      mb /= n;
+      const [mb, g] = stats(x, y);
       let s = 0;
       for (let dy = -PATCH; dy <= PATCH && s < best; dy++) {
         const ra = (py + dy) * w + px, rb = (y + dy) * w + x;
-        for (let dx = -PATCH; dx <= PATCH; dx++) s += Math.abs(a[ra + dx] - ma - (b[rb + dx] - mb));
+        for (let dx = -PATCH; dx <= PATCH; dx++) s += Math.abs(a[ra + dx] - ma - g * (b[rb + dx] - mb));
       }
-      cost[(j + radius) * size + i + radius] = s;
       if (s < best) { best = s; bi = i; bj = j; }
     }
   }
@@ -113,13 +129,11 @@ export function findPoint(a: Float32Array, b: Float32Array, w: number, h: number
   const full = (i: number, j: number): number => {
     const x = cx + i, y = cy + j;
     if (x - PATCH < 0 || x + PATCH >= w || y - PATCH < 0 || y + PATCH >= h) return Infinity;
-    let mb = 0;
-    for (let dy = -PATCH; dy <= PATCH; dy++) for (let dx = -PATCH; dx <= PATCH; dx++) mb += b[(y + dy) * w + x + dx];
-    mb /= n;
+    const [mb, g] = stats(x, y);
     let s = 0;
     for (let dy = -PATCH; dy <= PATCH; dy++) {
       const ra = (py + dy) * w + px, rb = (y + dy) * w + x;
-      for (let dx = -PATCH; dx <= PATCH; dx++) s += Math.abs(a[ra + dx] - ma - (b[rb + dx] - mb));
+      for (let dx = -PATCH; dx <= PATCH; dx++) s += Math.abs(a[ra + dx] - ma - g * (b[rb + dx] - mb));
     }
     return s;
   };

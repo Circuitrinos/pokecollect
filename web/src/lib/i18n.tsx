@@ -450,8 +450,14 @@ const DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `Bild und Rahmen haben das Licht der Lampe unterschiedlich zurückgeworfen (${share}, ${n}× geblitzt) — bitte auf der Karte nachsehen`,
   scan_flash_test: "Blitz-Test",
-  scan_flash_light: "Licht",
-  scan_flash_light_hint: "Einzelkarte: die Lampe des Handys bleibt an, solange die Kamera läuft — so sieht die Folien-Prüfung im Foto Holo besser. Neige die Karte dabei ruhig ein wenig. Geblinkt wird nur bei mehreren Karten.",
+  scan_foiltilt: "Neigen",
+  scan_foiltilt_hint: "Einzelkarte: Folie beim Neigen erkennen — die Karte ein paar Sekunden zum Licht hin hin- und herkippen (seitlich und vor/zurück). Die Karte bleibt blau, bis es feststeht; dann zeigt sie Holo? / Rev.? / Normal?",
+  scan_foiltilt_card_title: "↻ Folie prüfen",
+  scan_foiltilt_card_do: (pct: number): string => `zum Licht hin kippen · ${pct} %`,
+  scan_foiltilt_seen: (kind: string): string => `Beim Neigen: ${kind}`,
+  scan_foiltilt_title: (ratio: string, swing: string, tex: string): string =>
+    `Bild gegen Rahmen ${ratio}×, Schwankung des Rahmens ${swing}, Muster im Rahmen im Licht ${tex}× — bitte auf der Karte nachsehen`,
+  scan_foiltilt_none: "Beim Neigen keine Folie gesehen",
   scan_fix_colors: "Farben falsch?",
   scan_colors_fixed: "Farben repariert",
   scan_zoom_none: "Zoom wirkt bei der Kamera dieses Handys in diesem Browser nicht (das Bild bleibt gleich). Trotzdem höher halten geht — die Karten sind dann nur kleiner.",
@@ -1738,8 +1744,14 @@ const EN: typeof DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `The art and the frame threw the phone's light back differently (${share}, ${n} flashes) — check the card`,
   scan_flash_test: "Flash test",
-  scan_flash_light: "Light",
-  scan_flash_light_hint: "Single card: the phone's light stays on while the camera runs — the foil check on the photo sees holo better that way. Tilting the card a little while you scan is fine. The light only blinks for several cards.",
+  scan_foiltilt: "Tilt",
+  scan_foiltilt_hint: "Single card: detect foil by tilting — tip the card toward the light for a few seconds, side to side and forward/back. The card stays blue until it's decided, then shows Holo? / Rev.? / Normal?",
+  scan_foiltilt_card_title: "↻ Foil check",
+  scan_foiltilt_card_do: (pct: number): string => `tilt toward the light · ${pct}%`,
+  scan_foiltilt_seen: (kind: string): string => `Tilt check: ${kind}`,
+  scan_foiltilt_title: (ratio: string, swing: string, tex: string): string =>
+    `Picture vs frame ${ratio}×, frame swing ${swing}, frame pattern in the light ${tex}× — please check the card`,
+  scan_foiltilt_none: "No foil seen while tilting",
   scan_fix_colors: "Wrong colours?",
   scan_colors_fixed: "Colours fixed",
   scan_zoom_none: "Zoom has no effect on this phone's camera in this browser (the picture stays the same). Holding the phone higher still works — the cards just look smaller.",
