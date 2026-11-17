@@ -1,16 +1,23 @@
 // Blitz-Test im Live-Scan: sind alle Karten erkannt, blinkt die Lampe, bis jede Karte ihre
 // Folierung hat. Jedes Kamerabild: die noch offenen Karten ausschneiden (Umrisse folgen der
-// Bewegungsverfolgung). Verglichen werden die Enden zweier Phasen (Lampe aus / an): je die beiden
-// letzten Bilder, die aufgenommen wurden, BEVOR um das nächste Umschalten gebeten wurde, und frühestens
-// PHASE_SETTLE_MS nach dem sichtbaren Sprung — dann hat die Belichtung nachgeregelt.
-// Warum so: direkt nach dem Umschalten ist das Bild über- oder unterbelichtet (Brave/Fairphone: Median
-// 157 → 204 → 163 in ~0.35 s). Und die Kamera stellt die Belichtung schon 1–2 Bilder VOR dem sichtbaren
-// Umschalten um (Brians Protokoll 17.11., Bildhelligkeit: 150 → 75 → 125 beim Einschalten,
-// 134 → 215 → 158 beim Ausschalten) — „die letzten Bilder vor dem Sprung" waren also teils schon
-// falsch belichtet, und alle Karten lasen sich nach Holo (Reverse Holo +0.2, Normal +0.2…+0.4).
+// Bewegungsverfolgung).
+//
+// Geschaltet wird nach dem, was im Bild passiert, nicht nach der Uhr: um das Umschalten bitten, warten,
+// bis es im Bild zu sehen ist (die Helligkeit springt in die erwartete Richtung und bleibt im nächsten
+// Bild mindestens halb so weit dort — mindestens EVENT_STEP, nach zwei gesehenen Umschaltern 40 % des
+// üblichen Sprungs dieser Kamera), dann noch PHASE_MS stehen lassen und erst dann um das nächste bitten. Verglichen werden die Enden zweier
+// Phasen: je die letzten beiden Bilder vor dem nächsten sichtbaren Umschalten (das Bild direkt davor
+// ausgelassen — es kann schon halb umgeschaltet sein), frühestens SETTLE_MS nach dem eigenen.
+//
+// Warum: Brians Fairphone im /e/OS-Browser (Protokoll 17.11.) schaltet die Lampe erst ~0.5 s nach der
+// Bitte, und die Belichtung schießt im ersten Bild über: Lampe an 120 → 225 → 164, Lampe aus 150 → 55 → 116
+// (Helligkeit des ganzen Bilds), nach 2–3 Bildern ruhig. Mit festem Takt (0.4–0.6 s) lag das Umschalten
+// fast am Ende der Phase, als „Umschalten" wurde das Nachregeln danach erkannt, und verglichen wurden
+// genau die über- und unterbelichteten Bilder — alle Karten lasen sich nach Holo (Reverse Holo +0.34,
+// Normal +0.38…+0.40). Andere Kameras schalten in ~0.1 s; der Ablauf passt sich an beide an.
 // Nur Karten, die in beiden Phasen fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
-  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, alignPatch, atlasPatch,
+  FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_W, FlashTally, alignPatch, atlasPatch,
   averagePatch, flashFocal, flashShare, flashTransform, litLevel, viewAngle,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
@@ -19,10 +26,19 @@ import { dlog } from "./debugLog";
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
 export type FlashCard = { key: string; quad: number[][] };
 
-type Shot = { n: number; t: number; mean: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
-const PHASE_SETTLE_MS = 250;         // so lange nach dem sichtbaren Umschalten regelt die Belichtung noch nach
-const SHOTS_KEPT = 30;               // ~1 s Bilder
-type Phase = { lit: boolean; at: number; means: number[]; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
+type Patches = Map<string, { px: Uint8ClampedArray; deg: number | null }>;
+type Shot = { n: number; t: number; mean: number; cards: Patches };
+type Phase = { lit: boolean; endN: number; means: number[]; cards: Patches };
+/** Bitte ums Umschalten: wann, wohin, und wann es im Bild zu sehen war. */
+type Request = { on: boolean; at: number; seenAt: number | null; seenN: number | null };
+
+export const EVENT_STEP = 0.06;      // so viel heller/dunkler von einem Bild zum nächsten (mindestens): die Lampe hat geschaltet
+export const PHASE_MS = 450;         // so lange bleibt die Lampe, nachdem das Umschalten zu sehen war
+const SETTLE_MS = 300;               // bis dahin regelt die Belichtung nach dem Umschalten noch nach
+const STEADY = 0.08;                 // |ln| Abstand zum Median der Phase: so ruhig muss ein verwendetes Bild sein
+const EVENT_TIMEOUT_MS = 1500;       // so lange auf das Umschalten warten, dann gilt es als verpasst
+const TICK_MS = 50;
+const SHOTS_KEPT = 50;               // Bilder (~1.7 s) — eine ganze Phase muss hineinpassen
 const ANGLE_MS = 250;
 
 export class FlashMonitor {
@@ -31,26 +47,25 @@ export class FlashMonitor {
   private running = false;
   private torchOn = false;
   private switching = false;
-  private asked: { at: number; on: boolean } | null = null;
-  private finder = new SwitchFinder();
+  private req: Request | null = null;          // letzte Bitte ums Umschalten
+  private lastSeen: { n: number; t: number; on: boolean } | null = null;   // letztes sichtbares Umschalten
   private shots: Shot[] = [];
   private count = 0;
   private timer = 0;
   private src = document.createElement("canvas");
   private tiny = document.createElement("canvas");
   private atlas = document.createElement("canvas");
-  private means: number[] = [];       // Helligkeit der letzten Bilder (fürs Protokoll)
   private phase: Phase | null = null; // Ende der letzten Phase (Lampe an oder aus)
-  private lastJumpAt: number | null = null;   // wann das letzte Umschalten im Bild zu sehen war
+  private jumps: number[] = [];       // |ln| der zuletzt gesehenen Sprünge beim Umschalten (diese Kamera)
   /** Kamerafarben reparieren (lib/cameraColors) — die Seite setzt das. */
   colorFix: () => boolean = () => false;
   /** Zoom der Kamera gegenüber dem Start (für den Blickwinkel) — die Seite setzt das. */
   zoom: () => number = () => 1;
 
   /**
-   * cards(): die Karten, deren Folierung noch offen ist — null oder leer: nicht blinken.
-   * onMeasure(): eine Karte hat ein Umschalten mehr. onBlink(on): blinkt ab jetzt / nicht mehr.
-   * onAngles(deg): Blickwinkel je offener Karte (höchstens alle ANGLE_MS), für die Anleitung auf der Karte.
+   * cards(): die Karten, die gemessen werden — null oder leer: nicht blinken.
+   * onMeasure(): eine Karte hat eine Messung mehr. onBlink(on): blinkt ab jetzt / nicht mehr.
+   * onAngles(deg): Blickwinkel je Karte (höchstens alle ANGLE_MS), für die Anleitung auf der Karte.
    */
   constructor(private video: HTMLVideoElement, private torch: (on: boolean) => Promise<void>,
     private cards: () => FlashCard[] | null, private onMeasure: () => void, private onBlink: (on: boolean) => void,
@@ -61,7 +76,7 @@ export class FlashMonitor {
     if (this.running) return;
     this.running = true;
     this.next();
-    this.timer = window.setInterval(() => { void this.tick(); }, FLASH_STEP_MS);
+    this.timer = window.setInterval(() => { void this.tick(); }, TICK_MS);
   }
 
   async stop(): Promise<void> {
@@ -71,16 +86,24 @@ export class FlashMonitor {
     if (this.torchOn) await this.set(false);
   }
 
+  /** Mindestsprung (|ln|) fürs Umschalten: EVENT_STEP, nach zwei gesehenen 40 % des üblichen Sprungs dieser Kamera. */
+  private eventThreshold(): number {
+    const base = Math.log(1 + EVENT_STEP);
+    if (this.jumps.length < 2) return base;
+    const s = [...this.jumps].sort((a, b) => a - b);
+    return Math.max(base, 0.4 * s[s.length >> 1]);
+  }
+
   private setBlinking(on: boolean) {
     if (this.blinking === on) return;
     this.blinking = on;
     this.onBlink(on);
-    if (!on) { this.finder.reset(); this.shots = []; this.means = []; this.phase = null; this.lastJumpAt = null; }
+    if (!on) { this.shots = []; this.phase = null; this.lastSeen = null; this.req = null; this.jumps = []; }
   }
 
   private async set(on: boolean) {
     this.switching = true;
-    this.asked = { at: performance.now(), on };
+    this.req = { on, at: performance.now(), seenAt: null, seenN: null };
     try {
       await this.torch(on);
       this.torchOn = on;
@@ -98,6 +121,16 @@ export class FlashMonitor {
       return;
     }
     this.setBlinking(true);
+    const now = performance.now(), r = this.req;
+    if (r && r.seenAt == null) {
+      // noch nicht im Bild: warten — zu lange, dann gilt es als verpasst (die Kette der Phasen reißt)
+      if (now - r.at < EVENT_TIMEOUT_MS) return;
+      dlog("live.flash.missed", { on: r.on, ms: Math.round(now - r.at) });
+      this.phase = null;
+      this.lastSeen = null;
+    } else if (r && r.seenAt != null && now - r.seenAt < PHASE_MS) {
+      return;
+    }
     await this.set(!this.torchOn);
   }
 
@@ -168,36 +201,43 @@ export class FlashMonitor {
     }
     this.shots.push(shot);
     if (this.shots.length > SHOTS_KEPT) this.shots.shift();
-    this.means.push(Math.round(mean));
-    if (this.means.length > 4) this.means.shift();
-    const sw = this.finder.push(mean, performance.now(), this.asked?.on);
-    if (!sw) return;
-    // nur ein Umschalten, um das gebeten wurde (richtige Richtung, kurz danach) — kein Schwenk ins Helle
-    const asked = this.asked;
-    if (!asked || asked.on !== sw.lightOn || performance.now() - asked.at > 1.5 * FLASH_STEP_MS) return;
-    this.asked = null;
-    // die Phase, die gerade zu Ende ging: ihre letzten beiden Bilder vor der Bitte ums Umschalten,
-    // frühestens PHASE_SETTLE_MS nach ihrem eigenen Sprung (ist der nicht gesehen worden: keine Phase)
-    const pre = sw.lightOn ? sw.off : sw.on;
-    const jumpAt = this.shots.find((x) => x.n === pre + 1)?.t ?? performance.now();
-    const from = this.lastJumpAt;
-    this.lastJumpAt = jumpAt;
-    const usable = from != null && asked.at - from < 1.6 * FLASH_STEP_MS
-      ? this.shots.filter((x) => x.t >= from + PHASE_SETTLE_MS && x.t < asked.at) : [];
-    const [prev, last] = usable.slice(-2).length === 2 ? usable.slice(-2) : [undefined, usable[usable.length - 1]];
-    if (!last) { this.phase = null; return; }
-    const ended: Phase = { lit: !sw.lightOn, at: asked.at, means: [], cards: new Map() };
+    // ist das erbetene Umschalten im vorletzten Bild zu sehen? (Sprung in die erwartete Richtung gegenüber
+    // dem Bild davor, und im letzten Bild noch mindestens halb so weit dort)
+    const r = this.req, nShots = this.shots.length;
+    if (!r || r.seenAt != null || nShots < 3) return;
+    const ev = this.shots[nShots - 2], pre = this.shots[nShots - 3];
+    if (ev.t <= r.at || ev.n !== pre.n + 1 || shot.n !== ev.n + 1) return;
+    const dir = r.on ? 1 : -1;
+    const j1 = Math.log(Math.max(ev.mean, 1) / Math.max(pre.mean, 1)), j2 = Math.log(Math.max(shot.mean, 1) / Math.max(pre.mean, 1));
+    const minJump = this.eventThreshold();
+    if (dir * j1 < minJump || dir * j2 < minJump / 2) return;
+    this.jumps.push(Math.abs(j1));
+    if (this.jumps.length > 8) this.jumps.shift();
+    r.seenAt = ev.t;
+    r.seenN = ev.n;
+    const before = this.lastSeen;
+    this.lastSeen = { n: ev.n, t: ev.t, on: r.on };
+    const seenLog = { on: r.on, ms: Math.round(ev.t - r.at), jump: [pre, ev, shot].map((x) => Math.round(x.mean)) };
+    // die Phase, die jetzt zu Ende ging: Lampe so, wie sie beim vorigen Umschalten wurde
+    if (!before || before.on === r.on) { this.phase = null; dlog("live.flash.seen", seenLog); return; }
+    const window = this.shots.filter((x) => x.n > before.n && x.n <= ev.n - 2 && x.t >= before.t + SETTLE_MS);
+    // ruhige Bilder: Helligkeit nah am Median der Phase (ein Ausreißer kurz vor dem Umschalten bleibt draußen)
+    const sorted = window.map((x) => x.mean).sort((a, b) => a - b);
+    const mid = sorted.length ? sorted[sorted.length >> 1] : 0;
+    const usable = window.filter((x) => Math.abs(Math.log(Math.max(x.mean, 1) / Math.max(mid, 1))) <= STEADY);
+    const [prev, last] = usable.length >= 2 ? usable.slice(-2) : [undefined, usable[0]];
+    if (!last) { this.phase = null; dlog("live.flash.seen", { ...seenLog, frames: 0 }); return; }
+    const ended: Phase = { lit: before.on, endN: ev.n, means: [], cards: new Map() };
     last.cards.forEach((c, key) => {
       const p = prev?.cards.get(key);
       ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg });
     });
-    const endMeans = [prev, last].filter((x): x is Shot => !!x).map((x) => Math.round(x.mean));
-    ended.means = endMeans;
-    const before = this.phase;
+    ended.means = [prev, last].filter((x): x is Shot => !!x).map((x) => Math.round(x.mean));
+    const older = this.phase;
     this.phase = ended;
-    // ein Umschalten verpasst (gleicher Zustand oder zu lange her): erst mit der nächsten Phase vergleichen
-    if (!before || before.lit === ended.lit || ended.at - before.at > 1.6 * FLASH_STEP_MS) return;
-    const darkPh = ended.lit ? before : ended, litPh = ended.lit ? ended : before;
+    // nur zwei Phasen direkt hintereinander (die ältere endete mit dem Umschalten, mit dem diese begann)
+    if (!older || older.lit === ended.lit || older.endN !== before.n) { dlog("live.flash.seen", { ...seenLog, frames: usable.length }); return; }
+    const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
     const seen: Record<string, (number | null)[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel]
     litPh.cards.forEach((b, key) => {
@@ -206,15 +246,14 @@ export class FlashMonitor {
       const inBand = (d: number) => d >= FLASH_MIN_DEG && d <= FLASH_MAX_DEG;
       const ok = inBand(b.deg) && inBand(a.deg);
       const lit = ok ? alignPatch(a.px, b.px) : b.px;
-      const s = ok ? flashShare(a.px, lit) : null;
+      const sh = ok ? flashShare(a.px, lit) : null;
       const deg = (a.deg + b.deg) / 2;
-      seen[key] = [s == null ? null : Math.round(s * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg)];
-      if (s == null) return;
-      this.tally.add(key, s, deg, sw.lightOn);
+      seen[key] = [sh == null ? null : Math.round(sh * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg)];
+      if (sh == null) return;
+      this.tally.add(key, sh, deg, r.on);
       added = true;
     });
-    dlog("live.flash.switch", { on: sw.lightOn, zoom: this.zoom(), means: this.means.slice(), ends: [before.means, endMeans],
-      frames: usable.length, cards: seen });
+    dlog("live.flash.switch", { ...seenLog, ends: { dark: darkPh.means, lit: litPh.means }, frames: [usable.length, window.length], cards: seen });
     if (added) this.onMeasure();
   }
 }
