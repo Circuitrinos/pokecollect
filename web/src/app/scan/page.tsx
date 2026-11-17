@@ -2174,22 +2174,24 @@ export default function ScanPage() {
     const key = candidates[idx]?.key;
     if (key) await applyCornersTo(key, quad, transform);
   };
-  const applyCornersTo = async (key: string, quad: number[][], transform: CropTransform, quiet = false) => {
+  const applyCornersTo = async (key: string, quad: number[][], transform: CropTransform, quiet = false, again = true) => {
     const blob = sourceBlobRef.current;
     if (!blob) return;
     try {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
       patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u, foil: undefined,
-        usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true }));
-      await rematch(key, f, quiet);
+        usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: again }));
+      if (again) await rematch(key, f, quiet);   // sonst: von Hand gewählte Karte bleibt; nur Zuschnitt (und Folien-Prüfung) neu
     } catch { /* Entzerrung optional */ }
   };
 
   // Brian 17.11.: der Eck-Vorschlag (Ecken am Katalogbild angelegt) ist meist richtig — nach dem Scan je erkannte Karte
   // einmal von selbst übernehmen, wie „Ecken anpassen" → Vorschlag → Übernehmen; nur verlässliche (grüne) Vorschläge,
-  // nacheinander, und nicht, wenn die Ecken inzwischen von Hand geändert wurden
-  const autoCorners = async (photo: Blob, keys: string[]) => {
+  // nacheinander, und nicht, wenn die Ecken inzwischen von Hand geändert wurden. Unsicherer Treffer: erst, wenn die
+  // Karte gewählt ist (mit ihr angelegt); eine gewählte Karte wird danach nicht neu abgeglichen — die Wahl bleibt
+  const autoCornerDone = useRef(new Set<string>());
+  const autoCorners = async (photo: Blob, keys: string[], pickedId: string | null = null) => {
     let size: { w: number; h: number };
     try {
       const bm = await createImageBitmap(photo);
@@ -2200,18 +2202,21 @@ export default function ScanPage() {
     const upright = (q: number[][]) => screenOrder(q, viewFor(q, w, h), w, h);   // so herum, wie der Editor sie zeigt
     for (const key of keys) {
       const c = candidatesRef.current.find((x) => x.key === key);
-      const id = c?.match?.tcgdex_card_id;
+      const id = pickedId ?? c?.chosenId ?? c?.match?.tcgdex_card_id;
+      const picked = !!pickedId || !!c?.chosenId;
       if (sourceBlobRef.current !== photo) return;
-      if (!c || !id || c.editedQuad || c.saved) continue;
+      if (!c || !id || c.editedQuad || c.saved || autoCornerDone.current.has(key)) continue;
+      if (!picked && c.needs_choice) continue;   // unsicher: nach der Wahl (pickAlternative)
+      autoCornerDone.current.add(key);
       const start = upright(cardOrder(initialQuadFor(c), w, h, true));
       let sug: CornerSuggestion | null = null;
       try { sug = await outlineSuggest(id)(start); } catch { sug = null; }
       const now = candidatesRef.current.find((x) => x.key === key);
       const move = sug ? Math.max(...sug.quad.map((p) => Math.min(...start.map((q) => Math.hypot((p[0] - q[0]) * w, (p[1] - q[1]) * h))))) / w : null;
-      dlog("scan.autocorners", { key, id, ok: sug?.ok ?? null, label: sug?.label ?? null, move: move != null ? Math.round(move * 1000) / 1000 : null,
+      dlog("scan.autocorners", { key, id, picked, ok: sug?.ok ?? null, label: sug?.label ?? null, move: move != null ? Math.round(move * 1000) / 1000 : null,
         skipped: !now || !!now.editedQuad || !!now.saved || sourceBlobRef.current !== photo });
       if (!sug?.ok || !now || now.editedQuad || now.saved || sourceBlobRef.current !== photo) continue;
-      await applyCornersTo(key, upright(cardOrder(sug.quad, w, h)), { flipH: false, flipV: false, rotate: 0 }, true);
+      await applyCornersTo(key, upright(cardOrder(sug.quad, w, h)), { flipH: false, flipV: false, rotate: 0 }, true, !picked);
     }
   };
 
@@ -2400,6 +2405,9 @@ export default function ScanPage() {
         chosenId: alt.tcgdex_card_id,
         suggested: { ...nc.suggested, sprache: s.sprache ?? nc.suggested.sprache, muster: s.muster },
       } : cc));
+      // Brian 17.11.: auch nach der Wahl die Ecken einmal von selbst anlegen — jetzt mit der richtigen Karte
+      const photo = sourceBlobRef.current;
+      if (photo && (c.raw?.quad || c.raw?.bbox)) void autoCorners(photo, [c.key], alt.tcgdex_card_id);
     } catch {
       toast.error(t.scan_error);
     }
