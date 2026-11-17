@@ -47,6 +47,10 @@ const VIEW_REF = 0.65;              // … wie bei einer Karte, die 65 % der Bil
 export const LIT_RANGE = 1.3;       // hellste Momente mindestens so viel heller als üblich (zum Licht gedreht)
 export const HOLO_RATIO = 2.1, HOLO_RATIO_NO = 1.6, HOLO_ART = 0.15;   // 17.11.: Brock's Scouting (normal) bis 1.8–2.15
 export const RH_SWING = 0.30, RH_SWING_NO = 0.22;
+// die Karte gibt es nur in einer glänzenden Art (z. B. nur Reverse Holo): Folie gesehen → diese Art. Glänzt dabei das
+// Bild statt des Rahmens, nur bei sehr deutlichem Abstand (17.11.: Litleo, Normal/Reverse Holo, Bild 6–7× der Rahmen;
+// Brock's Scouting, normal, bis ~2)
+export const HOLO_AS_ONLY_FOIL = 3.5;
 export const RH_TEX = 1.05, RH_TEX_NO = 0.95;
 
 const LIN = new Float32Array(256);
@@ -202,11 +206,16 @@ export type TiltResult = {
 };
 
 /** Folierung aus den beiden Prüfungen, nur unter `options` (leer: alle). */
-export function tiltKind(r: Pick<TiltResult, "holo" | "rh" | "ready"> & Partial<Pick<TiltResult, "early" | "swing">>,
+export function tiltKind(r: Pick<TiltResult, "holo" | "rh" | "ready"> & Partial<Pick<TiltResult, "early" | "swing" | "ratio">>,
   options: string[]): FoilKind | null {
   const has = (k: FoilKind) => !options.length || options.includes(k);
+  if (!r.ready && !r.early) return null;
+  // nur eine glänzende Art von dieser Karte (Basis-Energie nur Holo, viele Karten nur Reverse Holo): Folie gesehen genügt
+  const shiny = (["Holo", "Reverse Holo"] as FoilKind[]).filter((k) => options.includes(k));
+  const frameShines = r.ready ? r.rh === "yes" : r.swing != null && r.swing >= RH_SWING && r.holo !== "yes";
+  const artShines = r.holo === "yes" && r.ratio != null && r.ratio >= HOLO_AS_ONLY_FOIL;
+  if (shiny.length === 1 && (frameShines || (shiny[0] === "Holo" ? r.holo === "yes" : artShines))) return shiny[0];
   if (!r.ready) {
-    if (!r.early) return null;
     if (r.swing != null && r.swing >= RH_SWING && r.holo !== "yes" && has("Reverse Holo")) return "Reverse Holo";
     if (r.holo === "yes" && r.rh !== "yes" && has("Holo")) return "Holo";
     return null;

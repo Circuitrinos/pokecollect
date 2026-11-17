@@ -26,7 +26,7 @@ from starlette.concurrency import run_in_threadpool
 
 import json
 
-from . import detect, embedding, foil, frame, learn, matcher, numocr, pagemap, recrop, stamp, timing
+from . import detect, embedding, foil, frame, learn, matcher, numocr, pagemap, recrop, samesize, stamp, timing
 from .catalog import CatalogCard, load_catalog, map_pokemontcg, num_key
 from .convert import convert
 from .extend import Extender
@@ -350,6 +350,17 @@ def _refine(img, card, cands, q, snap, top_k):
             break
         card, cands, q = card2, cands2, q2
     return card, cands, q
+
+
+def _own_outline(item: tuple) -> np.ndarray | None:
+    """The matched card's full outline in the photo (from the match's homography), for (key, quad, crop, cands)."""
+    _, q, card, cands = item
+    if not cands or cands[0].inliers < matcher.MIN_GOOD:
+        return None
+    inner = matcher.card_outline_in_query(cands[0], (card.shape[1], card.shape[0]))
+    if inner is None:
+        return None
+    return cv2.perspectiveTransform(inner.reshape(-1, 1, 2), np.linalg.inv(detect.warp_matrix(np.float32(q)))).reshape(4, 2)
 
 
 def _overlap(a: np.ndarray, b: np.ndarray) -> float:
@@ -1293,6 +1304,7 @@ def _multi_cards(img: np.ndarray, top_k: int,
     for key, q, card, cands in scored:
         if all(_overlap(q, k[1]) < 0.3 for k in kept):
             kept.append((key, q, card, cands))
+    kept = samesize.fix_sizes(img, kept, _own_outline)   # Brian 17.11.: all cards are the same size
     log.debug("loose cards %dx%d: %d outlines (%d left out), %d tried (%d grown from art frames), %d matched, %d kept",
               img.shape[1], img.shape[0], len(dets), n_left, n_tries, n_art, len(scored), len(kept))
     return [_decide(card, cands, q) for _, q, card, cands in
@@ -1556,6 +1568,9 @@ def _live_cells(img: np.ndarray, page: np.ndarray, rows: int, cols: int, top_k: 
                     q, crop = np.float32(q2), detect.warp(flat, q2)
         if all(_overlap(np.float32(q), np.float32(k[1][1])) < 0.3 for k in kept):
             kept.append((i, (key, q, crop, cands)))
+    # all cards the same size (straightened page: no perspective) — Brian 17.11.
+    fixed = samesize.fix_sizes(flat, [b for _, b in kept], _own_outline, what="live grid")
+    kept = [(i, f) for (i, _), f in zip(kept, fixed)]
     decided = []
     for i, (_, q, crop, cands) in sorted(kept, key=lambda t: t[0]):
         d, q = _decide(crop, cands, q)
