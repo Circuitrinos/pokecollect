@@ -43,6 +43,7 @@ import { FLASH_H, FLASH_TYPICAL_N, FLASH_W, flashReachable, type FlashKind } fro
 import { FlashMonitor, lumaB64, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import { TILT_W, type TiltResult } from "@/lib/tiltFoil";
 import { TiltFoilRunner } from "@/lib/tiltFoilRunner";
+import { mp4Rotation } from "@/lib/videoRotation";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
@@ -272,6 +273,7 @@ export default function ScanPage() {
   const videoFileInputRef = useRef<HTMLInputElement | null>(null);
   const fileSrcRef = useRef<string | null>(null);   // Objekt-URL des Videos
   const fileVidRef = useRef<HTMLVideoElement | null>(null);   // spielt die Datei ab (Weg „stream", s. startVideoFile)
+  const fileAuxRef = useRef<(() => void) | null>(null);       // räumt Dreh-Umweg (Stream-Video, Canvas) ab
   const fileTimeRef = useRef(0);                    // Stelle im Video (über die Prüfung hinweg weiter)
   const [fromFile, setFromFile] = useState<string | null>(null);
   const [fileBlank, setFileBlank] = useState(false);   // der Browser liefert aus dem Video nur leere Bilder
@@ -429,6 +431,8 @@ export default function ScanPage() {
       const fv = fileVidRef.current;
       if (fv) { fv.pause(); fv.removeAttribute("src"); fv.load(); fv.remove(); }
       fileVidRef.current = null;
+      fileAuxRef.current?.();
+      fileAuxRef.current = null;
       URL.revokeObjectURL(fileSrcRef.current);
       fileSrcRef.current = null;
       setFromFile(null);
@@ -527,6 +531,8 @@ export default function ScanPage() {
     const fv = fileVidRef.current;
     if (fv) { fileTimeRef.current = fv.currentTime || fileTimeRef.current; fv.pause(); fv.removeAttribute("src"); fv.load(); fv.remove(); }
     fileVidRef.current = null;
+    fileAuxRef.current?.();
+    fileAuxRef.current = null;
   };
   const startVideoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -541,6 +547,7 @@ export default function ScanPage() {
     setCamMsg(null);
     setTorchState("no");
     setZoomCaps(null);
+    const rotation = mp4Rotation(file);   // Drehung aus der Datei (der abgegriffene Stream beachtet sie nicht)
     void (async () => {
       const fv = document.createElement("video");
       fv.muted = true;
@@ -562,7 +569,48 @@ export default function ScanPage() {
         dlog("camera.file.stream-error", { message: (err as Error)?.message });
       }
       if (fileSrcRef.current !== url) { fv.pause(); fv.remove(); return; }
+      let turned: number | null = null;
       if (stream && stream.getVideoTracks().length) {
+        // hochkant aufgenommen (Drehung 90°/270° in der Datei) und der Stream noch liegend: über ein Canvas aufrichten
+        const rot = await rotation;
+        const raw = stream;
+        const sv = document.createElement("video");
+        sv.muted = true; sv.playsInline = true; sv.srcObject = raw;
+        sv.setAttribute("aria-hidden", "true");
+        Object.assign(sv.style, { position: "fixed", left: "2px", bottom: "0", width: "2px", height: "2px", opacity: "0.01", pointerEvents: "none" });
+        document.body.appendChild(sv);
+        try { await sv.play(); } catch { /* läuft trotzdem an */ }
+        for (let i = 0; i < 40 && !sv.videoWidth; i++) await new Promise((r) => window.setTimeout(r, 50));
+        const W = sv.videoWidth, H = sv.videoHeight;
+        const quarter = !!rot && (rot.angle === 90 || rot.angle === 270);
+        if (quarter && W && H && (W >= H) === (rot!.w >= rot!.h)) {
+          turned = rot!.angle;
+          const cv = document.createElement("canvas");
+          cv.width = H; cv.height = W;
+          const cx = cv.getContext("2d");
+          let alive = true;
+          const svx = sv as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+          const next = () => { if (svx.requestVideoFrameCallback) svx.requestVideoFrameCallback(draw); else window.requestAnimationFrame(draw); };
+          const draw = () => {
+            if (!alive || !cx) return;
+            if (sv.readyState >= 2) {
+              cx.setTransform(1, 0, 0, 1, 0, 0);
+              if (turned === 90) { cx.translate(H, 0); cx.rotate(Math.PI / 2); } else { cx.translate(0, W); cx.rotate(-Math.PI / 2); }
+              cx.drawImage(sv, 0, 0, W, H);
+            }
+            next();
+          };
+          next();
+          stream = cv.captureStream(30);
+          fileAuxRef.current = () => {
+            alive = false;
+            raw.getTracks().forEach((tr) => tr.stop());
+            sv.pause(); sv.srcObject = null; sv.remove();
+          };
+        } else {
+          sv.pause(); sv.srcObject = null; sv.remove();
+        }
+        dlog("camera.file.rotation", { file: rot, raw: [W, H], turned });
         fileVidRef.current = fv;
         streamRef.current = stream;
         setFileMode("stream");
@@ -619,7 +667,7 @@ export default function ScanPage() {
           // leer: die Datei direkt versuchen
           streamRef.current?.getTracks().forEach((tr) => tr.stop());
           streamRef.current = null;
-          dropFileVideo();
+          dropFileVideo();   // räumt auch den Dreh-Umweg ab
           setFileMode("direct");
         });
       }
