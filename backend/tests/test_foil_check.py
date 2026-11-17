@@ -155,3 +155,27 @@ def test_luma_of_puts_transparent_corners_on_grey():
 
     px = base64.b64decode(foil_check.luma_of(_png(rgba=True)))
     assert len(px) == 40 * 55
+
+
+def test_luma_of_needs_no_numpy(monkeypatch):
+    """Das API-Image hat kein numpy (17.11.: jedes Katalogbild kam als null an) — nur Pillow."""
+    import base64
+    import sys
+
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    px = base64.b64decode(foil_check.luma_of(_png()))
+    assert len(px) == foil_check.CATALOG_LUMA_W * foil_check.CATALOG_LUMA_H
+
+
+def test_luma_of_matches_the_flash_test_encoding():
+    """lineare Luma (Rec. 709) aus sRGB, wieder sRGB-kodiert: Grau bleibt Grau, Rot wird dunkel."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    for rgb, want in (((128, 128, 128), 128), ((255, 0, 0), 127), ((0, 255, 0), 220), ((0, 0, 0), 0), ((255, 255, 255), 255)):
+        buf = io.BytesIO()
+        Image.new("RGB", (80, 110), rgb).save(buf, "PNG")
+        px = base64.b64decode(foil_check.luma_of(buf.getvalue()))
+        assert set(px) == {want}, (rgb, set(px))

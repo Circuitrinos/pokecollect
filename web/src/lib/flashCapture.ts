@@ -36,6 +36,8 @@ type Request = { on: boolean; at: number; seenAt: number | null; seenN: number |
 
 export const EVENT_STEP = 0.06;      // so viel heller/dunkler von einem Bild zum nächsten (mindestens): die Lampe hat geschaltet
 const JUMP_CAP = 0.25;              // die gelernte Mindestschwelle höchstens so hoch (|ln|, ≈ +28 %)
+const FULL_FITS = 3;                // so viele Karten je Umschalten neu am Katalogbild suchen (fitToCatalog ohne Startwert)
+const AE_JUMP = 0.3;                // so groß (|ln|, ≈ +35 %) zählt ein Sprung auch, wenn das nächste Bild schon nachgeregelt ist
 export const PHASE_MS = 450;         // so lange bleibt die Lampe, nachdem das Umschalten zu sehen war
 const SETTLE_MS = 300;               // bis dahin regelt die Belichtung nach dem Umschalten noch nach
 const STEADY = 0.08;                 // |ln| Abstand zum Median der Phase: so ruhig muss ein verwendetes Bild sein
@@ -143,7 +145,12 @@ export class FlashLoop {
     // bestätigt, wenn das nächste Bild noch ein Viertel des Sprungs hält (mindestens EVENT_STEP): die Kamera
     // regelt im dunklen Raum schon im Bild danach kräftig nach (Brian 17.11.: 120 → 177 → 136; mit
     // „halbe Mindestschwelle" nach großen Sprüngen 24 Umschalter hintereinander verpasst, 50 s ohne Messung)
-    if (dir * j1 < minJump || dir * j2 < Math.max(Math.log(1 + EVENT_STEP), 0.25 * dir * j1)) return false;
+    // Oder: ein großer Sprung, den die Belichtung schon im nächsten Bild ganz ausgleicht (17.11., zweite Matte:
+    // 24 von 184 verpasst, z. B. 119 → 172 → 127 und 119 → 79 → 113) — die Bilder danach sind trotzdem mit
+    // Lampe; gemessen wird ohnehin nur relativ (Aufhellen gegen den Median der Karte, Körnung).
+    const held = dir * j2 >= Math.max(Math.log(1 + EVENT_STEP), 0.25 * dir * j1);
+    const evened = dir * j1 >= Math.max(minJump + 0.05, AE_JUMP) && dir * j2 > -0.05;
+    if (dir * j1 < minJump || !(held || evened)) return false;
     this.jumps.push(Math.abs(j1));
     if (this.jumps.length > 8) this.jumps.shift();
     r.seenAt = ev.t;
@@ -185,7 +192,8 @@ export class FlashLoop {
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
     const seen: Record<string, unknown[]> = {};
-    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flat, flat mit Raum-Schwelle, Körnung, Lage am Katalog]
+    let fullFits = FULL_FITS;
+    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flat, flat mit Raum-Schwelle, Körnung, Lage am Katalog, Bild hellt mehr auf als Rahmen]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
@@ -200,15 +208,21 @@ export class FlashLoop {
       const dark = room0 != null && room0 >= FLASH_ROOM_SPLIT;
       const sh = dark ? shFlat : shNow;   // shRoom: nur protokolliert (Vergleich)
       // dunkler Raum mit Katalogbild: Körnung (flashTexture), am Katalogbild ausgerichtet
-      let fit: CatalogFit | null = null, tex: number | null = null;
-      if (ok && dark && a.cat) {
+      let fit: CatalogFit | null = null, tex: number | null = null, artUp: number | null = null;
+      const before = this.fits.get(key) ?? null;
+      // die weite Suche kostet ~30 ms am Rechner (am Handy mehr) — höchstens FULL_FITS Karten je Umschalten,
+      // die übrigen kommen beim nächsten dran (sonst stockt das Bild beim ersten Umschalten mit 12 Karten)
+      if (ok && dark && a.cat && (before || fullFits-- > 0)) {
         const lum = new Float32Array(FLASH_W * FLASH_H);
         for (let i = 0; i < lum.length; i++) lum[i] = lumLin(a.px, i);
-        const before = this.fits.get(key) ?? null;
         fit = fitToCatalog(lum, a.cat, before);
-        if (before && fit.corr < 0.5) fit = fitToCatalog(lum, a.cat);
-        if (fit.corr >= 0.5) this.fits.set(key, fit); else this.fits.delete(key);
-        tex = fit.corr >= 0.35 ? flashTexture(a.px, lit, a.cat, fit)?.ratio ?? null : null;
+        // nahe der letzten Lage nur, wenn es dort gut passt — sonst neu suchen (17.11.: die nahe Suche blieb
+        // an halb passenden Lagen hängen, Holo las sich dann wie normal)
+        if (before && fit.corr < 0.6 && fullFits-- > 0) fit = fitToCatalog(lum, a.cat);
+        if (fit.corr >= 0.6) this.fits.set(key, fit); else this.fits.delete(key);
+        const tx0 = fit.corr >= 0.35 ? flashTexture(a.px, lit, a.cat, fit) : null;
+        tex = tx0?.ratio ?? null;
+        artUp = tx0?.lift ?? null;
       }
       const deg = (a.deg + b.deg) / 2;
       const tx = a.pos && b.pos ? (a.pos.tx + b.pos.tx) / 2 : null, ty = a.pos && b.pos ? (a.pos.ty + b.pos.ty) / 2 : null;
@@ -218,7 +232,7 @@ export class FlashLoop {
       const r3 = (x: number | null) => (x == null ? null : Math.round(x * 1000) / 1000);
       seen[key] = [r3(sh), Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
         q3(a.q), q3(b.q), r3(shNow), r3(shFlat), r3(shRoom), r3(tex),
-        fit ? [r2(fit.dx), r2(fit.dy), r3(fit.sx), r3(fit.sy), r2(fit.corr)] : null];
+        fit ? [r2(fit.dx), r2(fit.dy), r3(fit.sx), r3(fit.sy), r2(fit.corr)] : null, r3(artUp)];
       if (this.dumpPatches) { patches[key] = [lumaB64(a.px), lumaB64(lit)]; }
       if (sh == null || tx == null || ty == null) return;
       // dunkler Raum: Katalogbild kommt noch, oder es ist da und die Körnung nicht messbar — nicht mit dem alten Maß raten

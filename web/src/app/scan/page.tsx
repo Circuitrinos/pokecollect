@@ -974,6 +974,10 @@ export default function ScanPage() {
       // geblinkt wird, solange ein Urteil noch nicht gehalten hat — gemessen werden dabei alle Karten,
       // auch schon entschiedene: neue Messungen können ein Urteil kippen (Brian 16.11.: falsches Holo blieb)
       const need = st.tracks.filter((t) => flashNeed(t));
+      for (const t of need) {
+        const c = verdict(t).cand;
+        mon.tally.allow(t.key, c ? withPrizePackHolo(c.foil_options ?? [], !!c.stamp?.sure) : null);
+      }
       if (!need.some((t) => !mon.tally.settled(t.key))) return null;
       return need
         .map((t) => ({ key: t.key, quad: applyM(toNow, viewQuad(st, t)), id: verdict(t).id ?? null }));

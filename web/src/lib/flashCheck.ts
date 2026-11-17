@@ -229,8 +229,8 @@ function solve3(M: number[], r: number[]): number[] | null {
 // schon kleine Verschiebungen zwischen den Bildern rote/blaue Flecken. Darum: den Ausschnitt am Katalogbild
 // der Karte ausrichten (Umriss lag 2 px daneben, bis 5 px und 6 % in der Größe), die Druckkanten des
 // Katalogbilds und den Glanzpunkt auslassen, dann Körnung im Bildfenster gegen Körnung im Rahmen (log).
-// Trennt Holo gut, Reverse Holo von normal nur knapp (gleiche Karte: ja, verschiedene Karten überlappen) —
-// darum lieber „offen" als falsch: an Brians 9 Karten 2 richtig, 0 falsch, 7 offen (die App bisher: 4 richtig, 5 falsch).
+// Trennt Reverse Holo (Folie im Rahmen) gut vom Rest; Holo von normal nicht (zweite Runde: die normale Ethan
+// las sich körniger als die Holo) — darum lieber „offen" als falsch, siehe FLASH_TEXTURE.
 
 /** Katalogbild der Karte (Server /scan/catalog-luma, 40×55, sRGB-kodiert) → lineare Helligkeit. */
 export function catalogLuma(b64: string, w = FLASH_W, h = FLASH_H): Float32Array | null {
@@ -301,8 +301,9 @@ function quantile(v: number[], q: number): number {
 
 /**
  * Ausschnitt (Lampe aus, lineare Helligkeit) am Katalogbild ausrichten: Verschiebung und Maßstab mit der
- * besten Korrelation der Kantenstärke. Ohne Startwert grob (±6 / ±8 px), dann fein (½, ¼ px, ±3 %);
- * mit Startwert (letzte Lage dieser Karte) nur nahe daran.
+ * besten Korrelation der Kantenstärke. Ohne Startwert grob (±14 / ±18 px, Maßstab 1 und 0.9), dann fein
+ * (1, ½, ¼ px, ±3 %); mit Startwert (letzte Lage dieser Karte) nur nahe daran. Brians zweite Matte (17.11.):
+ * die Umrisse der Karten in Hüllen lagen 12–17 px daneben — mit ±6 / ±8 px fand sich keine davon.
  */
 export function fitToCatalog(dark: Float32Array, cat: Float32Array, start: CatalogFit | null = null, w = FLASH_W, h = FLASH_H): CatalogFit {
   const C = catalogEdges(cat, w, h).strength, P = edgeStrength(dark, w, h);
@@ -313,7 +314,7 @@ export function fitToCatalog(dark: Float32Array, cat: Float32Array, start: Catal
     const Q = warpToCatalog(P, p, w, h);
     let n = 0, sa = 0, sb = 0;
     for (let i = 0; i < w * h; i++) if (inner[i] && Number.isFinite(Q[i])) { n++; sa += C[i]; sb += Q[i]; }
-    if (n < 0.6 * nInner) return -1;
+    if (n < 0.35 * nInner) return -1;   // Umriss kann bis ⅓ Karte daneben liegen (Hülle: 17.11. bis 17 px)
     const ma = sa / n, mb = sb / n;
     let ab = 0, aa = 0, bb = 0;
     for (let i = 0; i < w * h; i++) {
@@ -326,8 +327,9 @@ export function fitToCatalog(dark: Float32Array, cat: Float32Array, start: Catal
   let best: CatalogFit = { dx: 0, dy: 0, sx: 1, sy: 1, corr: -2 };
   const tryP = (p: CatalogFit) => { const c = score(p); if (c > best.corr) best = { ...p, corr: c }; };
   if (!start) {
-    for (let dx = -6; dx <= 6; dx++) for (let dy = -8; dy <= 8; dy++) tryP({ dx, dy, sx: 1, sy: 1, corr: 0 });
-    for (const step of [0.5, 0.25]) {
+    // grob: ±14 / ±18 px in 2er-Schritten, Karte so groß wie der Umriss oder kleiner (Hülle: Umriss = Hülle)
+    for (const sc of [1, 0.9]) for (let dx = -14; dx <= 14; dx += 2) for (let dy = -18; dy <= 18; dy += 2) tryP({ dx, dy, sx: sc, sy: sc, corr: 0 });
+    for (const step of [1, 0.5, 0.25]) {
       const p = best;
       for (const ddx of [-step, 0, step]) for (const ddy of [-step, 0, step]) for (const ds of [-0.03, 0, 0.03]) for (const dt of [-0.03, 0, 0.03]) {
         tryP({ dx: p.dx + ddx, dy: p.dy + ddy, sx: p.sx * (1 + ds), sy: p.sy * (1 + dt), corr: 0 });
@@ -345,11 +347,11 @@ export function fitToCatalog(dark: Float32Array, cat: Float32Array, start: Catal
 
 /**
  * Körnung des Aufhellens: im Bildfenster gegen im Rahmen (log), am Katalogbild ausgerichtet, ohne
- * Druckkanten (Katalog), Überstrahltes und Glanzpunkt. Holo ≈ +0.9, normal ≈ +0.6, Reverse Holo ≈ +0.2
- * (Brian 17.11.); null, wenn zu wenig übrig bleibt.
+ * Druckkanten (Katalog), Überstrahltes und Glanzpunkt. Reverse Holo ≈ +0.2, Holo und normal ≈ +0.9
+ * (Brian 17.11., zwei Runden); null, wenn zu wenig übrig bleibt.
  */
 export function flashTexture(off: Uint8ClampedArray, on: Uint8ClampedArray, cat: Float32Array, fit: CatalogFit,
-  w = FLASH_W, h = FLASH_H): { ratio: number; art: number; frame: number } | null {
+  w = FLASH_W, h = FLASH_H): { ratio: number; art: number; frame: number; lift: number | null } | null {
   const n = w * h, { art, frame } = masks(w, h), edges = catalogEdges(cat, w, h).edges;
   const A0 = new Float32Array(n), B0 = new Float32Array(n), K0 = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -401,7 +403,38 @@ export function flashTexture(off: Uint8ClampedArray, on: Uint8ClampedArray, cat:
   }
   if (ta.length < 40 || tf.length < 40) return null;
   const ea = median(ta), ef = median(tf);
-  return { ratio: Math.log(Math.max(ea, 1e-3) / Math.max(ef, 1e-3)), art: ea, frame: ef };
+  return { ratio: Math.log(Math.max(ea, 1e-3) / Math.max(ef, 1e-3)), art: ea, frame: ef, lift: artLift(g, use, edges, art, frame, w, h) };
+}
+
+/**
+ * Wie viel stärker das Bildfenster aufhellt als der Rahmen dort täte (Ebene durch den Rahmen: Abfall der
+ * Lampe, Schatten), Median über das Bildfenster ohne Druckkanten. Holo hoch, Reverse Holo negativ (17.11.:
+ * Holo +0.2…+0.6, Reverse Holo −0.6…+0.2) — nur protokolliert, fürs nächste Einstellen.
+ */
+function artLift(g: Float32Array, use: Uint8Array, edges: Uint8Array, art: Uint8Array, frame: Uint8Array, w: number, h: number): number | null {
+  const fx: number[] = [], fy: number[] = [], fv: number[] = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (frame[i] && use[i] && !edges[i]) { fx.push(x / w); fy.push(y / h); fv.push(g[i]); }
+  }
+  if (fv.length < 60) return null;
+  let wt = fv.map(() => 1), beta: number[] | null = null;
+  for (let round = 0; round < 5; round++) {
+    const M = [0, 0, 0, 0, 0, 0, 0, 0, 0], r = [0, 0, 0];
+    for (let j = 0; j < fv.length; j++) {
+      const row = [1, fx[j], fy[j]], q = wt[j] * wt[j];
+      for (let a = 0; a < 3; a++) { r[a] += q * row[a] * fv[j]; for (let b = 0; b < 3; b++) M[3 * a + b] += q * row[a] * row[b]; }
+    }
+    beta = solve3(M, r);
+    if (!beta) return null;
+    wt = fv.map((v, j) => 1 / Math.sqrt(Math.max(Math.abs(v - beta![0] - beta![1] * fx[j] - beta![2] * fy[j]), 0.02)));
+  }
+  const ex: number[] = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    if (art[i] && use[i] && !edges[i]) ex.push(g[i] - beta![0] - beta![1] * x / w - beta![2] * y / h);
+  }
+  return ex.length >= 60 ? median(ex) : null;
 }
 
 /**
@@ -590,12 +623,15 @@ const KINDS: FlashKind[] = ["Holo", "Normal", "Reverse Holo"];
  *  gegen die Lampe ist (Karte mit / ohne Lampe bei gleicher Belichtung; null: unbekannt). */
 export type FlashReading = { share: number; tx: number; ty: number; room: number | null; tex?: number | null };
 /**
- * Körnung (flashTexture) je Folierung im dunklen Raum, an Brians Matte (17.11., 9 Karten, 100 Messungen): Mittel der
- * Karten-Mediane, Streuung innerhalb und zwischen den Karten — jede Karte zählt gleich (die Reverse Holo mit 32
- * Messungen sonst fast allein). Jede Karte ausgelassen und an den übrigen eingestellt: 2 richtig, 0 falsch, 7 offen.
+ * Körnung (flashTexture) je Folierung im dunklen Raum — Holo und normal gleich: beide Matten (17.11., 17 Karten-
+ * Durchgänge) trennen Reverse Holo (Mitte +0.18) gut vom Rest (+0.92), Holo nicht von normal (normale Karten
+ * glänzen unter der Lampe fast wie Holo; in der zweiten Runde las sich die normale Ethan körniger als die Holo).
+ * Mittel der Karten-Mediane, Streuung innerhalb und zwischen den Karten. Jede Karte ausgelassen und an den übrigen
+ * eingestellt: 5 richtig, 0 falsch, 12 offen (mit getrenntem Holo/normal: 1 falsch). Holo gegen normal bleibt im
+ * dunklen Raum offen, außer der Katalog kennt nur eins von beiden (FlashTally.allow).
  */
 const FLASH_TEXTURE: Record<FlashKind, { mu: number; sd: number }> = {
-  Holo: { mu: 0.94, sd: 0.74 }, Normal: { mu: 0.59, sd: 0.43 }, "Reverse Holo": { mu: 0.23, sd: 0.55 },
+  Holo: { mu: 0.92, sd: 0.63 }, Normal: { mu: 0.92, sd: 0.63 }, "Reverse Holo": { mu: 0.18, sd: 0.5 },
 };
 // Urteil: je Folierung die Kosten aller Messungen (robust: log(1 + z²) + log sd, z = Abstand zur
 // Erwartung in sd). Gilt, wenn die beste um FLASH_MARGIN vor der zweitbesten liegt, ab FLASH_MIN_N
@@ -636,22 +672,23 @@ export function flashCosts(rs: FlashReading[]): Record<FlashKind, number> {
   return c;
 }
 
-function best(c: Record<FlashKind, number>, margin: number): FlashKind | null {
-  const o = [...KINDS].sort((a, b) => c[a] - c[b]);
+function best(c: Record<FlashKind, number>, margin: number, kinds: readonly FlashKind[] = KINDS): FlashKind | null {
+  const o = [...kinds].sort((a, b) => c[a] - c[b]);
+  if (o.length < 2) return o[0] ?? null;
   return c[o[1]] - c[o[0]] >= margin ? o[0] : null;
 }
 
 /** Vorläufig: die Folierung, die gerade am besten passt (mit kleinem Vorsprung) — null: offen. */
-export function flashKind(rs: FlashReading[]): FlashKind | null {
-  return rs.length >= 2 ? best(flashCosts(rs), FLASH_TENTATIVE) : null;
+export function flashKind(rs: FlashReading[], kinds: readonly FlashKind[] = KINDS): FlashKind | null {
+  return rs.length >= 2 ? best(flashCosts(rs), FLASH_TENTATIVE, kinds) : null;
 }
 
 /** Das Urteil gilt, wenn es mit FLASH_MARGIN Vorsprung FLASH_HOLD Messungen lang dasselbe ist — neue Messungen können es kippen. */
-export function flashSettled(rs: FlashReading[]): FlashKind | null {
+export function flashSettled(rs: FlashReading[], kinds: readonly FlashKind[] = KINDS): FlashKind | null {
   if (rs.length < FLASH_MIN_N || rs.length < FLASH_HOLD + 1) return null;
   let k: FlashKind | null = null;
   for (let m = rs.length - FLASH_HOLD; m <= rs.length; m++) {
-    const b = best(flashCosts(rs.slice(0, m)), FLASH_MARGIN);
+    const b = best(flashCosts(rs.slice(0, m)), FLASH_MARGIN, kinds);
     if (!b || (k && b !== k)) return null;
     k = b;
   }
@@ -706,6 +743,21 @@ export function alignPatch(ref: Uint8ClampedArray, mov: Uint8ClampedArray, w = F
 /** Gezählte Umschalter je Karte (Schlüssel der Live-Karte). */
 export class FlashTally {
   private m = new Map<string, { r: FlashReading[]; deg: number[]; on: boolean[] }>();
+  private opts = new Map<string, FlashKind[]>();
+
+  /**
+   * Welche Folierungen es von dieser Karte gibt (Katalog; Prize-Pack-Stempel auch Holo) — das Urteil wählt nur
+   * zwischen ihnen. Holo gegen normal trennt im dunklen Raum keins der Maße (beide Matten, 17.11.: normale Karten
+   * glänzen unter der Lampe fast so stark wie Holo), Reverse Holo gegen den Rest gut; die meisten Karten gibt
+   * es nur als normal + Reverse Holo oder Holo + Reverse Holo.
+   */
+  allow(key: string, options: readonly string[] | null | undefined): void {
+    const k = KINDS.filter((x) => options?.includes(x));
+    if (k.length >= 2 && k.length < KINDS.length) this.opts.set(key, k); else this.opts.delete(key);
+  }
+  private kinds(key: string): readonly FlashKind[] {
+    return this.opts.get(key) ?? KINDS;
+  }
 
   add(key: string, r: FlashReading, deg: number, lightOn = false): void {
     const e = this.m.get(key) ?? { r: [], deg: [], on: [] };
@@ -722,13 +774,13 @@ export class FlashTally {
   /** vorläufig (kann noch kippen) */
   kind(key: string): FlashKind | null {
     const e = this.m.get(key);
-    return e ? flashKind(e.r) : null;
+    return e ? flashKind(e.r, this.kinds(key)) : null;
   }
 
   /** gilt (Vorsprung, hat FLASH_HOLD weitere Messungen gehalten) */
   settled(key: string): FlashKind | null {
     const e = this.m.get(key);
-    return e ? flashSettled(e.r) : null;
+    return e ? flashSettled(e.r, this.kinds(key)) : null;
   }
 
   result(key: string): (FlashResult & { kind: FlashKind | null; tentative: FlashKind | null; offShare: number | null;
@@ -741,16 +793,18 @@ export class FlashTally {
     const c = flashCosts(e.r);
     const costs = Object.fromEntries(KINDS.map((k) => [k, Math.round(c[k] * 100) / 100])) as Record<FlashKind, number>;
     const rooms = e.r.map((x) => x.room).filter((x): x is number => x != null);
-    return { ...r, deg: e.deg, kind: flashSettled(e.r), tentative: flashKind(e.r), offShare, costs,
+    return { ...r, deg: e.deg, kind: flashSettled(e.r, this.kinds(key)), tentative: flashKind(e.r, this.kinds(key)), offShare, costs,
       pos: e.r.map((x) => [Math.round(x.tx * 100) / 100, Math.round(x.ty * 100) / 100]),
       room: rooms.length ? Math.round(median(rooms) * 100) / 100 : null };
   }
 
   forget(keep: Set<string>): void {
     for (const k of Array.from(this.m.keys())) if (!keep.has(k)) this.m.delete(k);
+    for (const k of Array.from(this.opts.keys())) if (!keep.has(k)) this.opts.delete(k);
   }
 
   clear(): void {
     this.m.clear();
+    this.opts.clear();
   }
 }
