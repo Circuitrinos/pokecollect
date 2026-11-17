@@ -268,6 +268,13 @@ export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Debug: ein aufgenommenes Video statt der Kamera (der Live-Scan läuft darauf wie auf dem Kamerabild)
+  const videoFileInputRef = useRef<HTMLInputElement | null>(null);
+  const fileSrcRef = useRef<string | null>(null);   // Objekt-URL des Videos
+  const fileTimeRef = useRef(0);                    // Stelle im Video (über die Prüfung hinweg weiter)
+  const [fromFile, setFromFile] = useState<string | null>(null);
+  const [debugUi, setDebugUi] = useState(false);
+  useEffect(() => { setDebugUi(debugEnabled()); }, []);
   const [cameraOn, setCameraOn] = useState(false);
   // Kamerafarben reparieren (Brave auf manchen Android-Handys: Rot wird Blau) — je Browser gemerkt
   const [fixColors, setFixColors] = useState(false);
@@ -414,6 +421,13 @@ export default function ScanPage() {
     dlog("camera.stop");
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
     streamRef.current = null;
+    if (fileSrcRef.current) {
+      const v = videoRef.current;
+      if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+      URL.revokeObjectURL(fileSrcRef.current);
+      fileSrcRef.current = null;
+      setFromFile(null);
+    }
     setCameraOn(false);
     setTorchState("unknown");
     setZoomCaps(null);
@@ -495,11 +509,39 @@ export default function ScanPage() {
     }
   };
 
-  // Stream an das Video hängen, sobald es im DOM ist (sonst bleibt das Bild schwarz)
+  // Debug: Video aus einer Datei statt der Kamera
+  const startVideoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (fileSrcRef.current) URL.revokeObjectURL(fileSrcRef.current);
+    fileSrcRef.current = URL.createObjectURL(file);
+    fileTimeRef.current = 0;
+    setFromFile(file.name);
+    setCamMsg(null);
+    setTorchState("no");
+    setZoomCaps(null);
+    dlog("camera.file", { name: file.name, size: file.size, type: file.type, mode });
+    setCameraOn(true);
+  };
+
+  // Stream (oder Video-Datei) an das Video hängen, sobald es im DOM ist (sonst bleibt das Bild schwarz)
   useEffect(() => {
-    if (cameraOn && step === "setup" && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
+    const v = videoRef.current;
+    if (!cameraOn || step !== "setup" || !v) return;
+    if (streamRef.current) {
+      v.srcObject = streamRef.current;
+      v.play().catch(() => {});
+    } else if (fileSrcRef.current) {
+      v.srcObject = null;
+      if (v.src !== fileSrcRef.current) v.src = fileSrcRef.current;
+      const at = fileTimeRef.current;   // nach der Prüfung dort weiter, wo das Video war
+      const go = () => {
+        if (at > 0 && Math.abs(v.currentTime - at) > 0.5) v.currentTime = at;
+        v.play().catch(() => {});
+        dlog("camera.file.play", { w: v.videoWidth, h: v.videoHeight, duration: Math.round(v.duration * 10) / 10, at: Math.round(at * 10) / 10 });
+      };
+      if (v.readyState >= 1) go(); else v.addEventListener("loadedmetadata", go, { once: true });
     }
   }, [cameraOn, step]);
 
@@ -911,11 +953,23 @@ export default function ScanPage() {
       if (!cards.length) return;
       const tNow = performance.now();
       if (mctx && foilTiltOnRef.current && modeRef.current === "single") {
-        const runner = tiltRunnerRef.current ?? (tiltRunnerRef.current = new TiltFoilRunner());
+        let runner = tiltRunnerRef.current;
+        if (!runner) {
+          runner = tiltRunnerRef.current = new TiltFoilRunner();
+          // Debug: verkleinerte, ausgerichtete Bilder zum Nachrechnen (in Teilen — ein Eintrag hat höchstens ~3000 Zeichen)
+          runner.onSample = (smp) => {
+            const parts = Math.ceil(smp.b64.length / 2800);
+            for (let pIdx = 0; pIdx < parts; pIdx++) {
+              dlog("live.tiltfoil.px", { key: smp.key, i: smp.i, part: pIdx, of: parts, w: smp.w, h: smp.h,
+                ...(pIdx === 0 ? { ks: smp.ks.map((x) => Math.round(x * 1000) / 1000), sharp: Math.round(smp.sharp), clip: r2(smp.clip),
+                  inl: smp.inl, rms: r2(smp.rms) } : {}), b64: smp.b64.slice(pIdx * 2800, (pIdx + 1) * 2800) });
+            }
+          };
+        }
         const key = cards[0].key;
         const trk = st.tracks.find((x) => x.key === key);
         const settledOne = !!trk && verdict(trk).level === "green" && !flashNeed(trk);   // nur eine Folierung: nichts zu prüfen
-        if (!settledOne && tNow - lastTiltAdd >= TILT_EVERY) {
+        if (!settledOne && tNow - lastTiltAdd >= TILT_EVERY && runner.pending < 2) {   // Worker hinterher: Bild auslassen
           lastTiltAdd = tNow;
           const qv = cards[0].q.map(([x, y]) => [x / k, y / k]);   // Kamerapixel
           const cw = Math.max(Math.hypot(qv[1][0] - qv[0][0], qv[1][1] - qv[0][1]), Math.hypot(qv[2][0] - qv[3][0], qv[2][1] - qv[3][1]));
@@ -927,11 +981,13 @@ export default function ScanPage() {
           mctx.drawImage(v, 0, 0, mw, mh);
           const qm = qv.map(([x, y]) => [x * sc, y * sc]);
           const xs = qm.map((p) => p[0]), ys = qm.map((p) => p[1]);
-          const bx = Math.max(0, Math.floor(Math.min(...xs)) - 1), by = Math.max(0, Math.floor(Math.min(...ys)) - 1);
-          const bw = Math.min(mw, Math.ceil(Math.max(...xs)) + 2) - bx, bh = Math.min(mh, Math.ceil(Math.max(...ys)) + 2) - by;
+          // mit Rand: der Umriss liegt bis zu ~10 % daneben, die Ausrichtung im Worker braucht das Bild ringsum
+          const pad = Math.ceil(0.15 * cw * sc);
+          const bx = Math.max(0, Math.floor(Math.min(...xs)) - pad), by = Math.max(0, Math.floor(Math.min(...ys)) - pad);
+          const bw = Math.min(mw, Math.ceil(Math.max(...xs)) + pad) - bx, bh = Math.min(mh, Math.ceil(Math.max(...ys)) + pad) - by;
           if (bw > 8 && bh > 8) {
             const img = mctx.getImageData(bx, by, bw, bh);
-            runner.add(key, { data: img.data, width: bw, height: bh, ox: bx, oy: by }, qm, tNow);
+            runner.add(key, { data: img.data, width: bw, height: bh, ox: bx, oy: by }, qm, tNow, debugEnabled());
           }
         }
         if (!settledOne && !tiltBusy && tNow - lastTiltJudge >= TILT_JUDGE) {
@@ -951,7 +1007,8 @@ export default function ScanPage() {
             if (before !== r.kind || now2 - lastTiltLog > 3000) {
               lastTiltLog = now2;
               dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind: r.kind, n: r.n, used: r.used, tilt: r2(r.tilt), lit: r2(r.lit),
-                art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex), holo: r.holo, rh: r.rh, options: opts });
+                art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex), holo: r.holo, rh: r.rh,
+                dropped: r.dropped, rms: r2(r.rms), options: opts });
             }
             tiltKinds.set(key, r.kind);
             if (r.kind && !before && !liveInFlightRef.current) autoFinishRef.current(liveRef.current);   // wartete aufs Neigen
@@ -1139,7 +1196,7 @@ export default function ScanPage() {
       const tr = tiltResRef.current.get(i.key);
       if (tr) dlog("live.tiltfoil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: tr.kind, n: tr.n, used: tr.used,
         tilt: r2(tr.tilt), lit: r2(tr.lit), art: r2(tr.art), frame: r2(tr.frame), ratio: r2(tr.ratio), swing: r2(tr.swing), tex: r2(tr.tex),
-        holo: tr.holo, rh: tr.rh, options: opts });
+        holo: tr.holo, rh: tr.rh, dropped: tr.dropped, rms: r2(tr.rms), options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
@@ -2466,7 +2523,20 @@ export default function ScanPage() {
                   <video ref={videoRef} autoPlay playsInline muted className="block w-full bg-black"
                     style={fixColors ? { filter: `url(#${SWAP_FILTER_ID})` } : undefined}
                     onLoadedMetadata={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
-                    onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
+                    onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
+                    onTimeUpdate={(e) => { if (fileSrcRef.current) fileTimeRef.current = e.currentTarget.currentTime; }}
+                    onEnded={() => { if (fileSrcRef.current) dlog("camera.file.ended", { t: Math.round(fileTimeRef.current * 10) / 10 }); }} />
+                  {fromFile && (
+                    <button type="button" data-testid="scan-video-restart" title={t.scan_video_restart}
+                      onClick={() => {
+                        const v = videoRef.current;
+                        if (v) { v.currentTime = 0; fileTimeRef.current = 0; v.play().catch(() => {}); }
+                        dlog("camera.file.restart");
+                      }}
+                      className="absolute bottom-24 right-2 z-10 max-w-[60%] truncate rounded-full bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80">
+                      ↺ {fromFile}
+                    </button>
+                  )}
                   {vidSize && (
                     // der Rahmen bleibt da: er zeigt sich wieder, wenn das Raster der Kamera nicht folgen kann
                     <div ref={guideWrapRef} className="pointer-events-none absolute inset-0">
@@ -2667,6 +2737,16 @@ export default function ScanPage() {
                     {t.scan_start_camera}
                   </button>
                 </div>
+                {debugUi && (
+                  <div>
+                    <input ref={videoFileInputRef} type="file" accept="video/*" onChange={startVideoFile} className="hidden"
+                      data-testid="scan-video-file" />
+                    <button type="button" onClick={() => videoFileInputRef.current?.click()} disabled={engineActive === "none"}
+                      title={t.scan_video_file_hint} className="text-gray-400 hover:underline text-xs disabled:opacity-50">
+                      ▶ {t.scan_video_file}
+                    </button>
+                  </div>
+                )}
                 {camMsg && <p className="text-gray-400 text-xs whitespace-pre-line">{camMsg}</p>}
               </div>
             )}
