@@ -60,6 +60,12 @@ export class TiltFoilRunner {
     });
   }
 
+  /** Katalogbild der Karte (Grauwerte w×h): das Bezugsbild wird daran angelegt. */
+  setCatalog(key: string, gray: Uint8Array, w: number, h: number) {
+    if (this.worker) this.worker.postMessage({ type: "catalog", key, gray, w, h });
+    else this.inline!.setCatalog(key, gray, w, h);
+  }
+
   forget(keep: string[]) {
     if (this.worker) this.worker.postMessage({ type: "forget", keep });
     else this.inline!.forget(new Set(keep));

@@ -18,7 +18,7 @@
 // die Werte, um sie an mehr Karten nachzustellen. Reine Rechnung ohne DOM (prüfbar für sich).
 
 import type { FoilKind } from "./liveFoil";
-import { alignToRef, keystone, pyramid, warpCard, type Pixels, type Pyramid } from "./cardAlign";
+import { alignToCatalog, alignToRef, catalogEdges, keystone, pyramid, warpCard, type Pixels, type Pyramid } from "./cardAlign";
 
 export { keystone, quadHomography, warpCard, type Pixels } from "./cardAlign";
 
@@ -27,7 +27,9 @@ export const TILT_H = 176;
 const N = TILT_W * TILT_H;
 
 const KEEP = 60;               // je Karte die letzten Bilder (~8 s)
-const REF_PICK = 12;           // Bezugsbild: das schärfste der ersten so vielen
+const REF_PICK = 12;           // Bezugsbild: das schärfste der ersten so vielen …
+const REF_WAIT = 24;           // … sobald das Katalogbild da ist (am Katalog angelegt); spätestens nach so vielen
+const MIN_INL = 16, MAX_RMS = 2.0;   // ausgerichtetes Bild gilt nur mit so vielen passenden Blöcken (von 48) und so wenig Rest (Punkte)
 const LOG_EVERY = 6;           // Debug: jedes so-vielte ausgerichtete Bild verkleinert protokollieren
 const CLIP = 245;              // so hell: überstrahlt (nach dem Verkleinern)
 const GLARE = 0.02;            // Anteil überstrahlter Punkte: ab hier Blendung (Holo-Prüfung ohne dieses Bild)
@@ -36,7 +38,7 @@ const SIGMA = 2;               // feines Muster: Abweichung vom Mittel der Umgeb
 export const TILT_MIN_USED = 20;    // so viele scharfe Bilder mindestens
 export const TILT_SPREAD = 0.10;    // Neigung: Spanne der Verzerrung (p10–p90) in einer Richtung
 export const LIT_RANGE = 1.3;       // hellste Momente mindestens so viel heller als üblich (zum Licht gedreht)
-export const HOLO_RATIO = 1.9, HOLO_RATIO_NO = 1.6, HOLO_ART = 0.15;
+export const HOLO_RATIO = 2.1, HOLO_RATIO_NO = 1.6, HOLO_ART = 0.15;   // 17.11.: Brock's Scouting (normal) bis 1.8–2.15
 export const RH_SWING = 0.30, RH_SWING_NO = 0.22;
 export const RH_TEX = 1.05, RH_TEX_NO = 0.95;
 
@@ -61,6 +63,8 @@ type Sample = {
 };
 type Raw = { px: Pixels; quad: number[][]; t: number; sharp: number };
 type Card = {
+  cat: Float32Array | null;                           // Kanten des Katalogbilds (Stufe 0), wenn bekannt
+  snap: number | null;                                // Bezug am Katalog verschoben (größte Ecke, Anteil der Breite); null: nicht angelegt
   raws: Raw[];                                        // bis das Bezugsbild feststeht
   ref: { pyr: Pyramid; grad: Float32Array; calm: Uint8Array } | null;
   list: Sample[]; dropped: number; seen: number;
@@ -173,6 +177,7 @@ export type TiltResult = {
   kind: FoilKind | null;            // nur unter den Folierungen der Karte
   dropped: number;                  // Bilder, die sich nicht ausrichten ließen
   rms: number | null;               // Ausrichtung: Restabweichung der Blöcke (Punkte, Median)
+  snap: number | null;              // Bezug am Katalogbild verschoben (Anteil der Breite); null: nicht angelegt
 };
 
 /** Folierung aus den beiden Prüfungen, nur unter `options` (leer: alle). */
@@ -198,15 +203,29 @@ export class FoilTilt {
 
   /** Ein Ausschnitt des Kamerabilds mit dem (ungefähren) Umriss der Karte darin. */
   add(key: string, px: Pixels, quad: number[][], t: number) {
-    const c: Card = this.cards.get(key) ?? { raws: [], ref: null, list: [], dropped: 0, seen: 0 };
-    this.cards.set(key, c);
+    const c = this.card(key);
     if (!c.ref) {
-      // Bezugsbild: das schärfste der ersten REF_PICK — bis dahin die Ausschnitte aufheben
+      // Bezugsbild: das schärfste der ersten REF_PICK — bis dahin die Ausschnitte aufheben; mit Katalogbild
+      // wird es daran angelegt (Bild- und Rahmenbereich sitzen dann), ohne nach REF_WAIT Bildern so
       const rgba = warpCard(px, quad, TILT_W, TILT_H);
       if (!rgba) return;
       c.raws.push({ px, quad, t, sharp: sharpness(rgba) });
-      if (c.raws.length < REF_PICK) return;
-      const best = c.raws.reduce((a, b) => (b.sharp > a.sharp ? b : a));
+      if (c.raws.length < REF_PICK || (!c.cat && c.raws.length < REF_WAIT)) return;
+      let best = c.raws.reduce((a, b) => (b.sharp > a.sharp ? b : a));
+      if (c.cat) {
+        // die schärfsten paar am Katalog anlegen; das am besten passende wird der Bezug
+        let pick: { raw: Raw; quad: number[][]; inl: number; rms: number } | null = null;
+        for (const raw of [...c.raws].sort((a, b) => b.sharp - a.sharp).slice(0, 5)) {
+          const sn = alignToCatalog(raw.px, raw.quad, c.cat);
+          if (sn && (!pick || sn.inliers > pick.inl || (sn.inliers === pick.inl && sn.rms < pick.rms))) pick = { raw, quad: sn.quad, inl: sn.inliers, rms: sn.rms };
+        }
+        if (pick) {
+          best = pick.raw;
+          const w = Math.hypot(best.quad[1][0] - best.quad[0][0], best.quad[1][1] - best.quad[0][1]);
+          c.snap = Math.max(...pick.quad.map((p, i) => Math.hypot(p[0] - best.quad[i][0], p[1] - best.quad[i][1]))) / Math.max(w, 1);
+          best.quad = pick.quad;
+        }
+      }
       const pyr = pyramid(best.px, best.quad), refRgba = warpCard(best.px, best.quad, TILT_W, TILT_H);
       if (!pyr || !refRgba) { c.raws = []; return; }
       const grad = basics(refRgba).grad;
@@ -229,7 +248,7 @@ export class FoilTilt {
   private process(key: string, c: Card, px: Pixels, quad: number[][], t: number, isRef: boolean) {
     const ref = c.ref!;
     const al = isRef ? { quad, inliers: 0, rms: 0 } : alignToRef(px, quad, ref.pyr);
-    if (!al) { c.dropped += 1; return; }
+    if (!al || (!isRef && (al.inliers < MIN_INL || al.rms > MAX_RMS))) { c.dropped += 1; return; }
     const rgba = warpCard(px, al.quad, TILT_W, TILT_H);
     if (!rgba) { c.dropped += 1; return; }
     const { lum: L, bad: B, sharp, clip } = basics(rgba);
@@ -259,6 +278,18 @@ export class FoilTilt {
     if (this.onSample && c.seen % LOG_EVERY === 1) this.onSample({ key, i: c.seen, ...small(L), ks: s.ks, sharp, clip, inl: al.inliers, rms: al.rms });
   }
 
+  private card(key: string): Card {
+    let c = this.cards.get(key);
+    if (!c) { c = { cat: null, snap: null, raws: [], ref: null, list: [], dropped: 0, seen: 0 }; this.cards.set(key, c); }
+    return c;
+  }
+
+  /** Katalogbild der Karte (Grauwerte w×h, sRGB-kodiert wie /scan/catalog-luma): legt das Bezugsbild daran an. */
+  setCatalog(key: string, gray: Uint8Array, w: number, h: number) {
+    const c = this.card(key);
+    if (!c.ref) c.cat = catalogEdges(gray, w, h);
+  }
+
   count(key: string): number { return this.cards.get(key)?.list.length ?? 0; }
 
   forget(keep: Set<string>) {
@@ -274,7 +305,7 @@ export class FoilTilt {
     if (!ref || !list.length) {
       const n = card.raws.length;
       return { n, used: 0, tilt: 0, lit: 1, art: null, frame: null, ratio: null, swing: null, tex: null, holo: null, rh: null,
-        ready: false, progress: Math.min(0.2, (0.4 * n) / TILT_MIN_USED), kind: null, dropped: card.dropped, rms: null };
+        ready: false, progress: Math.min(0.2, (0.4 * n) / TILT_MIN_USED), kind: null, dropped: card.dropped, rms: null, snap: null };
     }
     const calm = ref.calm;
 
@@ -290,7 +321,7 @@ export class FoilTilt {
     const progress = Math.min(1, 0.4 * Math.min(1, sharp.length / TILT_MIN_USED) + 0.6 * Math.min(1, tilt / TILT_SPREAD));
     const rms = median(list.map((s) => s.rms).filter((x) => x > 0));
     const out: TiltResult = { n: list.length, used: sharp.length, tilt, lit, art: null, frame: null, ratio: null, swing: null, tex: null,
-      holo: null, rh: null, ready, progress, kind: null, dropped: card.dropped, rms: Number.isFinite(rms) ? rms : null };
+      holo: null, rh: null, ready, progress, kind: null, dropped: card.dropped, rms: Number.isFinite(rms) ? rms : null, snap: card.snap };
     if (sharp.length < 8) return out;
 
     // je Punkt: Helligkeit relativ zum Rahmen (log), Mitte und Spannen p10–p90

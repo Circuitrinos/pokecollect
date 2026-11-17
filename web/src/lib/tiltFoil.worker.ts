@@ -6,6 +6,7 @@ type In =
   | { type: "add"; key: string; px: Pixels; quad: number[][]; t: number; log: boolean }
   | { type: "result"; id: number; key: string; options: string[] }
   | { type: "forget"; keep: string[] }
+  | { type: "catalog"; key: string; gray: Uint8Array; w: number; h: number }
   | { type: "clear" };
 
 const ctx = self as unknown as { onmessage: ((e: MessageEvent<In>) => void) | null; postMessage: (m: unknown) => void };
@@ -23,6 +24,8 @@ ctx.onmessage = (e) => {
     let result = null;
     try { result = tilt.result(m.key, m.options); } catch { /* unbrauchbar */ }
     ctx.postMessage({ id: m.id, result });
+  } else if (m.type === "catalog") {
+    tilt.setCatalog(m.key, m.gray, m.w, m.h);
   } else if (m.type === "forget") {
     tilt.forget(new Set(m.keep));
   } else {

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import {
   Collection, DeckSummary, FoilCheck, ScanCandidate, ScanCommitItem, ScanMode, ScanStatus,
-  cardApi, collectionApi, deckApi, scanApi,
+  api, cardApi, collectionApi, deckApi, scanApi,
   ScanAlternative, scanDraftApi, DraftSaved,
 } from "@/lib/api";
 import { ScanDraftPanel } from "@/components/ScanDraftList";
@@ -1073,6 +1073,7 @@ export default function ScanPage() {
     const mctx = mid.getContext("2d", { willReadFrequently: true });
     let lastTiltAdd = 0, lastTiltJudge = 0, tiltBusy = false, lastTiltLog = 0;
     const tiltKinds = new Map<string, FoilKind | null>();
+    const tiltCat = new Map<string, string>();   // Katalogbild je Karte (einmal geholt) — legt das Bezugsbild an
     const tiltRes = tiltResRef.current;
     const id = window.setInterval(() => {
       const v = videoRef.current;
@@ -1110,6 +1111,19 @@ export default function ScanPage() {
         const key = cards[0].key;
         const trk = st.tracks.find((x) => x.key === key);
         const settledOne = !!trk && verdict(trk).level === "green" && !flashNeed(trk);   // nur eine Folierung: nichts zu prüfen
+        const vid = trk && verdict(trk).level === "green" ? verdict(trk).id : null;
+        if (vid && tiltCat.get(key) !== vid) {
+          tiltCat.set(key, vid);
+          void api.get<{ b64: string | null }>(`/scan/catalog-luma/${encodeURIComponent(vid)}`).then((r) => {
+            const b64 = r.data.b64;
+            if (!b64) { dlog("live.tiltfoil.catalog", { key, id: vid, ok: false }); return; }
+            const bin = atob(b64), gray = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) gray[i] = bin.charCodeAt(i);
+            if (gray.length !== FLASH_W * FLASH_H) return;
+            tiltRunnerRef.current?.setCatalog(key, gray, FLASH_W, FLASH_H);
+            dlog("live.tiltfoil.catalog", { key, id: vid, ok: true });
+          }).catch(() => dlog("live.tiltfoil.catalog", { key, id: vid, ok: false }));
+        }
         if (!settledOne && tNow - lastTiltAdd >= TILT_EVERY && runner.pending < 2) {   // Worker hinterher: Bild auslassen
           lastTiltAdd = tNow;
           const qv = cards[0].q.map(([x, y]) => [x / k, y / k]);   // Kamerapixel
@@ -1149,7 +1163,7 @@ export default function ScanPage() {
               lastTiltLog = now2;
               dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind: r.kind, n: r.n, used: r.used, tilt: r2(r.tilt), lit: r2(r.lit),
                 art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex), holo: r.holo, rh: r.rh,
-                dropped: r.dropped, rms: r2(r.rms), options: opts });
+                dropped: r.dropped, rms: r2(r.rms), snap: r2(r.snap), options: opts });
             }
             tiltKinds.set(key, r.kind);
             if (r.kind && !before && !liveInFlightRef.current) autoFinishRef.current(liveRef.current);   // wartete aufs Neigen
@@ -1337,7 +1351,7 @@ export default function ScanPage() {
       const tr = tiltResRef.current.get(i.key);
       if (tr) dlog("live.tiltfoil.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: tr.kind, n: tr.n, used: tr.used,
         tilt: r2(tr.tilt), lit: r2(tr.lit), art: r2(tr.art), frame: r2(tr.frame), ratio: r2(tr.ratio), swing: r2(tr.swing), tex: r2(tr.tex),
-        holo: tr.holo, rh: tr.rh, dropped: tr.dropped, rms: r2(tr.rms), options: opts });
+        holo: tr.holo, rh: tr.rh, dropped: tr.dropped, rms: r2(tr.rms), snap: r2(tr.snap), options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)

@@ -254,10 +254,10 @@ function compose(quad: number[][], H: number[]): number[][] | null {
 export type Aligned = { quad: number[][]; inliers: number; rms: number };
 
 /** Den Umriss `quad` so verbessern, dass die Karte im Bild auf dem Bezug (`ref`, gleiche Stufen) liegt. */
-export function alignToRef(src: Pixels, quad: number[][], ref: Pyramid): Aligned | null {
+export function alignToRef(src: Pixels, quad: number[][], ref: Pyramid, steps: Step[] = STEPS): Aligned | null {
   let q = quad, last: Aligned | null = null;
-  for (let si = 0; si < STEPS.length; si++) {
-    const { level, search, model: want } = STEPS[si];
+  for (let si = 0; si < steps.length; si++) {
+    const { level, search, model: want } = steps[si];
     const L = LEVELS[level];
     const rgba = warpCard(src, q, L.w, L.h, level === 2 ? 1 : 2);   // fein: eine Probe je Punkt reicht (Bild ~2× so groß)
     if (!rgba) return null;
@@ -275,4 +275,25 @@ export function alignToRef(src: Pixels, quad: number[][], ref: Pyramid): Aligned
     last = { quad: q, inliers: fit.inliers, rms: fit.rms };
   }
   return last;
+}
+
+/** Kanten des Katalogbilds (Grauwerte w×h, z. B. 40×55 von /scan/catalog-luma) in Stufe 0 (32×44). */
+export function catalogEdges(gray: Uint8Array, w: number, h: number): Float32Array {
+  const L = LEVELS[0], rgba = new Uint8ClampedArray(L.w * L.h * 4);
+  for (let y = 0; y < L.h; y++) for (let x = 0; x < L.w; x++) {
+    const sx = Math.min(w - 1.001, Math.max(0, ((x + 0.5) * w) / L.w - 0.5)), sy = Math.min(h - 1.001, Math.max(0, ((y + 0.5) * h) / L.h - 0.5));
+    const ix = sx | 0, iy = sy | 0, fx = sx - ix, fy = sy - iy;
+    const v = (gray[iy * w + ix] * (1 - fx) + gray[iy * w + ix + 1] * fx) * (1 - fy) + (gray[(iy + 1) * w + ix] * (1 - fx) + gray[(iy + 1) * w + ix + 1] * fx) * fy;
+    const o = (y * L.w + x) * 4;
+    rgba[o] = rgba[o + 1] = rgba[o + 2] = v; rgba[o + 3] = 255;
+  }
+  return edges(rgba, L.w, L.h);
+}
+
+/** Den Umriss grob an das Katalogbild legen (nur Stufe 0: Ähnlichkeit, dann affin) — für das Bezugsbild.
+ *  Brian 17.11.: der Umriss aus dem Live-Scan lag beim Bezugsbild bis zu ~15 % daneben, so dass Bild-
+ *  und Rahmenbereich verrutscht waren. */
+export function alignToCatalog(src: Pixels, quad: number[][], cat: Float32Array): Aligned | null {
+  const al = alignToRef(src, quad, [cat], [{ level: 0, search: 8, model: 4 }, { level: 0, search: 4, model: 6 }, { level: 0, search: 2, model: 6 }]);
+  return al && al.inliers >= 10 && al.rms <= 4 ? al : null;
 }
