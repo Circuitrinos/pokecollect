@@ -37,8 +37,8 @@ import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraC
 import {
   ZOOM_DEAD_KEY, ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, checkZoom, fmtZoom, grayThumb, lightSet, readZoomCaps, storedZoom,
 } from "@/lib/cameraZoom";
-import { FLASH_TYPICAL_N, flashReachable, type FlashKind } from "@/lib/flashCheck";
-import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
+import { FLASH_H, FLASH_TYPICAL_N, FLASH_W, flashReachable, type FlashKind } from "@/lib/flashCheck";
+import { FlashMonitor, lumaB64, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
   numberSide, pick, signature,
@@ -158,6 +158,17 @@ const conflictDetail = (e: unknown): string | null => {
   const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
   return r?.status === 409 && typeof r.data?.detail === "string" ? r.data.detail : null;
 };
+
+/** Folie per Nahaufnahme im Live-Raster: Ergebnis der Foto-Prüfung (POST /scan/foil) je Karte. */
+type CloseFoil = { hint: boolean; holo: boolean; score: number; aligned: boolean; w: number };
+const CLOSE_FOIL_W = 0.4;        // so viel der Bildbreite nimmt die Karte mindestens ein (~360 px bei 900 px)
+const CLOSE_FOIL_MARGIN = 0.05;  // Rand um den verfolgten Umriss (der liegt einige Prozent daneben; der Abgleich richtet aus)
+
+/** Umriss um seine Mitte vergrößern (Anteil je Seite). */
+function growQuad(q: number[][], by: number): number[][] {
+  const cx = q.reduce((a, p) => a + p[0], 0) / q.length, cy = q.reduce((a, p) => a + p[1], 0) / q.length;
+  return q.map(([x, y]) => [cx + (x - cx) * (1 + 2 * by), cy + (y - cy) * (1 + 2 * by)]);
+}
 
 /** Prize-Pack-Drucke (Play!-Stempel) gibt es auch als Holo, selbst wenn der Katalog für die
  *  Karte nur Normal / Reverse Holo kennt (Brians Firebreather me02-089, Tool Scrapper sv10.5w-085). */
@@ -687,7 +698,11 @@ export default function ScanPage() {
     if (on && torchState === "no") setTorchState("unknown");      // noch einmal ausprobieren
     try { localStorage.setItem(FLASH_KEY, on ? "1" : "0"); } catch { /* privat */ }
   };
-  const flashOn = flashTest && torchState === "yes";
+  // Blitz-Test (Blinken) nur bei mehreren Karten: bei der Einzelkarte brachte er nichts (17.11.: 5 Messungen
+  // auf 9 Karten, kein Urteil — zwischen zwei Fotos bleibt keine ruhige Phase); dort bleibt die Lampe stattdessen
+  // an, und die Foto-Prüfung (Set-Code-Kasten, Bildfenster gegen Rahmen) sieht Holo mit Lampe deutlich besser
+  const flashOn = flashTest && torchState === "yes" && mode !== "single";
+  const steadyLight = flashTest && torchState === "yes" && mode === "single" && cameraOn && step === "setup";
   // Blitz-Test an, Lampe unbekannt: einmal ausprobieren, sobald die Kamera Bilder liefert
   useEffect(() => {
     if (!flashTest || torchState !== "unknown" || !cameraOn) return;
@@ -706,11 +721,72 @@ export default function ScanPage() {
   }, [flashTest, torchState, cameraOn]);
   const flashOnRef = useRef(false);
   flashOnRef.current = flashOn;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const steadyLightRef = useRef(false);
+  steadyLightRef.current = steadyLight;
+  useEffect(() => {
+    if (!steadyLight) return;
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    void lightSet(track, true, zoomValRef.current).catch((e) => { dlog("live.light.error", { message: (e as Error)?.message }); });
+    dlog("live.light", { on: true });
+    return () => {
+      void lightSet(track, false, zoomValRef.current).catch(() => { /* Kamera schon aus */ });
+      dlog("live.light", { on: false });
+    };
+  }, [steadyLight]);
   const flashRef = useRef<FlashMonitor | null>(null);
   // je Karte: Urteil (vorläufig), ob es gilt (hat gehalten), Zahl der Messungen
   const [flashView, setFlashView] = useState<Record<string, { kind: FlashKind | null; settled: boolean; n: number }>>({});
   const [flashBlinking, setFlashBlinking] = useState(false);
   const [flashAngles, setFlashAngles] = useState<Record<string, { tx: number; ty: number } | null>>({});   // je offene Karte: wo die Kamera jetzt steht
+  // Folie im Live-Raster per Nahaufnahme: kommt eine Karte groß ins Bild (Handy nah dran), dieselbe
+  // Foto-Prüfung wie bei der Einzelkarte (POST /scan/foil: Set-Code-Kasten, Bildfenster gegen Rahmen; an Brians
+  // 613 Einzelkarten-Fotos 98 % richtig bei Reverse Holo, auf Karten, die das Modell nicht kannte). Im
+  // 4×4-Raster ist eine Karte nur ~280 px hoch, der Set-Code-Kasten ein paar Bildpunkte — zu klein.
+  // Einmal je Karte, im Hintergrund, eine nach der anderen; der Hinweis landet auf der Prüfseite.
+  const closeFoilRef = useRef(new Map<string, CloseFoil>());
+  const closeFoilBusyRef = useRef(false);
+  const [closeFoils, setCloseFoils] = useState<Record<string, CloseFoil>>({});
+  const runCloseFoil = (photo: Blob, quads: { key: string; q: number[][] }[]) => {
+    if (closeFoilBusyRef.current || foilModelRef.current === false) return;
+    const st = liveRef.current;
+    let best: { t: LiveTrack; q: number[][]; w: number } | null = null;
+    for (const { key, q } of quads) {
+      const t = st.tracks.find((x) => x.key === key);
+      if (!t || !flashNeed(t)) continue;
+      const xs = q.map((p) => p[0]), ys = q.map((p) => p[1]);
+      if (Math.min(...xs) < -0.02 || Math.max(...xs) > 1.02 || Math.min(...ys) < -0.02 || Math.max(...ys) > 1.02) continue;
+      const w = Math.max(...xs) - Math.min(...xs);
+      if (w < CLOSE_FOIL_W) continue;
+      const prev = closeFoilRef.current.get(key);
+      if (prev && (prev.aligned || w < prev.w * 1.15)) continue;   // schon geprüft — nur näher dran noch einmal
+      if (!best || w > best.w) best = { t, q, w };
+    }
+    if (!best) return;
+    const { t, q, w } = best;
+    const v = verdict(t);
+    if (!v.id) return;
+    closeFoilBusyRef.current = true;
+    void (async () => {
+      try {
+        const crop = await cropToCardPhoto(photo, { quad: growQuad(q, CLOSE_FOIL_MARGIN), autoOrient: true });
+        const r = await scanApi.foil(crop, v.id!);
+        if (!r.data.model) { foilModelRef.current = false; return; }
+        const res: CloseFoil = { hint: !!r.data.hint, holo: !!r.data.holo, score: r.data.score ?? 0, aligned: !!r.data.aligned, w };
+        closeFoilRef.current.set(t.key, res);
+        setCloseFoils(Object.fromEntries(closeFoilRef.current));
+        dlog("live.closefoil", { key: t.key, id: v.id, ...res, w: Math.round(w * 100) / 100, score: Math.round(res.score * 100) / 100 });
+      } catch (e) {
+        dlog("live.closefoil.error", { key: t.key, message: (e as Error)?.message });
+      } finally {
+        closeFoilBusyRef.current = false;
+      }
+    })();
+  };
+  const runCloseFoilRef = useRef(runCloseFoil);
+  runCloseFoilRef.current = runCloseFoil;
   // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
   const liveGrid = mode === "multi" ? multiGrid : mode === "binder" ? layout : "";
   useEffect(() => {
@@ -721,6 +797,8 @@ export default function ScanPage() {
     setLiveChip(null);
     flashRef.current?.tally.clear();
     setFlashView({});
+    closeFoilRef.current.clear();
+    setCloseFoils({});
     finishWantedRef.current = false;
     setFinishWanted(false);
     trackerRef.current.reset();
@@ -774,6 +852,13 @@ export default function ScanPage() {
     const COLS = 8;
     let lastJudge = 0;
     const known = new Map<string, FoilKind | null>();
+    // Einzelkarte, Debug: die Karte beim Neigen mitschreiben (40×55 Helligkeit, ~3 je Sekunde, mit der Lage des
+    // Handys) — Folie glänzt je nach Winkel anders als Papier; mit dem Katalogbild ausgerichtet (wie beim
+    // Blitz-Test) lässt sich das nachrechnen und einstellen, bevor die App danach urteilt
+    const tilt = document.createElement("canvas");
+    tilt.width = FLASH_W; tilt.height = FLASH_H;
+    const tctx = tilt.getContext("2d", { willReadFrequently: true });
+    let lastTilt = 0, tiltN = 0;
     const id = window.setInterval(() => {
       const v = videoRef.current;
       const st = liveRef.current;
@@ -792,6 +877,25 @@ export default function ScanPage() {
           && Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) >= 36)
         .slice(0, 2 * COLS);
       if (!cards.length) return;
+      const tNow = performance.now();
+      if (tctx && modeRef.current === "single" && debugEnabled() && tNow - lastTilt >= 300) {
+        lastTilt = tNow;
+        const m = patchTransform(cards[0].q, FLASH_W, FLASH_H);
+        if (m) {
+          tctx.setTransform(1, 0, 0, 1, 0, 0);
+          tctx.clearRect(0, 0, FLASH_W, FLASH_H);
+          tctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+          tctx.drawImage(src, 0, 0);
+          const tp = tctx.getImageData(0, 0, FLASH_W, FLASH_H).data;
+          const r3 = (x: number) => Math.round(x * 1000) / 1000;
+          const turn = tiltTurnRef.current;
+          tiltN += 1;   // zwei Ereignisse: der Server kürzt jedes auf 3000 Zeichen, das Bild allein hat 2936
+          dlog("live.tilt", { i: tiltN, key: cards[0].key, id: verdict(st.tracks.find((t) => t.key === cards[0].key)!).id,
+            t: Math.round(tNow), light: steadyLightRef.current, turn: turn ? turn.map((x) => Math.round(x * 10000) / 10000) : null,
+            q: cards[0].q.map(([x, y]) => [r3(x / w), r3(y / h)]) });
+          dlog("live.tilt.px", { i: tiltN, b64: lumaB64(tp) });
+        }
+      }
       const aw = COLS * PATCH_W, ah = Math.ceil(cards.length / COLS) * PATCH_H;
       if (atlas.width !== aw || atlas.height !== ah) { atlas.width = aw; atlas.height = ah; }
       actx.imageSmoothingEnabled = true;
@@ -948,9 +1052,13 @@ export default function ScanPage() {
       const f = foils.get(i.key);
       const fl = flash.get(i.key);
       const lit = fl?.kind ? { kind: fl.kind, share: fl.share, n: fl.n } : null;
-      return { ...e, ...(f ? { liveFoil: f } : {}), ...(lit ? { flash: lit } : {}) };
+      const cf = closeFoilRef.current.get(i.key);
+      const near = cf?.aligned ? { foil: { hint: cf.hint, score: cf.score, holo: cf.holo } } : {};
+      return { ...e, ...(f ? { liveFoil: f } : {}), ...(lit ? { flash: lit } : {}), ...near };
     }));
     foilWatchRef.current.clear();
+    closeFoilRef.current.clear();
+    setCloseFoils({});
   };
   const finishLiveRef = useRef(finishLive);
   finishLiveRef.current = finishLive;
@@ -1101,6 +1209,10 @@ export default function ScanPage() {
         const focusFrames = liveRef.current.frames;
         const photo = await new Promise<Blob | null>((res) => full.toBlob(res, "image/jpeg", focus ? 0.92 : 0.88));
         if (!photo || stop) continue;
+        if (mode !== "single" && sinceLast) {
+          const toSend = mulM(sendInfo.cum, sinceLast), st0 = liveRef.current;
+          runCloseFoilRef.current(photo, st0.tracks.map((t) => ({ key: t.key, q: applyM(toSend, viewQuad(st0, t)) })));
+        }
         showChip(focus ? "reading" : "checking");
         liveInFlightRef.current = true;
         frameNo += 1;
@@ -2247,7 +2359,7 @@ export default function ScanPage() {
                     <LiveGrid w={vidSize.w} h={vidSize.h} cols={layoutCols} rows={layoutRows} quad={gridAnchorQuad} gRef={gridGRef} />
                   )}
                   {vidSize && liveOn && (
-                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} foils={liveFoils} onTap={(k) => setLivePick(k)}
+                    <LiveOverlay w={vidSize.w} h={vidSize.h} state={liveState} foils={liveFoils} close={closeFoils} onTap={(k) => setLivePick(k)}
                       flash={flashOn ? flashView : null} flashAngles={flashAngles} flashBlinking={flashBlinking}
                       gRef={overlayGRef} />
                   )}
@@ -2305,13 +2417,13 @@ export default function ScanPage() {
                   {liveAvailable && step === "setup" && live && (
                     // Blitz-Test: auch wenn der Browser die Lampe nicht meldet — beim Einschalten wird sie ausprobiert
                     <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest}
-                      title={torchState === "no" ? t.scan_flash_no_torch : t.scan_flash_test_hint}
+                      title={torchState === "no" ? t.scan_flash_no_torch : mode === "single" ? t.scan_flash_light_hint : t.scan_flash_test_hint}
                       data-testid="scan-flash-test" data-torch={torchState}
                       className={`absolute top-20 left-2 rounded-full px-3 py-1.5 text-xs text-white ${flashTest
                         ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
                       <span className={flashTest && torchState !== "no" ? "text-yellow-300" : "text-gray-400"}>⚡</span>{" "}
                       {flashTest && torchState === "no" ? t.scan_flash_no_torch_short : flashTest && torchState === "unknown" ? t.scan_flash_trying
-                        : t.scan_flash_test}
+                        : mode === "single" ? t.scan_flash_light : t.scan_flash_test}
                     </button>
                   )}
                   {step === "setup" && zoomCaps && (
@@ -3078,8 +3190,9 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 };
 
 /** Live-Scan: jede gefundene Karte in ihrer Farbe, mit Namen; antippen → Treffer zur Wahl. */
-function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flashBlinking }: {
+function LiveOverlay({ w, h, state, foils, close, onTap, gRef, flash, flashAngles, flashBlinking }: {
   w: number; h: number; state: LiveState; foils: Record<string, LiveFoil>; onTap: (key: string) => void;
+  close?: Record<string, CloseFoil>;   // Nahaufnahme geprüft: Reverse holo? / Holo?
   flash?: Record<string, { kind: FlashKind | null; settled: boolean; n: number }> | null;   // Blitz-Test an: je Karte gemessen / offen
   flashAngles?: Record<string, { tx: number; ty: number } | null>;      // … wo die Kamera jetzt steht (Anleitung auf der Karte)
   flashBlinking?: boolean;
@@ -3102,7 +3215,11 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flas
         const s = (v.cand?.suggested ?? {}) as Record<string, unknown>;
         const raw = v.level === "red" && v.why !== "conflict" ? "?" : String(s.kartenname ?? v.cand?.match?.name ?? "?");
         const foil = LIVE_FOIL_HINTS ? foils[tr.key]?.kind : undefined;
-        const shine = foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
+        const near = close?.[tr.key];
+        const opts = v.cand ? withPrizePackHolo(v.cand.foil_options ?? [], !!v.cand.stamp?.sure) : [];
+        const shine = near?.aligned && near.holo && opts.includes("Holo") ? " ✦ Holo?"   // Nahaufnahme: Foto-Prüfung
+          : near?.aligned && near.hint && opts.includes("Reverse Holo") ? " ✦ Rev.?"
+          : foil === "Holo" ? " ✦ Holo" : foil === "Reverse Holo" ? " ✦ Rev." : "";   // Folie beim Neigen gesehen
         const kindShort = fm?.kind === "Reverse Holo" ? "Rev." : fm?.kind;
         const lit = fm?.kind ? ` · ${kindShort}${fm.settled ? "" : "?"}` : pending ? " ⚡" : "";   // „?": vorläufig
         // Anleitung mitten auf der Karte: was hier noch zu tun ist

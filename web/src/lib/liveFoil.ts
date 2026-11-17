@@ -232,11 +232,11 @@ export class FoilWatch {
 }
 
 /** Ausschnitt einer Karte: affine Abbildung Ausschnitt (PATCH_W×PATCH_H) → Bild aus drei Ecken (TL, TR, BL; Pixel). */
-export function patchTransform(quad: number[][]): [number, number, number, number, number, number] | null {
+export function patchTransform(quad: number[][], pw = PATCH_W, ph = PATCH_H): [number, number, number, number, number, number] | null {
   const [tl, tr, , bl] = quad;
   // A: Ausschnitt → Bild;  Canvas braucht Bild → Ausschnitt (die Umkehrung)
-  const a = (tr[0] - tl[0]) / PATCH_W, c = (bl[0] - tl[0]) / PATCH_H, e = tl[0];
-  const b = (tr[1] - tl[1]) / PATCH_W, d = (bl[1] - tl[1]) / PATCH_H, f = tl[1];
+  const a = (tr[0] - tl[0]) / pw, c = (bl[0] - tl[0]) / ph, e = tl[0];
+  const b = (tr[1] - tl[1]) / pw, d = (bl[1] - tl[1]) / ph, f = tl[1];
   const det = a * d - b * c;
   if (!det || !Number.isFinite(det)) return null;
   const ia = d / det, ib = -b / det, ic = -c / det, id = a / det;

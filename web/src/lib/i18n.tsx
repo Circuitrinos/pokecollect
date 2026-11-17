@@ -450,6 +450,8 @@ const DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `Bild und Rahmen haben das Licht der Lampe unterschiedlich zurückgeworfen (${share}, ${n}× geblitzt) — bitte auf der Karte nachsehen`,
   scan_flash_test: "Blitz-Test",
+  scan_flash_light: "Licht",
+  scan_flash_light_hint: "Einzelkarte: die Lampe des Handys bleibt an, solange die Kamera läuft — so sieht die Folien-Prüfung im Foto Holo besser. Neige die Karte dabei ruhig ein wenig. Geblinkt wird nur bei mehreren Karten.",
   scan_fix_colors: "Farben falsch?",
   scan_colors_fixed: "Farben repariert",
   scan_zoom_none: "Zoom wirkt bei der Kamera dieses Handys in diesem Browser nicht (das Bild bleibt gleich). Trotzdem höher halten geht — die Karten sind dann nur kleiner.",
@@ -1736,6 +1738,8 @@ const EN: typeof DE = {
   scan_flash_hint_title: (share: string, n: number): string =>
     `The art and the frame threw the phone's light back differently (${share}, ${n} flashes) — check the card`,
   scan_flash_test: "Flash test",
+  scan_flash_light: "Light",
+  scan_flash_light_hint: "Single card: the phone's light stays on while the camera runs — the foil check on the photo sees holo better that way. Tilting the card a little while you scan is fine. The light only blinks for several cards.",
   scan_fix_colors: "Wrong colours?",
   scan_colors_fixed: "Colours fixed",
   scan_zoom_none: "Zoom has no effect on this phone's camera in this browser (the picture stays the same). Holding the phone higher still works — the cards just look smaller.",
