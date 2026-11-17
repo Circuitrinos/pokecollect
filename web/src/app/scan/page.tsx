@@ -37,7 +37,7 @@ import { SWAP_FILTER_ID, fixCanvasColors, swapFilterValues } from "@/lib/cameraC
 import {
   ZOOM_DEAD_KEY, ZOOM_KEY, ZOOM_STEPS, type ZoomCaps, checkZoom, fmtZoom, grayThumb, lightSet, readZoomCaps, storedZoom,
 } from "@/lib/cameraZoom";
-import { FLASH_HOLD, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_MIN_N, type FlashKind } from "@/lib/flashCheck";
+import { FLASH_TYPICAL_N, flashReachable, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
@@ -710,7 +710,7 @@ export default function ScanPage() {
   // je Karte: Urteil (vorläufig), ob es gilt (hat gehalten), Zahl der Messungen
   const [flashView, setFlashView] = useState<Record<string, { kind: FlashKind | null; settled: boolean; n: number }>>({});
   const [flashBlinking, setFlashBlinking] = useState(false);
-  const [flashAngles, setFlashAngles] = useState<Record<string, number | null>>({});   // je offene Karte: Blickwinkel jetzt
+  const [flashAngles, setFlashAngles] = useState<Record<string, { tx: number; ty: number } | null>>({});   // je offene Karte: wo die Kamera jetzt steht
   // Von vorn: Live an/aus, anderer Modus, anderes Raster, zurück von der Prüfseite
   const liveGrid = mode === "multi" ? multiGrid : mode === "binder" ? layout : "";
   useEffect(() => {
@@ -935,7 +935,7 @@ export default function ScanPage() {
         spread: s.spread != null ? +s.spread.toFixed(1) : null, options: opts });
       const fl = flash.get(i.key);
       if (fl) dlog("live.flash.final", { key: i.key, id: i.cand.match?.tcgdex_card_id ?? null, kind: fl.kind, tentative: fl.tentative,
-        share: +fl.share.toFixed(3), off: fl.offShare, n: fl.n, all: fl.all, deg: fl.deg, options: opts });
+        share: +fl.share.toFixed(3), off: fl.offShare, n: fl.n, all: fl.all, deg: fl.deg, pos: fl.pos, room: fl.room, costs: fl.costs, options: opts });
       if (!LIVE_FOIL_HINTS || !s || !kind || kind === "Normal") return [i.key, null] as const;
       // Basis-Energie: nur glänzend oder nicht — als die glänzende Variante, die es von ihr gibt
       const k: FoilKind = kind === "Holo" && !opts.includes("Holo") && opts.includes("Reverse Holo") && isBasicEnergy(name)
@@ -3076,7 +3076,7 @@ const LIVE_COLOURS: Record<Level, { stroke: string; fill: string }> = {
 function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flashBlinking }: {
   w: number; h: number; state: LiveState; foils: Record<string, LiveFoil>; onTap: (key: string) => void;
   flash?: Record<string, { kind: FlashKind | null; settled: boolean; n: number }> | null;   // Blitz-Test an: je Karte gemessen / offen
-  flashAngles?: Record<string, number | null>;                           // … Blickwinkel jetzt (Anleitung auf der Karte)
+  flashAngles?: Record<string, { tx: number; ty: number } | null>;      // … wo die Kamera jetzt steht (Anleitung auf der Karte)
   flashBlinking?: boolean;
   gRef?: React.MutableRefObject<SVGGElement | null>;   // folgt der Kamera seit dem letzten geprüften Bild (lib/svgMove)
 }) {
@@ -3104,9 +3104,8 @@ function LiveOverlay({ w, h, state, foils, onTap, gRef, flash, flashAngles, flas
         const a = flashAngles?.[tr.key];
         const todo = pending
           ? [t.scan_flash_card_title, !flashBlinking ? t.scan_flash_card_wait
-            : a == null || a > FLASH_MAX_DEG ? t.scan_flash_card_move
-              : a < FLASH_MIN_DEG ? t.scan_flash_card_side
-                : t.scan_flash_card_hold(Math.min(fm.n, FLASH_MIN_N + FLASH_HOLD), FLASH_MIN_N + FLASH_HOLD)]
+            : !flashReachable(a) ? t.scan_flash_card_move
+              : t.scan_flash_card_hold(Math.min(fm.n, FLASH_TYPICAL_N), FLASH_TYPICAL_N)]
           : v.level !== "green" ? [t.scan_live_card_number, t.scan_live_card_tap] : null;
         const cx = pts.reduce((s2, p) => s2 + p[0], 0) / 4, cy = pts.reduce((s2, p) => s2 + p[1], 0) / 4;
         const tfs = Math.min(fs, Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * 0.085);   // längste Zeile passt auf die Karte

@@ -16,19 +16,25 @@
 // umgekehrte Set-Code-Box im Foto). Protokolliert wird je Karte „live.flash.final".
 // Reine Rechnung ohne DOM, damit sie sich für sich prüfen lässt.
 import { ART_BOX } from "./liveFoil";
+import { FLASH_GRID, FLASH_ROOM_SPLIT, FLASH_TABLE } from "./flashTable";
 
 export const FLASH_W = 40;
 export const FLASH_H = 55;
 export const FLASH_STEP_MS = 600;     // so lange bleibt die Lampe je Zustand — Platz für Nachregeln (~0.25 s) und ruhige Bilder davor
-// Die Folie wirft das Licht nur zurück, wenn die Karte fast gerade unter dem Handy liegt (Brian:
-// „nicht aus jedem Winkel"). In seinem Video, je Umschalten und Karte nach dem Blickwinkel: bis 14°
-// Holo +0.45, Reverse Holo −0.22; darüber Holo +0.00…+0.07, Reverse Holo −0.02…−0.05 — die Folie
-// ist dann von Papier nicht zu unterscheiden. Unter 3° liegt der Glanzpunkt von Hülle und Lack auf
-// der Karte (eine normale Karte maß dort einmal +0.60). Gezählt wird darum nur 3–14°: Normal
-// −0.03…+0.06, Holo +0.10…+0.76, Reverse Holo −0.34…+0.01 (47 von 54 einzelnen Umschaltern
-// richtig bei ±0.10). Beim Blinken das Handy langsam über die Karten führen.
-export const FLASH_MIN_DEG = 3;
+// Wo die Kamera über der Karte steht, entscheidet, was gemessen wird — nicht nur der Winkel. Die Lampe
+// sitzt an der Kamera; ihr Glanzpunkt (Lack, Hülle) und das Licht der Folie hängen davon ab, ob die
+// Kamera über dem Bildfenster (oberer Teil der Karte) oder über dem unteren Rahmen steht. In Brians
+// Video (v66) und in der daran angepassten Nachbildung (tools/flashsim): Holo mit Hülle misst +0.7,
+// wenn die Kamera über der Kartenmitte steht, aber ±0.0, wenn sie 15° unterhalb steht; Reverse Holo
+// misst −0.5 gerade darüber und ±0.0, wenn die Kamera oberhalb steht; eine normale Karte +0.6, wenn der
+// Glanzpunkt auf dem Bildfenster liegt. Ein festes Winkelband mit festen Grenzen trennt das nicht.
+// Darum: je Messung die Lage der Kamera zur Karte (tx, ty — Versatz / Höhe, aus dem Umriss) und
+// für jede Folierung der dort erwartete Messwert (lib/flashTable, aus der Nachbildung); das Urteil
+// ist die Folierung, deren Erwartung alle Messungen einer Karte am besten erklärt (flashCosts).
+export const FLASH_MIN_DEG = 3;       // (nur noch fürs Protokoll / alte Auswertungen)
 export const FLASH_MAX_DEG = 14;
+/** So weit (Versatz / Höhe, je Richtung) darf die Kamera neben der Karte stehen — weiter weg sagt die Messung nichts. */
+export const FLASH_REACH = 0.32;
 const FOCAL = 0.73;                   // Brennweite ≈ 0.73 × lange Bildseite (Hauptkamera ~26 mm KB)
 const CARD_MM = [63, 88];
 const BORDER = 0.05;                  // Außenrand der Karte: zählt nicht
@@ -85,6 +91,21 @@ export function litLevel(px: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): numbe
     v.push(0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2]);
   }
   return median(v);
+}
+
+/** Wie hell der Raum gegen die Lampe ist: Karte mit / ohne Lampe bei gleicher Belichtung (die Bilder
+ *  direkt vor und nach einem Umschalten — die Kamera hat noch nicht nachgeregelt), lineare Helligkeit. */
+export function flashRoom(dark: Uint8ClampedArray, lit: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): number | null {
+  const { art, frame } = masks(w, h);
+  const a: number[] = [], b: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (!art[i] && !frame[i]) continue;
+    const o = 4 * i;
+    a.push(0.2126 * LIN[dark[o]] + 0.7152 * LIN[dark[o + 1]] + 0.0722 * LIN[dark[o + 2]]);
+    b.push(0.2126 * LIN[lit[o]] + 0.7152 * LIN[lit[o + 1]] + 0.0722 * LIN[lit[o + 2]]);
+  }
+  const ma = median(a), mb = median(b);
+  return ma > 0.002 ? mb / ma : null;
 }
 
 /** Ein Umschalten, eine Karte (RGBA w×h, Lampe aus / an) → Anteil Bild − Anteil Rahmen, die
@@ -235,7 +256,11 @@ export function flashFocal(w: number, h: number, zoom = 1): number {
   return FOCAL * Math.max(w, h) * zoom;
 }
 
-export function viewAngle(quad: number[][], w: number, h: number, focal = flashFocal(w, h)): number | null {
+/** Wo die Kamera über der Karte steht: Versatz / Höhe in Kartenkoordinaten (tx nach rechts, ty nach
+ *  unten zur Kartenunterkante) und der Blickwinkel (Grad) — aus dem Umriss (TL, TR, BR, BL; Pixel eines Bilds w×h). */
+export type CardCamera = { tx: number; ty: number; deg: number };
+
+export function cardCamera(quad: number[][], w: number, h: number, focal = flashFocal(w, h)): CardCamera | null {
   const [cw, ch] = CARD_MM;
   const H = homography([[0, 0], [cw, 0], [cw, ch], [0, ch]], quad.map(([x, y]) => [(x - w / 2) / focal, (y - h / 2) / focal]));
   if (!H) return null;
@@ -246,47 +271,85 @@ export function viewAngle(quad: number[][], w: number, h: number, focal = flashF
   // Kamera in Kartenkoordinaten: −Rᵀ·t (Spalten von R: r1, r2, r3)
   const cam = [r1, r2, r3].map((r) => -(r[0] * t[0] + r[1] * t[1] + r[2] * t[2]));
   const d = [cam[0] - cw / 2, cam[1] - ch / 2, cam[2]];
-  const len = Math.hypot(...d);
-  return len ? (Math.acos(Math.min(1, Math.abs(d[2]) / len)) * 180) / Math.PI : null;
+  const z = Math.abs(d[2]), len = Math.hypot(...d);
+  if (!len || z < 1e-6) return null;
+  return { tx: d[0] / z, ty: d[1] / z, deg: (Math.acos(Math.min(1, z / len)) * 180) / Math.PI };
+}
+
+export function viewAngle(quad: number[][], w: number, h: number, focal = flashFocal(w, h)): number | null {
+  return cardCamera(quad, w, h, focal)?.deg ?? null;
+}
+
+/** Steht die Kamera nah genug über der Karte, dass eine Messung etwas sagt? */
+export function flashReachable(p: { tx: number; ty: number } | null | undefined): boolean {
+  return !!p && Math.abs(p.tx) <= FLASH_REACH && Math.abs(p.ty) <= FLASH_REACH;
 }
 
 // ── Urteil je Karte ─────────────────────────────────────────────────────────
 
 export type FlashKind = "Holo" | "Reverse Holo" | "Normal";
-// Gemessen wird je Umschalten zwischen den Enden zweier Phasen (Lampe aus / an, je die beiden letzten
-// Bilder gemittelt — da hat die Belichtung nachgeregelt, beide Bilder sind gleich hell belichtet).
-// Eingestellt an Brians Video (16.11., Enden der Phasen, je Karte 18 Messungen) und denselben Paaren
-// mit stärkerer Lampe (×1.6–×3, auch mit gestauchten Lichtern) — dort hebt Glanz auf dem Bild auch
-// normale Karten auf +0.11…+0.14 (Holo +0.23…+0.41, Reverse Holo −0.14…−0.34). Über jeden Startpunkt
-// der Folgen: mit diesen Grenzen und „hält noch 2 Messungen" 21 von 522 falsch (vorher 91).
-// Die Protokolle („live.flash.final") eichen es nach.
-export const FLASH_MIN_N = 4;         // so viele gezählte Umschalter mindestens
+const KINDS: FlashKind[] = ["Holo", "Normal", "Reverse Holo"];
+/** Eine Messung: Messwert (flashShare), wo die Kamera stand (Mittel beider Phasen), wie hell der Raum
+ *  gegen die Lampe ist (Karte mit / ohne Lampe bei gleicher Belichtung; null: unbekannt). */
+export type FlashReading = { share: number; tx: number; ty: number; room: number | null };
+// Urteil: je Folierung die Kosten aller Messungen (robust: log(1 + z²) + log sd, z = Abstand zur
+// Erwartung in sd). Gilt, wenn die beste um FLASH_MARGIN vor der zweitbesten liegt, ab FLASH_MIN_N
+// Messungen, und FLASH_HOLD Messungen lang so blieb. Eingestellt an der Nachbildung (6 Karten im Raster,
+// Handy darüber, hell bis dunkel; je Folge in zufälliger Reihenfolge): 2.7 % falsch (vorher 16 %,
+// dazu 58 % nach 12 Messungen noch offen); an Brians Video v66 von jedem Startpunkt: 62 richtig,
+// 1 falsch, 18 offen nach 12 Messungen (vorher 28 / 0 / 53), im Mittel nach 7.4 Messungen.
+export const FLASH_MIN_N = 3;         // so viele Messungen mindestens
 export const FLASH_HOLD = 2;          // ein Urteil gilt, wenn es noch so viele Messungen später gleich ist
-const FLASH_HOLO = 0.22;              // Median ab hier: Holo
-const FLASH_REV = -0.08;              // Median bis hier: Reverse Holo
-const FLASH_FLAT_LO = -0.04;          // Median dazwischen (ab FLASH_FLAT_N Umschaltern): Normal
-const FLASH_FLAT_HI = 0.06;
-const FLASH_FLAT_N = 6;
-const FLASH_LATE_N = 10;              // danach: Holo ab +0.18, Reverse Holo bis −0.05, sonst Normal
-const FLASH_LATE_HOLO = 0.18;
-const FLASH_LATE_REV = -0.05;
+export const FLASH_TYPICAL_N = 7;     // so viele braucht es meist (Anzeige)
+const FLASH_MARGIN = 1.5;             // Vorsprung der besten Folierung (Kosten)
+const FLASH_TENTATIVE = 0.5;          // ab hier „vorläufig" (Anzeige)
 
-/** Normal / Holo / Reverse Holo aus den gezählten Umschaltern einer Karte — null: noch offen. */
-export function flashKind(shares: number[]): FlashKind | null {
-  const n = shares.length;
-  if (n < FLASH_MIN_N) return null;
-  const m = median(shares);
-  if (m >= FLASH_HOLO) return "Holo";
-  if (m <= FLASH_REV) return "Reverse Holo";
-  if (n >= FLASH_FLAT_N && m >= FLASH_FLAT_LO && m <= FLASH_FLAT_HI) return "Normal";
-  if (n >= FLASH_LATE_N) return m >= FLASH_LATE_HOLO ? "Holo" : m <= FLASH_LATE_REV ? "Reverse Holo" : "Normal";
-  return null;
+/** Erwartung (mu, sd) je Folierung dort, wo die Kamera stand (bilinear in der Tabelle, außen: Rand). */
+export function flashExpect(tx: number, ty: number, room: number | null): Record<FlashKind, { mu: number; sd: number }> {
+  const tab = room != null && room >= FLASH_ROOM_SPLIT ? FLASH_TABLE.dark : FLASH_TABLE.bright;
+  const { min, step, n } = FLASH_GRID;
+  const fx = Math.min(n - 1.001, Math.max(0, (tx - min) / step)), fy = Math.min(n - 1.001, Math.max(0, (ty - min) / step));
+  const i = Math.floor(fx), j = Math.floor(fy), ax = fx - i, ay = fy - j;
+  const at = (a: number[]) => a[j * n + i] * (1 - ax) * (1 - ay) + a[j * n + i + 1] * ax * (1 - ay)
+    + a[(j + 1) * n + i] * (1 - ax) * ay + a[(j + 1) * n + i + 1] * ax * ay;
+  const out = {} as Record<FlashKind, { mu: number; sd: number }>;
+  for (const k of KINDS) out[k] = { mu: at(tab[k].mu), sd: Math.max(0.06, at(tab[k].sd)) };
+  return out;
 }
 
-/** Das Urteil gilt erst, wenn es FLASH_HOLD Messungen später noch dasselbe ist — neue Messungen können es kippen. */
-export function flashSettled(shares: number[]): FlashKind | null {
-  const k = flashKind(shares);
-  return k && shares.length > FLASH_HOLD && flashKind(shares.slice(0, -FLASH_HOLD)) === k ? k : null;
+/** Kosten je Folierung über alle Messungen (kleiner: passt besser). */
+export function flashCosts(rs: FlashReading[]): Record<FlashKind, number> {
+  const c = { Holo: 0, Normal: 0, "Reverse Holo": 0 } as Record<FlashKind, number>;
+  for (const r of rs) {
+    const e = flashExpect(r.tx, r.ty, r.room);
+    for (const k of KINDS) {
+      const z = (r.share - e[k].mu) / e[k].sd;
+      c[k] += Math.log1p(z * z) + Math.log(e[k].sd);
+    }
+  }
+  return c;
+}
+
+function best(c: Record<FlashKind, number>, margin: number): FlashKind | null {
+  const o = [...KINDS].sort((a, b) => c[a] - c[b]);
+  return c[o[1]] - c[o[0]] >= margin ? o[0] : null;
+}
+
+/** Vorläufig: die Folierung, die gerade am besten passt (mit kleinem Vorsprung) — null: offen. */
+export function flashKind(rs: FlashReading[]): FlashKind | null {
+  return rs.length >= 2 ? best(flashCosts(rs), FLASH_TENTATIVE) : null;
+}
+
+/** Das Urteil gilt, wenn es mit FLASH_MARGIN Vorsprung FLASH_HOLD Messungen lang dasselbe ist — neue Messungen können es kippen. */
+export function flashSettled(rs: FlashReading[]): FlashKind | null {
+  if (rs.length < FLASH_MIN_N || rs.length < FLASH_HOLD + 1) return null;
+  let k: FlashKind | null = null;
+  for (let m = rs.length - FLASH_HOLD; m <= rs.length; m++) {
+    const b = best(flashCosts(rs.slice(0, m)), FLASH_MARGIN);
+    if (!b || (k && b !== k)) return null;
+    k = b;
+  }
+  return k;
 }
 
 /** Zwei Ausschnitte (RGBA) mitteln — die beiden letzten Bilder einer Phase. */
@@ -336,39 +399,45 @@ export function alignPatch(ref: Uint8ClampedArray, mov: Uint8ClampedArray, w = F
 
 /** Gezählte Umschalter je Karte (Schlüssel der Live-Karte). */
 export class FlashTally {
-  private m = new Map<string, { s: number[]; deg: number[]; on: boolean[] }>();
+  private m = new Map<string, { r: FlashReading[]; deg: number[]; on: boolean[] }>();
 
-  add(key: string, share: number, deg: number, lightOn = false): void {
-    const e = this.m.get(key) ?? { s: [], deg: [], on: [] };
-    e.s.push(share);
+  add(key: string, r: FlashReading, deg: number, lightOn = false): void {
+    const e = this.m.get(key) ?? { r: [], deg: [], on: [] };
+    e.r.push(r);
     e.deg.push(Math.round(deg * 10) / 10);
     e.on.push(lightOn);
     this.m.set(key, e);
   }
 
   n(key: string): number {
-    return this.m.get(key)?.s.length ?? 0;
+    return this.m.get(key)?.r.length ?? 0;
   }
 
   /** vorläufig (kann noch kippen) */
   kind(key: string): FlashKind | null {
     const e = this.m.get(key);
-    return e ? flashKind(e.s) : null;
+    return e ? flashKind(e.r) : null;
   }
 
-  /** gilt (hat FLASH_HOLD weitere Messungen gehalten) */
+  /** gilt (Vorsprung, hat FLASH_HOLD weitere Messungen gehalten) */
   settled(key: string): FlashKind | null {
     const e = this.m.get(key);
-    return e ? flashSettled(e.s) : null;
+    return e ? flashSettled(e.r) : null;
   }
 
-  result(key: string): (FlashResult & { kind: FlashKind | null; tentative: FlashKind | null; offShare: number | null }) | null {
+  result(key: string): (FlashResult & { kind: FlashKind | null; tentative: FlashKind | null; offShare: number | null;
+    costs: Record<FlashKind, number>; pos: number[][]; room: number | null }) | null {
     const e = this.m.get(key);
-    const r = e ? summarize(e.s) : null;
+    const r = e ? summarize(e.r.map((x) => x.share)) : null;
     if (!r || !e) return null;
-    const offs = e.s.filter((_, i) => !e.on[i]);
+    const offs = e.r.filter((_, i) => !e.on[i]).map((x) => x.share);
     const offShare = offs.length ? Math.round(median(offs) * 1000) / 1000 : null;
-    return { ...r, deg: e.deg, kind: flashSettled(e.s), tentative: flashKind(e.s), offShare };
+    const c = flashCosts(e.r);
+    const costs = Object.fromEntries(KINDS.map((k) => [k, Math.round(c[k] * 100) / 100])) as Record<FlashKind, number>;
+    const rooms = e.r.map((x) => x.room).filter((x): x is number => x != null);
+    return { ...r, deg: e.deg, kind: flashSettled(e.r), tentative: flashKind(e.r), offShare, costs,
+      pos: e.r.map((x) => [Math.round(x.tx * 100) / 100, Math.round(x.ty * 100) / 100]),
+      room: rooms.length ? Math.round(median(rooms) * 100) / 100 : null };
   }
 
   forget(keep: Set<string>): void {
