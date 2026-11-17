@@ -3722,6 +3722,11 @@ function LiveOverlay({ w, h, state, foils, close, onTap, gRef, flash, flashAngle
         const lines = todo && tfs >= Math.max(w, h) * 0.011 ? todo : null;
         const name = (raw.length > 16 ? `${raw.slice(0, 15)}…` : raw) + shine + lit;
         const label = [x0 + fs * 0.3, y0 + fs * 1.15];
+        // sicher erkannt (Satz und Nummer stehen fest): darunter Satz-Kürzel und Nummer, z. B. „PFL 087/094" (Brian 17.11.)
+        const m = v.level === "green" ? v.cand?.match : null;
+        const nr = m ? String(s.karten_nr ?? m.local_id ?? "") : "";
+        const setNr = m?.tcgdex_card_id ? [m.set_code ?? m.set_name ?? "", nr].filter(Boolean).join(" ") : "";
+        const label2 = [label[0], label[1] + fs * 1.0];
         // unsicher: die Nummern-Ecke markieren — dort nah heran, dann liest der Abgleich die Nummer
         // wo die Nummer dieser Karte steht (ältere Sätze: unten rechts)
         const corner = v.level !== "green" ? cardPart(pts, NUMBER_CORNERS[numberSide(candidateIds(tr)) === "right" ? "right" : "left"]) : null;
@@ -3739,6 +3744,12 @@ function LiveOverlay({ w, h, state, foils, close, onTap, gRef, flash, flashAngle
               strokeWidth={fs * 0.16} paintOrder="stroke" fontWeight={600}>
               {v.level === "green" && !pending ? "✓ " : ""}{name}
             </text>
+            {setNr && (
+              <text x={label2[0]} y={label2[1]} data-at={ptsAttr([label2])} fontSize={fs * 0.8} fill="#e5e7eb"
+                stroke="rgba(0,0,0,0.75)" strokeWidth={fs * 0.13} paintOrder="stroke" fontWeight={600} data-testid="scan-live-card-set">
+                {setNr}
+              </text>
+            )}
             {lines?.map((line, i) => {
               const at = [cx, cy + (i === 0 ? -0.55 : 0.75) * tfs];
               return (
