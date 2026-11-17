@@ -22,7 +22,7 @@ import {
   flashRoom, flashShare, flashTransform, litLevel,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
-import { dlog } from "./debugLog";
+import { debugEnabled, dlog } from "./debugLog";
 
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
 export type FlashCard = { key: string; quad: number[][] };
@@ -42,6 +42,26 @@ const TICK_MS = 50;
 const SHOTS_KEPT = 50;               // Bilder (~1.7 s) — eine ganze Phase muss hineinpassen
 const ANGLE_MS = 250;
 
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const LIN8 = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+
+/** Ausschnitt fürs Protokoll: Helligkeit (lineare Luma, wieder sRGB-kodiert, 0–255; 255 = überstrahlt), base64. */
+export function lumaB64(px: Uint8ClampedArray): string {
+  const n = px.length >> 2, b = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = px[4 * i], g = px[4 * i + 1], bl = px[4 * i + 2];
+    if (Math.max(r, g, bl) >= 250) { b[i] = 255; continue; }
+    const y = 0.2126 * LIN8[r] + 0.7152 * LIN8[g] + 0.0722 * LIN8[bl];
+    b[i] = Math.min(254, Math.round(255 * (y <= 0.0031308 ? 12.92 * y : 1.055 * y ** (1 / 2.4) - 0.055)));
+  }
+  let out = "";
+  for (let i = 0; i < n; i += 3) {
+    const v = (b[i] << 16) | ((b[i + 1] ?? 0) << 8) | (b[i + 2] ?? 0);
+    out += B64[(v >> 18) & 63] + B64[(v >> 12) & 63] + (i + 1 < n ? B64[(v >> 6) & 63] : "=") + (i + 2 < n ? B64[v & 63] : "=");
+  }
+  return out;
+}
+
 /** Ein Kamerabild für die Messung: Zeit, mittlere Helligkeit des ganzen Bilds, die Karten-Ausschnitte. */
 export type FlashFrame = { t: number; mean: number; cards: Patches; turn?: number[] | null };
 
@@ -60,6 +80,8 @@ export class FlashLoop {
   private phase: Phase | null = null; // Ende der letzten Phase (Lampe an oder aus)
   private jumps: number[] = [];       // |ln| der zuletzt gesehenen Sprünge beim Umschalten (diese Kamera)
   private rooms = new Map<string, number[]>();   // je Karte: Lampe / Raum (die letzten Umschalter)
+  /** Ausschnitte (Lampe aus / an) je Messung mitprotokollieren — zum Nachrechnen anderer Maße (Debug). */
+  dumpPatches = false;
   /** Protokoll (im Browser: dlog) */
   log: (event: string, data: Record<string, unknown>) => void = () => {};
 
@@ -151,7 +173,8 @@ export class FlashLoop {
     if (!older || older.lit === ended.lit || older.endN !== before.n) { this.log("live.flash.seen", { ...seenLog, frames: usable.length }); return false; }
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
-    const seen: Record<string, unknown[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an]
+    const seen: Record<string, unknown[]> = {};
+    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
@@ -166,12 +189,14 @@ export class FlashLoop {
       const q3 = (q?: number[][]) => (q ? q.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]) : null);
       seen[key] = [sh == null ? null : Math.round(sh * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
         q3(a.q), q3(b.q)];
+      if (this.dumpPatches) patches[key] = [lumaB64(a.px), lumaB64(lit)];
       if (sh == null || tx == null || ty == null) return;
       this.tally.add(key, { share: sh, tx, ty, room }, deg, r.on);
       added = true;
     });
     const turn = ev.turn ? ev.turn.map((x) => Math.round(x * 10000) / 10000) : null;
     this.log("live.flash.switch", { ...seenLog, ends: { dark: darkPh.means, lit: litPh.means }, frames: [usable.length, window.length], cards: seen, turn });
+    if (this.dumpPatches) this.log("live.flash.patches", { n: ev.n, cards: patches });
     return added;
   }
 }
@@ -202,6 +227,7 @@ export class FlashMonitor {
     private cards: () => FlashCard[] | null, private onMeasure: () => void, private onBlink: (on: boolean) => void,
     private onAngles: (pos: Record<string, { tx: number; ty: number } | null>) => void = () => {}) {
     this.loop.log = (event, data) => dlog(event, data);
+    this.loop.dumpPatches = debugEnabled();
   }
   private anglesAt = 0;
 
