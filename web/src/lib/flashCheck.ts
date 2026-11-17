@@ -19,7 +19,7 @@ import { ART_BOX } from "./liveFoil";
 
 export const FLASH_W = 40;
 export const FLASH_H = 55;
-export const FLASH_STEP_MS = 500;     // so lange bleibt die Lampe je Zustand — die Belichtung regelt in ~0.35 s nach (Brave-Test)
+export const FLASH_STEP_MS = 600;     // so lange bleibt die Lampe je Zustand — Platz für Nachregeln (~0.25 s) und ruhige Bilder davor
 // Die Folie wirft das Licht nur zurück, wenn die Karte fast gerade unter dem Handy liegt (Brian:
 // „nicht aus jedem Winkel"). In seinem Video, je Umschalten und Karte nach dem Blickwinkel: bis 14°
 // Holo +0.45, Reverse Holo −0.22; darüber Holo +0.00…+0.07, Reverse Holo −0.02…−0.05 — die Folie
@@ -131,8 +131,13 @@ export class SwitchFinder {
   private quietUntil = -Infinity;
   private count = 0;
 
-  /** Neues Bild (Nr. = Anzahl der Bilder davor) → [aus, an] als Bild-Nummern, sobald ein Umschalten fertig ist. */
-  push(mean: number, t: number): { off: number; on: number; lightOn: boolean } | null {
+  /**
+   * Neues Bild (Nr. = Anzahl der Bilder davor) → [aus, an] als Bild-Nummern, sobald ein Umschalten fertig ist.
+   * expect: in welche Richtung gerade umgeschaltet wird (true: an) — ein Sprung in die andere Richtung
+   * zählt dann nicht und sperrt auch nichts: die Kamera stellt die Belichtung 1–2 Bilder vor dem
+   * Umschalten gegenläufig um (Fairphone: vor dem Einschalten dunkler, vor dem Ausschalten heller).
+   */
+  push(mean: number, t: number, expect?: boolean): { off: number; on: number; lightOn: boolean } | null {
     this.means.push(mean);
     this.times.push(t);
     if (this.means.length > 3) { this.means.shift(); this.times.shift(); }
@@ -143,6 +148,7 @@ export class SwitchFinder {
     const step = mid - before, total = after - before;
     if (Math.abs(step) < SWITCH * Math.max(before, 1)) return null;
     if (Math.sign(total) !== Math.sign(step) || Math.abs(total) < Math.abs(step) * 0.8) return null;
+    if (expect !== undefined && (step > 0) !== expect) return null;
     this.quietUntil = this.times[1] + SETTLE_MS;
     return step > 0 ? { off: k - 2, on: k, lightOn: true } : { off: k, on: k - 2, lightOn: false };
   }

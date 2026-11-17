@@ -1,10 +1,14 @@
 // Blitz-Test im Live-Scan: sind alle Karten erkannt, blinkt die Lampe, bis jede Karte ihre
 // Folierung hat. Jedes Kamerabild: die noch offenen Karten ausschneiden (Umrisse folgen der
 // Bewegungsverfolgung). Verglichen werden die Enden zweier Phasen (Lampe aus / an): je die beiden
-// letzten Bilder vor einem Umschalten, gemittelt — dann hat die Belichtung nachgeregelt. Direkt nach
-// dem Umschalten ist das Bild über- oder unterbelichtet (Brave/Fairphone: Median 157 → 204 → 163 in
-// ~0.35 s), und das verzerrt Bild gegen Rahmen. Nur Karten, die in beiden Phasen fast gerade unter dem
-// Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
+// letzten Bilder, die aufgenommen wurden, BEVOR um das nächste Umschalten gebeten wurde, und frühestens
+// PHASE_SETTLE_MS nach dem sichtbaren Sprung — dann hat die Belichtung nachgeregelt.
+// Warum so: direkt nach dem Umschalten ist das Bild über- oder unterbelichtet (Brave/Fairphone: Median
+// 157 → 204 → 163 in ~0.35 s). Und die Kamera stellt die Belichtung schon 1–2 Bilder VOR dem sichtbaren
+// Umschalten um (Brians Protokoll 17.11., Bildhelligkeit: 150 → 75 → 125 beim Einschalten,
+// 134 → 215 → 158 beim Ausschalten) — „die letzten Bilder vor dem Sprung" waren also teils schon
+// falsch belichtet, und alle Karten lasen sich nach Holo (Reverse Holo +0.2, Normal +0.2…+0.4).
+// Nur Karten, die in beiden Phasen fast gerade unter dem Handy liegen (FLASH_MIN_DEG…FLASH_MAX_DEG).
 import {
   FLASH_H, FLASH_MAX_DEG, FLASH_MIN_DEG, FLASH_STEP_MS, FLASH_W, FlashTally, SwitchFinder, alignPatch, atlasPatch,
   averagePatch, flashFocal, flashShare, flashTransform, litLevel, viewAngle,
@@ -15,8 +19,10 @@ import { dlog } from "./debugLog";
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
 export type FlashCard = { key: string; quad: number[][] };
 
-type Shot = { n: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
-type Phase = { lit: boolean; at: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
+type Shot = { n: number; t: number; mean: number; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
+const PHASE_SETTLE_MS = 250;         // so lange nach dem sichtbaren Umschalten regelt die Belichtung noch nach
+const SHOTS_KEPT = 30;               // ~1 s Bilder
+type Phase = { lit: boolean; at: number; means: number[]; cards: Map<string, { px: Uint8ClampedArray; deg: number | null }> };
 const ANGLE_MS = 250;
 
 export class FlashMonitor {
@@ -35,6 +41,7 @@ export class FlashMonitor {
   private atlas = document.createElement("canvas");
   private means: number[] = [];       // Helligkeit der letzten Bilder (fürs Protokoll)
   private phase: Phase | null = null; // Ende der letzten Phase (Lampe an oder aus)
+  private lastJumpAt: number | null = null;   // wann das letzte Umschalten im Bild zu sehen war
   /** Kamerafarben reparieren (lib/cameraColors) — die Seite setzt das. */
   colorFix: () => boolean = () => false;
   /** Zoom der Kamera gegenüber dem Start (für den Blickwinkel) — die Seite setzt das. */
@@ -68,7 +75,7 @@ export class FlashMonitor {
     if (this.blinking === on) return;
     this.blinking = on;
     this.onBlink(on);
-    if (!on) { this.finder.reset(); this.shots = []; this.means = []; this.phase = null; }
+    if (!on) { this.finder.reset(); this.shots = []; this.means = []; this.phase = null; this.lastJumpAt = null; }
   }
 
   private async set(on: boolean) {
@@ -126,7 +133,7 @@ export class FlashMonitor {
     const mean = sum / (tp.length / 4) / 3;
     // die offenen Karten ausschneiden
     const list = (this.cards() ?? []).filter((c) => c.quad.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
-    const shot: Shot = { n: this.count++, cards: new Map() };
+    const shot: Shot = { n: this.count++, t: performance.now(), mean, cards: new Map() };
     if (list.length) {
       if (this.atlas.width !== list.length * FLASH_W || this.atlas.height !== FLASH_H) {
         this.atlas.width = list.length * FLASH_W;
@@ -160,28 +167,36 @@ export class FlashMonitor {
       this.onAngles(Object.fromEntries(Array.from(shot.cards, ([key, c]) => [key, c.deg])));
     }
     this.shots.push(shot);
-    if (this.shots.length > 5) this.shots.shift();
+    if (this.shots.length > SHOTS_KEPT) this.shots.shift();
     this.means.push(Math.round(mean));
     if (this.means.length > 4) this.means.shift();
-    const sw = this.finder.push(mean, performance.now());
+    const sw = this.finder.push(mean, performance.now(), this.asked?.on);
     if (!sw) return;
     // nur ein Umschalten, um das gebeten wurde (richtige Richtung, kurz danach) — kein Schwenk ins Helle
     const asked = this.asked;
     if (!asked || asked.on !== sw.lightOn || performance.now() - asked.at > 1.5 * FLASH_STEP_MS) return;
     this.asked = null;
-    // die Phase, die gerade zu Ende ging: die beiden letzten Bilder vor dem Sprung (davor das halb belichtete)
+    // die Phase, die gerade zu Ende ging: ihre letzten beiden Bilder vor der Bitte ums Umschalten,
+    // frühestens PHASE_SETTLE_MS nach ihrem eigenen Sprung (ist der nicht gesehen worden: keine Phase)
     const pre = sw.lightOn ? sw.off : sw.on;
-    const last = this.shots.find((x) => x.n === pre), prev = this.shots.find((x) => x.n === pre - 1);
+    const jumpAt = this.shots.find((x) => x.n === pre + 1)?.t ?? performance.now();
+    const from = this.lastJumpAt;
+    this.lastJumpAt = jumpAt;
+    const usable = from != null && asked.at - from < 1.6 * FLASH_STEP_MS
+      ? this.shots.filter((x) => x.t >= from + PHASE_SETTLE_MS && x.t < asked.at) : [];
+    const [prev, last] = usable.slice(-2).length === 2 ? usable.slice(-2) : [undefined, usable[usable.length - 1]];
     if (!last) { this.phase = null; return; }
-    const ended: Phase = { lit: !sw.lightOn, at: performance.now(), cards: new Map() };
+    const ended: Phase = { lit: !sw.lightOn, at: asked.at, means: [], cards: new Map() };
     last.cards.forEach((c, key) => {
       const p = prev?.cards.get(key);
       ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg });
     });
+    const endMeans = [prev, last].filter((x): x is Shot => !!x).map((x) => Math.round(x.mean));
+    ended.means = endMeans;
     const before = this.phase;
     this.phase = ended;
     // ein Umschalten verpasst (gleicher Zustand oder zu lange her): erst mit der nächsten Phase vergleichen
-    if (!before || before.lit === ended.lit || ended.at - before.at > 2.5 * FLASH_STEP_MS) return;
+    if (!before || before.lit === ended.lit || ended.at - before.at > 1.6 * FLASH_STEP_MS) return;
     const darkPh = ended.lit ? before : ended, litPh = ended.lit ? ended : before;
     let added = false;
     const seen: Record<string, (number | null)[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel]
@@ -198,7 +213,8 @@ export class FlashMonitor {
       this.tally.add(key, s, deg, sw.lightOn);
       added = true;
     });
-    dlog("live.flash.switch", { on: sw.lightOn, zoom: this.zoom(), means: this.means.slice(), cards: seen });
+    dlog("live.flash.switch", { on: sw.lightOn, zoom: this.zoom(), means: this.means.slice(), ends: [before.means, endMeans],
+      frames: usable.length, cards: seen });
     if (added) this.onMeasure();
   }
 }
