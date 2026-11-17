@@ -19,9 +19,10 @@
 // wo sie stand (lib/flashCheck: das Urteil vergleicht mit dem dort erwarteten Messwert).
 import {
   FLASH_H, FLASH_W, FlashTally, alignPatch, atlasPatch, averagePatch, cardOffset, flashFocal, flashReachable,
-  flashRoom, flashShare, flashTransform, litLevel,
+  flashRoom, flashShare, flashShareFlat, flashTransform, litLevel,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
+import { FLASH_ROOM_SPLIT } from "./flashTable";
 import { debugEnabled, dlog } from "./debugLog";
 
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
@@ -174,21 +175,26 @@ export class FlashLoop {
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
     const seen: Record<string, unknown[]> = {};
-    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an]
+    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flashShareFlat]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
       const ok = flashReachable(b.pos) && flashReachable(a.pos);
       const lit = ok ? alignPatch(a.px, b.px) : b.px;
-      const sh = ok ? flashShare(a.px, lit) : null;
+      const rl0 = this.rooms.get(key);
+      const room0 = rl0 && rl0.length ? [...rl0].sort((x, y) => x - y)[rl0.length >> 1] : null;
+      // dunkler Raum (Lampe ≥ FLASH_ROOM_SPLIT × Raumlicht): ohne den Verlauf über die Karte (Schatten), sonst wie bisher
+      const shNow = ok ? flashShare(a.px, lit) : null;
+      const shFlat = ok ? flashShareFlat(a.px, lit) : null;
+      const sh = room0 != null && room0 >= FLASH_ROOM_SPLIT ? shFlat : shNow;
       const deg = (a.deg + b.deg) / 2;
       const tx = a.pos && b.pos ? (a.pos.tx + b.pos.tx) / 2 : null, ty = a.pos && b.pos ? (a.pos.ty + b.pos.ty) / 2 : null;
-      const rl = this.rooms.get(key);
-      const room = rl && rl.length ? [...rl].sort((x, y) => x - y)[rl.length >> 1] : null;
+      const room = room0;
       const r2 = (x: number | null) => (x == null ? null : Math.round(x * 100) / 100);
       const q3 = (q?: number[][]) => (q ? q.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]) : null);
-      seen[key] = [sh == null ? null : Math.round(sh * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
-        q3(a.q), q3(b.q)];
+      const r3 = (x: number | null) => (x == null ? null : Math.round(x * 1000) / 1000);
+      seen[key] = [r3(sh), Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
+        q3(a.q), q3(b.q), r3(shNow), r3(shFlat)];
       if (this.dumpPatches) patches[key] = [lumaB64(a.px), lumaB64(lit)];
       if (sh == null || tx == null || ty == null) return;
       this.tally.add(key, { share: sh, tx, ty, room }, deg, r.on);

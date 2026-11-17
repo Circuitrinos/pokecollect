@@ -71,3 +71,14 @@ python3 sweep.py new 0 1         # whole scans: 3 rooms × 2 heights × 2 hand p
 card centres in mm). The 3×2 card slots (sleeve size, 71×99, measured on Brian's sleeves) sit between 18 ArUco markers (DICT_4X4_50, 9.5 mm). From the markers in a
 video, the camera pose is known in every frame. That gives true camera positions for each reading, so the
 renderer can be refitted to footage from any room, and the app's own position estimate can be checked.
+
+## Shadows (17.11.)
+
+Brian's mat session: per card the flash was 2× the room light on the left of the mat and 9–17× on the right,
+in the same frame (shadow of phone and arm, one lamp). That is a normal scanning condition. A smooth fall-off
+of room light across a card reads as foil in a dark room. So `shadow.py` puts a random smooth shadow (up to
+60 %) on every simulated reading. In dark scenes (flash ≥ 2× room light) the app measures with
+`flashShareFlat`: a plane fitted through the frame's lift, and the art measured against it. With shadows,
+cards right from 8 readings: dark rooms 98–100 % (flashShare 91–94 %), bright rooms unchanged (79 %).
+
+`python3 make_mat.py B` makes a second mat (marker ids 18–35, slots 7–12) to lie below mat A for a 3×4 grid.

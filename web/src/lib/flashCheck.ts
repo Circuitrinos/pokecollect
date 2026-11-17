@@ -140,6 +140,75 @@ export function flashShare(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FL
 }
 
 /**
+ * Wie flashShare, aber ohne den glatten Verlauf über die Karte: im dunklen Raum macht ein Schatten (Hand,
+ * Handy, eine Lampe) die Karte stellenweise dunkler — dort hellt die Lampe sie im Verhältnis stärker auf,
+ * und das sah wie Folie aus (Brian 17.11., Matte: normale Karte +0.4, sobald die Kamera links davon stand).
+ * Darum: eine Ebene (robust) durch das Aufhellen des Rahmens legen und das Bildfenster dagegen messen —
+ * Anteil, der deutlich stärker aufhellt, weniger Anteil, der deutlich schwächer aufhellt.
+ * In der Nachbildung mit Schatten (bis 60 %): im dunklen Raum 98–100 % der Karten richtig aus 8 Messungen
+ * (flashShare 91–94 %); im hellen Raum schlechter — dort zählt weiter flashShare (FLASH_ROOM_SPLIT).
+ */
+export function flashShareFlat(off: Uint8ClampedArray, on: Uint8ClampedArray, w = FLASH_W, h = FLASH_H): number | null {
+  const { art, frame } = masks(w, h);
+  const n = w * h;
+  const g = new Float32Array(n).fill(NaN);
+  let nArt = 0, nFrame = 0, artTotal = 0, frameTotal = 0;
+  for (let i = 0; i < n; i++) {
+    artTotal += art[i]; frameTotal += frame[i];
+    if (!art[i] && !frame[i]) continue;
+    const o = 4 * i;
+    if (Math.max(off[o], off[o + 1], off[o + 2]) >= CLIP || Math.max(on[o], on[o + 1], on[o + 2]) >= CLIP) continue;
+    const a = 0.2126 * LIN[off[o]] + 0.7152 * LIN[off[o + 1]] + 0.0722 * LIN[off[o + 2]];
+    const b = 0.2126 * LIN[on[o]] + 0.7152 * LIN[on[o + 1]] + 0.0722 * LIN[on[o + 2]];
+    if (a <= 0.01) continue;
+    g[i] = Math.log(Math.max(b, 1e-3) / a);
+    if (art[i]) nArt++; else nFrame++;
+  }
+  if (nArt < 0.3 * artTotal || nFrame < 0.3 * frameTotal) return null;
+  // Ebene c0 + c1·u + c2·v durch den Rahmen, gewichtet kleinste Quadrate (≈ L1, 4 Runden)
+  const idx: number[] = [];
+  for (let i = 0; i < n; i++) if (frame[i] && Number.isFinite(g[i])) idx.push(i);
+  const uu = (i: number) => ((i % w) + 0.5) / w, vv = (i: number) => (Math.floor(i / w) + 0.5) / h;
+  let c = [0, 0, 0];
+  const wt = new Float64Array(idx.length).fill(1);
+  for (let it = 0; it < 4; it++) {
+    const M = [0, 0, 0, 0, 0, 0, 0, 0, 0], r = [0, 0, 0];
+    idx.forEach((i, k) => {
+      const x = [1, uu(i), vv(i)], q = wt[k] * wt[k];
+      for (let a = 0; a < 3; a++) { r[a] += q * x[a] * g[i]; for (let b = 0; b < 3; b++) M[3 * a + b] += q * x[a] * x[b]; }
+    });
+    const sol = solve3(M, r);
+    if (!sol) return null;
+    c = sol;
+    idx.forEach((i, k) => { wt[k] = 1 / Math.sqrt(Math.max(Math.abs(c[0] + c[1] * uu(i) + c[2] * vv(i) - g[i]), 0.02)); });
+  }
+  let up = 0, down = 0, cnt = 0;
+  for (let i = 0; i < n; i++) {
+    if (!art[i] || !Number.isFinite(g[i])) continue;
+    const res = g[i] - (c[0] + c[1] * uu(i) + c[2] * vv(i));
+    cnt++;
+    if (res > LIFT) up++; else if (res < -LIFT) down++;
+  }
+  return cnt ? (up - down) / cnt : null;
+}
+
+function solve3(M: number[], r: number[]): number[] | null {
+  const A = [[M[0], M[1], M[2], r[0]], [M[3], M[4], M[5], r[1]], [M[6], M[7], M[8], r[2]]];
+  for (let c = 0; c < 3; c++) {
+    let p = c;
+    for (let k = c + 1; k < 3; k++) if (Math.abs(A[k][c]) > Math.abs(A[p][c])) p = k;
+    if (Math.abs(A[p][c]) < 1e-12) return null;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let k = 0; k < 3; k++) {
+      if (k === c) continue;
+      const f = A[k][c] / A[c][c];
+      for (let j = c; j < 4; j++) A[k][j] -= f * A[c][j];
+    }
+  }
+  return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]];
+}
+
+/**
  * Umschalten der Lampe im laufenden Kamerabild finden: Bild für Bild die mittlere Helligkeit.
  * Ein Sprung zwischen zwei Bildern, der im nächsten Bild bleibt, ist ein Umschalten → Paar aus
  * dem Bild vor dem Sprung und dem nach dem Sprungbild (das kann halb belichtet sein).
@@ -326,14 +395,14 @@ const KINDS: FlashKind[] = ["Holo", "Normal", "Reverse Holo"];
 export type FlashReading = { share: number; tx: number; ty: number; room: number | null };
 // Urteil: je Folierung die Kosten aller Messungen (robust: log(1 + z²) + log sd, z = Abstand zur
 // Erwartung in sd). Gilt, wenn die beste um FLASH_MARGIN vor der zweitbesten liegt, ab FLASH_MIN_N
-// Messungen, und FLASH_HOLD Messungen lang so blieb. Eingestellt an der Nachbildung (6 Karten im Raster,
-// Handy darüber, hell bis dunkel; je Folge in zufälliger Reihenfolge): 2.7 % falsch (vorher 16 %,
-// dazu 58 % nach 12 Messungen noch offen); an Brians Video v66 von jedem Startpunkt: 62 richtig,
-// 1 falsch, 18 offen nach 12 Messungen (vorher 28 / 0 / 53), im Mittel nach 7.4 Messungen.
+// Messungen, und FLASH_HOLD Messungen lang so blieb. Eingestellt an der Nachbildung mit Schatten (6 Karten
+// im Raster, Handy darüber, hell bis dunkel; Folgen in zufälliger Reihenfolge, bis 12 Messungen): 0.8 %
+// falsch, im Mittel nach 7.4 Messungen (die Regel bis 16.11.: 18 % falsch, 63 % offen); an Brians Video
+// v66 von jedem Startpunkt: 46 richtig, 2 falsch, 33 noch offen nach 12 Messungen.
 export const FLASH_MIN_N = 3;         // so viele Messungen mindestens
 export const FLASH_HOLD = 2;          // ein Urteil gilt, wenn es noch so viele Messungen später gleich ist
-export const FLASH_TYPICAL_N = 7;     // so viele braucht es meist (Anzeige)
-const FLASH_MARGIN = 1.5;             // Vorsprung der besten Folierung (Kosten)
+export const FLASH_TYPICAL_N = 8;     // so viele braucht es meist (Anzeige)
+const FLASH_MARGIN = 2.0;             // Vorsprung der besten Folierung (Kosten)
 const FLASH_TENTATIVE = 0.5;          // ab hier „vorläufig" (Anzeige)
 
 /** Erwartung (mu, sd) je Folierung dort, wo die Kamera stand (bilinear in der Tabelle, außen: Rand). */

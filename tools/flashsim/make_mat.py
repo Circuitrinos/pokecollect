@@ -15,6 +15,7 @@ GAP = 5.0                           # between the two rows (the 100 mm bar runs 
 mx = (W - 4 * COL - 3 * SLOT[0]) / 2
 my = (H - 2 * SLOT[1] - GAP) / 2
 LABELS = ["1 · Reverse Holo, sleeve", "2 · Holo, sleeve", "3 · Normal, sleeve", "4 · Reverse Holo", "5 · Holo", "6 · Normal"]
+MAT = 0                             # which mat: 0 = A (ids 0–17, slots 1–6), 1 = B (ids 18–35, slots 7–12, label by hand)
 DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 
 def slot_xy(i):
@@ -28,7 +29,8 @@ def main(out_pdf, out_json):
     row2 = my + SLOT[1] + GAP
     outer = [my + 7.5, my + SLOT[1] * 0.5, my + SLOT[1] + GAP / 2, row2 + SLOT[1] * 0.5, row2 + SLOT[1] - 7.5]
     inner = [my + 7.5, my + SLOT[1] * 0.5, row2 + SLOT[1] * 0.5, row2 + SLOT[1] - 7.5]   # the bar runs between the rows
-    mid = 0
+    mid = 18 * MAT
+    labels = LABELS if MAT == 0 else [f"{7 + i} · ______________" for i in range(6)]
     for k in range(4):
         cx = mx + COL / 2 + k * (SLOT[0] + COL)
         for cy in (outer if k in (0, 3) else inner):
@@ -51,8 +53,8 @@ def main(out_pdf, out_json):
         pdf.rect(bx * mm, Y(by + 88), 63 * mm, 88 * mm, stroke=1, fill=0)
         pdf.setDash()
         pdf.setFont("Helvetica", 8); pdf.setFillColorRGB(0.45, 0.45, 0.45)
-        pdf.drawCentredString((bx + 31.5) * mm, Y(by + 44), LABELS[i])
-        cards.append({"slot": i + 1, "label": LABELS[i], "center": [bx + 31.5, by + 44]})
+        pdf.drawCentredString((bx + 31.5) * mm, Y(by + 44), labels[i])
+        cards.append({"slot": 6 * MAT + i + 1, "label": labels[i], "center": [bx + 31.5, by + 44]})
     # print check, under the cards: 100 mm bar along the gap between the rows
     gy = my + SLOT[1] + GAP / 2
     bx0 = mx + COL + 8
@@ -65,12 +67,16 @@ def main(out_pdf, out_json):
     pdf.drawString((bx0 + 101.5) * mm, Y(gy + 0.9), "← 100 mm: measure it before laying the cards on")
     x2, y2 = slot_xy(1)
     pdf.setFont("Helvetica", 6.5); pdf.setFillColorRGB(0.35, 0.35, 0.35)
-    for n, t in enumerate(["PokéCollect flash test mat", "Letter, landscape, print at 100 % / actual size", "(not “fit to page”) — check the bar between the rows"]):
+    for n, t in enumerate([f"PokéCollect flash test mat {'AB'[MAT]}", "Letter, landscape, print at 100 % / actual size", "(not “fit to page”) — check the bar between the rows"]):
         pdf.drawCentredString((x2 + SLOT[0] / 2) * mm, Y(y2 + CARD_IN[1] + 8 + n * 3.2), t)
     pdf.showPage(); pdf.save()
     json.dump({"paper_mm": [W, H], "marker_dict": "DICT_4X4_50", "marker_mm": MARK, "markers": markers, "cards": cards,
-               "slot_mm": SLOT, "card_mm": [63, 88], "version": 2}, open(out_json, "w"), indent=1)
+               "slot_mm": SLOT, "card_mm": [63, 88], "version": 2, "mat": "AB"[MAT]}, open(out_json, "w"), indent=1)
     print(out_pdf, out_json, f"margins x {mx:.1f} y {my:.1f} mm, {len(markers)} markers")
 
 if __name__ == "__main__":
-    main(*(sys.argv[1:3] if len(sys.argv) > 2 else ("mat.pdf", "mat.json")))
+    # make_mat.py [A|B] [out.pdf out.json]
+    args = sys.argv[1:]
+    if args and args[0] in ("A", "B"):
+        MAT = "AB".index(args.pop(0))
+    main(*(args[:2] if len(args) >= 2 else (f"mat_{'AB'[MAT]}.pdf", f"mat_{'AB'[MAT]}.json")))
