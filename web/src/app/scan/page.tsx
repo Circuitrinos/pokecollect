@@ -273,6 +273,7 @@ export default function ScanPage() {
   const fileSrcRef = useRef<string | null>(null);   // Objekt-URL des Videos
   const fileTimeRef = useRef(0);                    // Stelle im Video (über die Prüfung hinweg weiter)
   const [fromFile, setFromFile] = useState<string | null>(null);
+  const [fileBlank, setFileBlank] = useState(false);   // der Browser liefert aus dem Video nur leere Bilder
   const [debugUi, setDebugUi] = useState(false);
   useEffect(() => { setDebugUi(debugEnabled()); }, []);
   const [cameraOn, setCameraOn] = useState(false);
@@ -427,6 +428,7 @@ export default function ScanPage() {
       URL.revokeObjectURL(fileSrcRef.current);
       fileSrcRef.current = null;
       setFromFile(null);
+      setFileBlank(false);
     }
     setCameraOn(false);
     setTorchState("unknown");
@@ -518,6 +520,7 @@ export default function ScanPage() {
     fileSrcRef.current = URL.createObjectURL(file);
     fileTimeRef.current = 0;
     setFromFile(file.name);
+    setFileBlank(false);
     setCamMsg(null);
     setTorchState("no");
     setZoomCaps(null);
@@ -536,10 +539,32 @@ export default function ScanPage() {
       v.srcObject = null;
       if (v.src !== fileSrcRef.current) v.src = fileSrcRef.current;
       const at = fileTimeRef.current;   // nach der Prüfung dort weiter, wo das Video war
+      const url = fileSrcRef.current;
+      // Brian 17.11.: ein 4K-Video lief sichtbar, aber Firefox (Android) lieferte beim Abgreifen nur leere
+      // Bilder — der Live-Scan sah nichts. Einmal nachsehen und es dann sagen, statt still „nichts im Bild".
+      const probe = () => {
+        let tries = 0;
+        const c = document.createElement("canvas");
+        c.width = 48; c.height = 64;
+        const pctx = c.getContext("2d", { willReadFrequently: true });
+        const check = () => {
+          if (fileSrcRef.current !== url || !pctx) return;
+          if (v.readyState < 2 || v.paused) { if (tries++ < 40) window.setTimeout(check, 250); return; }
+          pctx.drawImage(v, 0, 0, c.width, c.height);
+          const d = pctx.getImageData(0, 0, c.width, c.height).data;
+          let s1 = 0, s2 = 0;
+          for (let i = 0; i < d.length; i += 4) { const y = (d[i] + d[i + 1] + d[i + 2]) / 3; s1 += y; s2 += y * y; }
+          const n = d.length / 4, sd = Math.sqrt(Math.max(0, s2 / n - (s1 / n) ** 2));
+          dlog("camera.file.probe", { mean: Math.round(s1 / n), sd: Math.round(sd * 10) / 10, w: v.videoWidth, h: v.videoHeight });
+          setFileBlank(sd < 2);
+        };
+        window.setTimeout(check, 500);
+      };
       const go = () => {
         if (at > 0 && Math.abs(v.currentTime - at) > 0.5) v.currentTime = at;
         v.play().catch(() => {});
         dlog("camera.file.play", { w: v.videoWidth, h: v.videoHeight, duration: Math.round(v.duration * 10) / 10, at: Math.round(at * 10) / 10 });
+        probe();
       };
       if (v.readyState >= 1) go(); else v.addEventListener("loadedmetadata", go, { once: true });
     }
@@ -2526,6 +2551,12 @@ export default function ScanPage() {
                     onResize={(e) => setVidSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
                     onTimeUpdate={(e) => { if (fileSrcRef.current) fileTimeRef.current = e.currentTarget.currentTime; }}
                     onEnded={() => { if (fileSrcRef.current) dlog("camera.file.ended", { t: Math.round(fileTimeRef.current * 10) / 10 }); }} />
+                  {fromFile && fileBlank && (
+                    <p data-testid="scan-video-blank"
+                      className="absolute inset-x-2 top-28 z-10 rounded bg-red-900/85 px-3 py-2 text-center text-xs text-white">
+                      {t.scan_video_blank}
+                    </p>
+                  )}
                   {fromFile && (
                     <button type="button" data-testid="scan-video-restart" title={t.scan_video_restart}
                       onClick={() => {
