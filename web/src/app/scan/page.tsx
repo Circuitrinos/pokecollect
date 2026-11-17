@@ -42,7 +42,7 @@ import {
 import { FLASH_H, FLASH_TYPICAL_N, FLASH_W, flashReachable, type FlashKind } from "@/lib/flashCheck";
 import { FlashMonitor, lumaB64, probeTorch, type FlashCard } from "@/lib/flashCapture";
 import { TILT_W, type TiltResult } from "@/lib/tiltFoil";
-import { TiltFoilRunner } from "@/lib/tiltFoilRunner";
+import { TiltFoilPool } from "@/lib/tiltFoilRunner";
 import { mp4Rotation } from "@/lib/videoRotation";
 import {
   addFocus, reanchor, similarityFit, addFrame, allSure, candidateIds, cardPart, choices, counts, emptyLive, finish, focusTarget, NUMBER_CORNERS,
@@ -105,6 +105,7 @@ const FOIL_TILT_KEY = "scan_tilt_test";
 const TILT_EVERY = 140;
 const TILT_JUDGE = 900;
 const TILT_HOLD_MS = 15000;
+const TILT_MAX_CARDS = 9;            // Neige-Test bei mehreren Karten: höchstens so viele zugleich (Mappe 3×3)
 type TiltHint = { kind: FoilKind; ratio: number | null; swing: number | null; tex: number | null };
 const r2 = (x: number | null) => (x == null ? null : Math.round(x * 100) / 100);
 const FLASH_REANCHOR_SCALE = 1.35;   // so viel näher/weiter seit dem letzten geprüften Bild: Blinken pausiert, neu einordnen
@@ -888,6 +889,7 @@ export default function ScanPage() {
   // Lampe: gemeldet / ausprobiert und geht ("yes"), geht nicht ("no"), noch nicht bekannt
   const [torchState, setTorchState] = useState<"yes" | "no" | "unknown">("unknown");
   const [flashTest, setFlashTest] = useState(false);
+  const [foilTilt, setFoilTilt] = useState(false);   // Neige-Test (unten)
   useEffect(() => {
     try { setFlashTest(localStorage.getItem(FLASH_KEY) === "1"); } catch { /* privat */ }
   }, []);
@@ -896,15 +898,15 @@ export default function ScanPage() {
     setFlashTest(on);
     if (on && torchState === "no") setTorchState("unknown");      // noch einmal ausprobieren
     try { localStorage.setItem(FLASH_KEY, on ? "1" : "0"); } catch { /* privat */ }
+    if (on) offTilt();   // Blinken und Neige-Test schließen sich aus
   };
   // Blitz-Test (Blinken) nur bei mehreren Karten: bei der Einzelkarte brachte er nichts (17.11.: 5 Messungen
   // auf 9 Karten, kein Urteil — zwischen zwei Fotos bleibt keine ruhige Phase). Dort gibt es stattdessen
   // den Neige-Test (unten). Die Lampe dauernd an (16.11.) blendete in der Mitte der Karte — Erkennung und
   // Foto-Prüfung wurden schlechter; das ist wieder weg.
-  const flashOn = flashTest && torchState === "yes" && mode !== "single";
+  const flashOn = flashTest && torchState === "yes" && mode !== "single" && !foilTilt;   // Blinken sähe beim Neige-Test wie Folie aus
   // Einzelkarte: Folie beim Neigen (lib/tiltFoil) — die Karte ein paar Sekunden zum Licht hin kippen;
   // die Karte bleibt blau, bis ein Urteil steht (höchstens TILT_HOLD_MS)
-  const [foilTilt, setFoilTilt] = useState(false);
   useEffect(() => {
     try { setFoilTilt(localStorage.getItem(FOIL_TILT_KEY) === "1"); } catch { /* privat */ }
   }, []);
@@ -912,12 +914,20 @@ export default function ScanPage() {
     const on = !foilTilt;
     setFoilTilt(on);
     try { localStorage.setItem(FOIL_TILT_KEY, on ? "1" : "0"); } catch { /* privat */ }
-    dlog("live.tiltfoil.toggle", { on });
+    dlog("live.tiltfoil.toggle", { on, mode });
+    if (on && flashTest) {   // mehrere Karten: Blinken sähe wie Folie aus — der Blitz-Test geht aus
+      setFlashTest(false);
+      try { localStorage.setItem(FLASH_KEY, "0"); } catch { /* privat */ }
+    }
   };
-  const tiltOnNow = foilTilt && mode === "single";
+  function offTilt() {
+    setFoilTilt(false);
+    try { localStorage.setItem(FOIL_TILT_KEY, "0"); } catch { /* privat */ }
+  }
+  const tiltOnNow = foilTilt;
   const foilTiltOnRef = useRef(false);
   foilTiltOnRef.current = tiltOnNow;
-  const tiltRunnerRef = useRef<TiltFoilRunner | null>(null);
+  const tiltRunnerRef = useRef<TiltFoilPool | null>(null);
   const tiltResRef = useRef(new Map<string, TiltResult>());
   const tiltHoldRef = useRef<number | null>(null);      // seit wann der Scan aufs Neigen wartet
   const [tiltView, setTiltView] = useState<Record<string, { kind: FoilKind | null; progress: number }>>({});
@@ -1072,7 +1082,8 @@ export default function ScanPage() {
     // entzerrt, ausgerichtet und verglichen wird im Worker (lib/tiltFoilRunner)
     const mid = document.createElement("canvas");
     const mctx = mid.getContext("2d", { willReadFrequently: true });
-    let lastTiltAdd = 0, lastTiltJudge = 0, tiltBusy = false, lastTiltLog = 0;
+    let lastTiltAdd = 0, lastTiltJudge = 0;
+    const tiltBusy = new Set<string>(), lastTiltLog = new Map<string, number>();
     const tiltKinds = new Map<string, FoilKind | null>();
     const tiltCat = new Map<string, string>();   // Katalogbild je Karte (einmal geholt) — legt das Bezugsbild an
     const tiltRes = tiltResRef.current;
@@ -1095,13 +1106,19 @@ export default function ScanPage() {
       const cards = all.filter(({ q }) => inside(q, 0)).slice(0, 2 * COLS);
       // Neige-Test: der verfolgte Umriss darf ein Stück aus dem Bild ragen — er liegt oft daneben (17.11.: bis ~45 % zu
       // groß), die Karte selbst ist meist ganz im Bild; ausgeschnitten wird nur, was im Bild ist
-      const tiltCard = all.find(({ q }) => inside(q, 0.3 * Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]))) ?? null;
-      if (!cards.length && !tiltCard) return;
+      const loose = (q: number[][]) => inside(q, 0.3 * Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]));
+      const single = modeRef.current === "single";
+      const tiltCard = all.find(({ q }) => loose(q)) ?? null;
+      // mehrere Karten (lose, Mappe): jede, die (ungefähr) im Bild ist
+      const tiltCards = single ? (tiltCard ? [tiltCard] : []) : all.filter(({ q }) => loose(q)).slice(0, TILT_MAX_CARDS);
+      if (!cards.length && !tiltCards.length) return;
       const tNow = performance.now();
-      if (tiltCard && mctx && foilTiltOnRef.current && modeRef.current === "single") {
+      if (tiltCards.length && mctx && foilTiltOnRef.current) {
         let runner = tiltRunnerRef.current;
         if (!runner) {
-          runner = tiltRunnerRef.current = new TiltFoilRunner();
+          // je Karte ein Worker aus einem kleinen Vorrat (bei einer Karte einer)
+          const lanes = single ? 1 : Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 4) - 2));
+          runner = tiltRunnerRef.current = new TiltFoilPool(lanes);
           // Debug: verkleinerte, ausgerichtete Bilder zum Nachrechnen (in Teilen — ein Eintrag hat höchstens ~3000 Zeichen)
           runner.onSample = (smp) => {
             const parts = Math.ceil(smp.b64.length / 2800);
@@ -1112,11 +1129,16 @@ export default function ScanPage() {
             }
           };
         }
-        const key = tiltCard.key;
-        const trk = st.tracks.find((x) => x.key === key);
-        const settledOne = !!trk && verdict(trk).level === "green" && !flashNeed(trk);   // nur eine Folierung: nichts zu prüfen
-        const vid = trk && verdict(trk).level === "green" ? verdict(trk).id : null;
-        if (vid && tiltCat.get(key) !== vid) {
+        const pool = runner;
+        // noch zu prüfen: nicht nur eine Folierung möglich und noch kein Urteil (ein Urteil bleibt — keine Bilder mehr dafür)
+        const need = tiltCards.filter(({ key }) => {
+          const trk = st.tracks.find((x) => x.key === key);
+          return !!trk && !(verdict(trk).level === "green" && !flashNeed(trk)) && !tiltKinds.get(key);
+        });
+        for (const { key } of need) {
+          const trk = st.tracks.find((x) => x.key === key);
+          const vid = trk && verdict(trk).level === "green" ? verdict(trk).id : null;
+          if (!vid || tiltCat.get(key) === vid) continue;
           tiltCat.set(key, vid);
           void api.get<{ b64: string | null }>(`/scan/catalog-luma/${encodeURIComponent(vid)}`).then((r) => {
             const b64 = r.data.b64;
@@ -1128,55 +1150,73 @@ export default function ScanPage() {
             dlog("live.tiltfoil.catalog", { key, id: vid, ok: true });
           }).catch(() => dlog("live.tiltfoil.catalog", { key, id: vid, ok: false }));
         }
-        if (!settledOne && tNow - lastTiltAdd >= TILT_EVERY && runner.pending < 2) {   // Worker hinterher: Bild auslassen
+        if (need.length && tNow - lastTiltAdd >= TILT_EVERY) {
           lastTiltAdd = tNow;
-          const qv = tiltCard.q.map(([x, y]) => [x / k, y / k]);   // Kamerapixel
-          const cw = Math.max(Math.hypot(qv[1][0] - qv[0][0], qv[1][1] - qv[0][1]), Math.hypot(qv[2][0] - qv[3][0], qv[2][1] - qv[3][1]));
-          const sc = Math.min(1, (2 * TILT_W) / Math.max(cw, 1));
+          // das Kamerabild einmal, so verkleinert, dass die (mittlere) Karte ~2× TILT_W breit ist; daraus jede Karte ausschneiden
+          const qvs = need.map(({ key, q }) => ({ key, qv: q.map(([x, y]) => [x / k, y / k]) }));   // Kamerapixel
+          const widthOf = (qv: number[][]) => Math.max(Math.hypot(qv[1][0] - qv[0][0], qv[1][1] - qv[0][1]), Math.hypot(qv[2][0] - qv[3][0], qv[2][1] - qv[3][1]));
+          const cws = qvs.map(({ qv }) => widthOf(qv)).sort((a, b) => a - b);
+          const sc = Math.min(1, (2 * TILT_W) / Math.max(cws[cws.length >> 1], 1));
           const mw = Math.round(v.videoWidth * sc), mh = Math.round(v.videoHeight * sc);
-          if (mid.width !== mw || mid.height !== mh) { mid.width = mw; mid.height = mh; }
-          mctx.imageSmoothingEnabled = true;
-          mctx.imageSmoothingQuality = "high";
-          mctx.drawImage(v, 0, 0, mw, mh);
-          const qm = qv.map(([x, y]) => [x * sc, y * sc]);
-          const xs = qm.map((p) => p[0]), ys = qm.map((p) => p[1]);
-          // mit Rand: der Umriss liegt bis zu ~10 % daneben, die Ausrichtung im Worker braucht das Bild ringsum
-          const pad = Math.ceil(0.15 * cw * sc);
-          const bx = Math.max(0, Math.floor(Math.min(...xs)) - pad), by = Math.max(0, Math.floor(Math.min(...ys)) - pad);
-          const bw = Math.min(mw, Math.ceil(Math.max(...xs)) + pad) - bx, bh = Math.min(mh, Math.ceil(Math.max(...ys)) + pad) - by;
-          if (bw > 8 && bh > 8) {
-            const img = mctx.getImageData(bx, by, bw, bh);
-            runner.add(key, { data: img.data, width: bw, height: bh, ox: bx, oy: by }, qm, tNow, debugEnabled());
+          let drawn = false;
+          for (const { key, qv } of qvs) {
+            if (pool.busy(key)) continue;   // Worker dieser Karte hinterher: Bild auslassen
+            if (!drawn) {
+              if (mid.width !== mw || mid.height !== mh) { mid.width = mw; mid.height = mh; }
+              mctx.imageSmoothingEnabled = true;
+              mctx.imageSmoothingQuality = "high";
+              mctx.drawImage(v, 0, 0, mw, mh);
+              drawn = true;
+            }
+            const qm = qv.map(([x, y]) => [x * sc, y * sc]);
+            const xs = qm.map((p) => p[0]), ys = qm.map((p) => p[1]);
+            // mit Rand: der Umriss liegt oft daneben, die Ausrichtung im Worker braucht das Bild ringsum
+            const pad = Math.ceil(0.15 * widthOf(qv) * sc);
+            const bx = Math.max(0, Math.floor(Math.min(...xs)) - pad), by = Math.max(0, Math.floor(Math.min(...ys)) - pad);
+            const bw = Math.min(mw, Math.ceil(Math.max(...xs)) + pad) - bx, bh = Math.min(mh, Math.ceil(Math.max(...ys)) + pad) - by;
+            if (bw > 8 && bh > 8) {
+              const img = mctx.getImageData(bx, by, bw, bh);
+              pool.add(key, { data: img.data, width: bw, height: bh, ox: bx, oy: by }, qm, tNow, debugEnabled(), Math.max(mw, mh));
+            }
           }
         }
-        if (!settledOne && !tiltBusy && tNow - lastTiltJudge >= TILT_JUDGE) {
+        if (need.length && tNow - lastTiltJudge >= TILT_JUDGE) {
           lastTiltJudge = tNow;
-          const tr = st.tracks.find((x) => x.key === key);
-          const c = tr ? verdict(tr).cand : null;
-          const opts = c ? withPrizePackHolo(c.foil_options ?? [], !!c.stamp?.sure) : [];
-          runner.forget(st.tracks.map((x) => x.key));
-          tiltBusy = true;
-          void runner.result(key, opts).then((r) => {
-            tiltBusy = false;
-            if (!r || !foilTiltOnRef.current) return;
-            // ein Urteil bleibt stehen: spätere Bilder können es nur durch ein anderes ersetzen, nicht wieder offen
-            // machen (17.11.: Holo, dann hielt die Karte still — die Neigung im Fenster sank, das Urteil fiel weg)
-            const before = tiltKinds.get(key) ?? null;
-            const kind = r.kind ?? before;
-            tiltResRef.current.set(key, { ...r, kind });
-            setTiltView({ [key]: { kind, progress: kind ? 1 : Math.round(r.progress * 20) / 20 } });
-            const now2 = performance.now();
-            if (before !== kind || now2 - lastTiltLog > 3000) {
-              lastTiltLog = now2;
-              dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind, now: r.kind, early: r.early && !r.ready, n: r.n, used: r.used, tilt: r2(r.tilt), lit: r2(r.lit),
-                art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex), holo: r.holo, rh: r.rh,
-                dropped: r.dropped, rms: r2(r.rms), snap: r2(r.snap), options: opts });
-            }
-            tiltKinds.set(key, kind);
-            // wartete aufs Neigen: gleich weiter (eine noch laufende Prüfung eines Bilds muss nicht abgewartet werden)
-            if (kind && !before) autoFinishRef.current(liveRef.current);
-          });
+          pool.forget(st.tracks.map((x) => x.key));
+          for (const { key } of need) {
+            if (tiltBusy.has(key)) continue;
+            const tr = st.tracks.find((x) => x.key === key);
+            const c = tr ? verdict(tr).cand : null;
+            const opts = c ? withPrizePackHolo(c.foil_options ?? [], !!c.stamp?.sure) : [];
+            tiltBusy.add(key);
+            void pool.result(key, opts).then((r) => {
+              tiltBusy.delete(key);
+              if (!r || !foilTiltOnRef.current) return;
+              // ein Urteil bleibt stehen: spätere Bilder können es nur durch ein anderes ersetzen, nicht wieder offen
+              // machen (17.11.: Holo, dann hielt die Karte still — die Neigung im Fenster sank, das Urteil fiel weg)
+              const before = tiltKinds.get(key) ?? null;
+              const kind = r.kind ?? before;
+              tiltResRef.current.set(key, { ...r, kind });
+              setTiltView((prev) => ({ ...prev, [key]: { kind, progress: kind ? 1 : Math.round(r.progress * 20) / 20 } }));
+              const now2 = performance.now();
+              if (before !== kind || now2 - (lastTiltLog.get(key) ?? 0) > 3000) {
+                lastTiltLog.set(key, now2);
+                dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind, now: r.kind, early: r.early && !r.ready, n: r.n, used: r.used,
+                  tilt: r2(r.tilt), lit: r2(r.lit), art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex),
+                  holo: r.holo, rh: r.rh, dropped: r.dropped, rms: r2(r.rms), snap: r2(r.snap), options: opts });
+              }
+              tiltKinds.set(key, kind);
+              // wartete aufs Neigen: gleich weiter (eine noch laufende Prüfung eines Bilds muss nicht abgewartet werden)
+              if (kind && !before) autoFinishRef.current(liveRef.current);
+            });
+          }
         }
+      }
+      // Debug, mehrere Karten: die Umrisse, die der Neige-Test bekam (zum Nachrechnen)
+      if (!single && foilTiltOnRef.current && tiltCards.length && debugEnabled() && tNow - lastTilt >= 300) {
+        lastTilt = tNow;
+        const r3 = (x: number) => Math.round(x * 1000) / 1000;
+        dlog("live.tilt.cards", { t: Math.round(tNow), cards: tiltCards.map(({ key, q }) => [key, q.map(([x, y]) => [r3(x / w), r3(y / h)])]) });
       }
       if (tiltCard && tctx && modeRef.current === "single" && debugEnabled() && tNow - lastTilt >= 300) {
         lastTilt = tNow;
@@ -2820,26 +2860,28 @@ export default function ScanPage() {
                       🎨 {fixColors ? t.scan_colors_fixed : t.scan_fix_colors}
                     </button>
                   )}
-                  {liveAvailable && step === "setup" && live && mode === "single" && (
-                    // Einzelkarte: Folie beim Neigen erkennen (lib/tiltFoil)
-                    <button type="button" onClick={toggleFoilTilt} aria-pressed={foilTilt} title={t.scan_foiltilt_hint}
-                      data-testid="scan-tilt-test"
-                      className={`absolute top-20 left-2 rounded-full px-3 py-1.5 text-xs text-white ${foilTilt
-                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
-                      <span className={foilTilt ? "text-yellow-300" : "text-gray-400"}>↻</span> {t.scan_foiltilt}
-                    </button>
-                  )}
-                  {liveAvailable && step === "setup" && live && mode !== "single" && (
-                    // Blitz-Test: auch wenn der Browser die Lampe nicht meldet — beim Einschalten wird sie ausprobiert
-                    <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest}
-                      title={torchState === "no" ? t.scan_flash_no_torch : t.scan_flash_test_hint}
-                      data-testid="scan-flash-test" data-torch={torchState}
-                      className={`absolute top-20 left-2 rounded-full px-3 py-1.5 text-xs text-white ${flashTest
-                        ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
-                      <span className={flashTest && torchState !== "no" ? "text-yellow-300" : "text-gray-400"}>⚡</span>{" "}
-                      {flashTest && torchState === "no" ? t.scan_flash_no_torch_short : flashTest && torchState === "unknown" ? t.scan_flash_trying
-                        : t.scan_flash_test}
-                    </button>
+                  {liveAvailable && step === "setup" && live && (
+                    <div className="absolute top-20 left-2 flex gap-2">
+                      {/* Folie beim Neigen erkennen (lib/tiltFoil) — eine Karte oder mehrere */}
+                      <button type="button" onClick={toggleFoilTilt} aria-pressed={foilTilt} title={t.scan_foiltilt_hint}
+                        data-testid="scan-tilt-test"
+                        className={`rounded-full px-3 py-1.5 text-xs text-white ${foilTilt
+                          ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                        <span className={foilTilt ? "text-yellow-300" : "text-gray-400"}>↻</span> {t.scan_foiltilt}
+                      </button>
+                      {mode !== "single" && (
+                        // Blitz-Test: auch wenn der Browser die Lampe nicht meldet — beim Einschalten wird sie ausprobiert
+                        <button type="button" onClick={toggleFlashTest} aria-pressed={flashTest}
+                          title={torchState === "no" ? t.scan_flash_no_torch : t.scan_flash_test_hint}
+                          data-testid="scan-flash-test" data-torch={torchState}
+                          className={`rounded-full px-3 py-1.5 text-xs text-white ${flashTest
+                            ? "bg-pokemon-blue/80" : "bg-black/50 hover:bg-black/70"}`}>
+                          <span className={flashTest && torchState !== "no" ? "text-yellow-300" : "text-gray-400"}>⚡</span>{" "}
+                          {flashTest && torchState === "no" ? t.scan_flash_no_torch_short : flashTest && torchState === "unknown" ? t.scan_flash_trying
+                            : t.scan_flash_test}
+                        </button>
+                      )}
+                    </div>
                   )}
                   {step === "setup" && zoomCaps && (
                     // Zoom: höher halten + hineinzoomen — gleiches Bild, sanfteres Licht beim Blitz-Test

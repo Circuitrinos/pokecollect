@@ -3,7 +3,7 @@
 import { FoilTilt, type Pixels } from "./tiltFoil";
 
 type In =
-  | { type: "add"; key: string; px: Pixels; quad: number[][]; t: number; log: boolean }
+  | { type: "add"; key: string; px: Pixels; quad: number[][]; t: number; log: boolean; view?: number }
   | { type: "result"; id: number; key: string; options: string[] }
   | { type: "forget"; keep: string[] }
   | { type: "catalog"; key: string; gray: Uint8Array; w: number; h: number }
@@ -18,7 +18,7 @@ ctx.onmessage = (e) => {
   const m = e.data;
   if (m.type === "add") {
     logOn = m.log;
-    try { tilt.add(m.key, m.px, m.quad, m.t); } catch { /* unbrauchbares Bild */ }
+    try { tilt.add(m.key, m.px, m.quad, m.t, m.view ?? 0); } catch { /* unbrauchbares Bild */ }
     ctx.postMessage({ added: true });   // fertig: der nächste Ausschnitt darf kommen
   } else if (m.type === "result") {
     let result = null;

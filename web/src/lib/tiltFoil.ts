@@ -40,7 +40,10 @@ const SIGMA = 2;               // feines Muster: Abweichung vom Mittel der Umgeb
 export const TILT_MIN_USED = 20;    // so viele scharfe Bilder mindestens
 export const TILT_EARLY = 14;       // schon ab so vielen: nur ein deutliches Ja (Holo; Reverse Holo am schwankenden Rahmen) —
                                     // „keine Folie" und Muster im Rahmen brauchen mehr (16.11., Lampe: sonst früh falsch)
-export const TILT_SPREAD = 0.10;    // Neigung: Spanne der Verzerrung (p10–p90) in einer Richtung
+export const TILT_SPREAD = 0.10;    // Neigung: Spanne der Verzerrung (p10–p90) in einer Richtung, …
+const VIEW_REF = 0.65;              // … wie bei einer Karte, die 65 % der Bildhöhe füllt: kleinere Karten verzerren sich beim
+                                    // gleichen Winkel weniger (~ Kartengröße im Bild / Brennweite) — mehrere Karten (17.11.,
+                                    // 6 auf einem Blatt): 0.05–0.07 bei ~15° Schwenk
 export const LIT_RANGE = 1.3;       // hellste Momente mindestens so viel heller als üblich (zum Licht gedreht)
 export const HOLO_RATIO = 2.1, HOLO_RATIO_NO = 1.6, HOLO_ART = 0.15;   // 17.11.: Brock's Scouting (normal) bis 1.8–2.15
 export const RH_SWING = 0.30, RH_SWING_NO = 0.22;
@@ -65,7 +68,7 @@ type Sample = {
   L: Float32Array; B: Uint8Array; LG: Float32Array; nm: number; tex: number;
   sharp: number; clip: number; ks: [number, number]; t: number; inl: number; rms: number;
 };
-type Raw = { px: Pixels; quad: number[][]; t: number; sharp: number; tried?: boolean };
+type Raw = { px: Pixels; quad: number[][]; t: number; view: number; sharp: number; tried?: boolean };
 type Card = {
   cat: Float32Array | null;                           // Kanten des Katalogbilds (Stufe 0), wenn bekannt
   snap: number | null;                                // Bezug am Katalog verschoben (größte Ecke, Anteil der Breite); null: nicht angelegt
@@ -76,6 +79,16 @@ type Card = {
   corr: number[][] | null;
   list: Sample[]; dropped: number; seen: number;
 };
+
+/** Verzerrung des Umrisses, auf eine Karte von VIEW_REF der Bildhöhe umgerechnet (oben/unten ~ Höhe, links/rechts ~ Breite im Bild). */
+function tiltOf(q: number[][], view: number): [number, number] {
+  const [a, b] = keystone(q);
+  if (!(view > 0)) return [a, b];
+  const d = (i: number, j: number) => Math.hypot(q[i][0] - q[j][0], q[i][1] - q[j][1]);
+  const h = (d(0, 3) + d(1, 2)) / 2, w = (d(0, 1) + d(3, 2)) / 2;
+  const fh = h > 0 ? Math.max(1, (VIEW_REF * view) / h) : 1, fw = w > 0 ? Math.max(1, (VIEW_REF * view * TILT_W) / TILT_H / w) : 1;
+  return [a * fh, b * fw];
+}
 
 function sobel(v: Float32Array, out: Float32Array) {
   out.fill(0);
@@ -216,14 +229,14 @@ export class FoilTilt {
   onSample: ((s: TiltSampleLog) => void) | null = null;
 
   /** Ein Ausschnitt des Kamerabilds mit dem (ungefähren) Umriss der Karte darin. */
-  add(key: string, px: Pixels, quad: number[][], t: number) {
+  add(key: string, px: Pixels, quad: number[][], t: number, view = 0) {
     const c = this.card(key);
     if (!c.ref) {
       // Bezugsbild: das schärfste der ersten REF_PICK — bis dahin die Ausschnitte aufheben; mit Katalogbild
       // wird es daran angelegt (Bild- und Rahmenbereich sitzen dann), ohne nach REF_WAIT Bildern so
       const rgba = warpCard(px, quad, TILT_W, TILT_H);
       if (!rgba) return;
-      c.raws.push({ px, quad, t, sharp: sharpness(rgba) });
+      c.raws.push({ px, quad, t, view, sharp: sharpness(rgba) });
       if (c.raws.length < REF_PICK || (!c.cat && c.raws.length < REF_WAIT)) return;
       let best = c.raws.reduce((a, b) => (b.sharp > a.sharp ? b : a));
       let refQuad = best.quad;
@@ -259,13 +272,14 @@ export class FoilTilt {
       c.ref = { pyr, grad, calm };
       const raws = c.raws;
       c.raws = [];
-      for (const r of raws) this.process(key, c, r.px, r === best ? refQuad : r.quad, r.t, r === best);
+      for (const r of raws) this.process(key, c, r.px, r === best ? refQuad : r.quad, r.t, r === best, r.view);
       return;
     }
-    this.process(key, c, px, quad, t, false);
+    this.process(key, c, px, quad, t, false, view);
   }
 
-  private process(key: string, c: Card, px: Pixels, quad: number[][], t: number, isRef: boolean) {
+  /** `view`: die längere Seite des Kamerabilds in den Einheiten von `quad` (0: unbekannt) — misst die Neigung kleiner Karten */
+  private process(key: string, c: Card, px: Pixels, quad: number[][], t: number, isRef: boolean, view = 0) {
     const ref = c.ref!;
     const good = (a: Aligned | null): a is Aligned => !!a && a.inliers >= MIN_INL && a.rms <= MAX_RMS;
     let al: Aligned | null = isRef ? { quad, inliers: 0, rms: 0 } : null;
@@ -306,7 +320,7 @@ export class FoilTilt {
     // Helligkeit relativ zum Rahmen (log), unbrauchbar: NaN
     const LG = new Float32Array(N);
     for (let i = 0; i < N; i++) LG[i] = B[i] || !(nm > 0) ? NaN : Math.log(Math.max(L[i] / nm, 1e-4));
-    const s: Sample = { L, B, LG, nm, tex: res.length >= 50 ? median(res) : NaN, sharp, clip, ks: keystone(al.quad), t,
+    const s: Sample = { L, B, LG, nm, tex: res.length >= 50 ? median(res) : NaN, sharp, clip, ks: tiltOf(al.quad, view), t,
       inl: al.inliers, rms: al.rms };
     c.list.push(s);
     if (c.list.length > KEEP) c.list.shift();
