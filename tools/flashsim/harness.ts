@@ -26,7 +26,9 @@ rl.on("line", (line) => {
   } else if (m.op === "frame") {
     const cards = new Map<string, { px: Uint8ClampedArray; deg: number | null; pos?: { tx: number; ty: number } | null }>();
     const focal = FC.flashFocal(m.w, m.h, 1);
-    const cc = (FC as Record<string, unknown>).cardCamera as ((q: number[][], w: number, h: number, f: number) => { tx: number; ty: number; deg: number } | null) | undefined;
+    const cc0 = (FC as Record<string, unknown>).cardCamera as ((q: number[][], w: number, h: number, f: number) => { tx: number; ty: number; deg: number } | null) | undefined;
+    const co = (FC as Record<string, unknown>).cardOffset as ((q: number[][], w: number, h: number, f: number, t: number[] | null) => { tx: number; ty: number; deg: number } | null) | undefined;
+    const cc = co ? (q: number[][], w: number, h: number, f: number) => co(q, w, h, f, m.turn ?? null) : cc0;
     for (const c of m.cards) {
       const px = new Uint8ClampedArray(Buffer.from(c.px, "base64"));
       if (cc) {
@@ -37,7 +39,7 @@ rl.on("line", (line) => {
       }
       keys.add(c.key);
     }
-    const added = loop.frame({ t: m.t, mean: m.mean, cards });
+    const added = loop.frame({ t: m.t, mean: m.mean, cards, turn: m.turn ?? null });
     const st: Record<string, unknown> = {};
     for (const k of keys) { const c = cards.get(k); st[k] = [loop.tally.n(k), loop.tally.kind(k), loop.tally.settled(k), c?.deg ?? null, c?.pos ?? null]; }
     out = { added, cards: st, log: logs };

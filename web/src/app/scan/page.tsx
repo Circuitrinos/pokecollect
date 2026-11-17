@@ -992,6 +992,7 @@ export default function ScanPage() {
     }, setFlashAngles);
     mon.colorFix = () => fixColorsRef.current;
     mon.zoom = () => zoomRef.current;
+    mon.turn = () => tiltTurnRef.current;
     flashRef.current = mon;
     mon.start();
     return () => {

@@ -276,6 +276,38 @@ export function cardCamera(quad: number[][], w: number, h: number, focal = flash
   return { tx: d[0] / z, ty: d[1] / z, deg: (Math.acos(Math.min(1, z / len)) * 180) / Math.PI };
 }
 
+/**
+ * Wo die Kamera über der Karte steht — aus der Mitte des Umrisses und der Neigung des Handys (Lagesensor,
+ * Drehung seit „Gerade": turn, row-major, Bezugsbild → jetzt; null: Handy parallel zum Tisch). Die
+ * Perspektive des einzelnen Umrisses taugt dafür nicht: sie stammt aus der Erkennung beim Abgleich und
+ * wird danach nur mitbewegt (Brian 17.11.: die mittleren Karten lagen damit 0.25 daneben).
+ * Ecken TL, TR, BR, BL in Pixeln eines Bilds w×h.
+ */
+export function cardOffset(quad: number[][], w: number, h: number, focal: number, turn: number[] | null): CardCamera | null {
+  // Strahl durch einen Bildpunkt, im Bezugsbild (Kamera gerade über dem Tisch) → Punkt auf dem Tisch (Höhe 1)
+  const onTable = ([x, y]: number[]): number[] | null => {
+    const u = (x - w / 2) / focal, v = (y - h / 2) / focal;
+    const r = turn
+      ? [turn[0] * u + turn[3] * v + turn[6], turn[1] * u + turn[4] * v + turn[7], turn[2] * u + turn[5] * v + turn[8]]
+      : [u, v, 1];
+    return r[2] > 1e-3 ? [r[0] / r[2], r[1] / r[2]] : null;
+  };
+  const p = quad.map(onTable);
+  if (p.some((x) => !x)) return null;
+  const [tl, tr, br, bl] = p as number[][];
+  // Kartenmitte: Schnitt der Diagonalen TL–BR und TR–BL
+  const d1 = [br[0] - tl[0], br[1] - tl[1]], d2 = [bl[0] - tr[0], bl[1] - tr[1]];
+  const den = d1[0] * d2[1] - d1[1] * d2[0];
+  if (Math.abs(den) < 1e-9) return null;
+  const s = ((tr[0] - tl[0]) * d2[1] - (tr[1] - tl[1]) * d2[0]) / den;
+  const c = [tl[0] + s * d1[0], tl[1] + s * d1[1]];
+  const unit = (a: number[]) => { const l = Math.hypot(a[0], a[1]); return l ? [a[0] / l, a[1] / l] : [0, 0]; };
+  const ex = unit([tr[0] - tl[0] + br[0] - bl[0], tr[1] - tl[1] + br[1] - bl[1]]);
+  const ey = unit([bl[0] - tl[0] + br[0] - tr[0], bl[1] - tl[1] + br[1] - tr[1]]);
+  const tx = -(c[0] * ex[0] + c[1] * ex[1]), ty = -(c[0] * ey[0] + c[1] * ey[1]);
+  return { tx, ty, deg: (Math.atan(Math.hypot(tx, ty)) * 180) / Math.PI };
+}
+
 export function viewAngle(quad: number[][], w: number, h: number, focal = flashFocal(w, h)): number | null {
   return cardCamera(quad, w, h, focal)?.deg ?? null;
 }

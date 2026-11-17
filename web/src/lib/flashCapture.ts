@@ -18,7 +18,7 @@
 // Nur Karten, über denen die Kamera in beiden Phasen nah genug steht (FLASH_REACH); je Messung zählt,
 // wo sie stand (lib/flashCheck: das Urteil vergleicht mit dem dort erwarteten Messwert).
 import {
-  FLASH_H, FLASH_W, FlashTally, alignPatch, atlasPatch, averagePatch, cardCamera, flashFocal, flashReachable,
+  FLASH_H, FLASH_W, FlashTally, alignPatch, atlasPatch, averagePatch, cardOffset, flashFocal, flashReachable,
   flashRoom, flashShare, flashTransform, litLevel,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
@@ -27,8 +27,8 @@ import { dlog } from "./debugLog";
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
 export type FlashCard = { key: string; quad: number[][] };
 
-type Patches = Map<string, { px: Uint8ClampedArray; deg: number | null; pos?: { tx: number; ty: number } | null }>;
-type Shot = { n: number; t: number; mean: number; cards: Patches };
+type Patches = Map<string, { px: Uint8ClampedArray; deg: number | null; pos?: { tx: number; ty: number } | null; q?: number[][] }>;
+type Shot = { n: number; t: number; mean: number; cards: Patches; turn?: number[] | null };
 type Phase = { lit: boolean; endN: number; means: number[]; cards: Patches };
 /** Bitte ums Umschalten: wann, wohin, und wann es im Bild zu sehen war. */
 type Request = { on: boolean; at: number; seenAt: number | null; seenN: number | null };
@@ -43,7 +43,7 @@ const SHOTS_KEPT = 50;               // Bilder (~1.7 s) — eine ganze Phase mus
 const ANGLE_MS = 250;
 
 /** Ein Kamerabild für die Messung: Zeit, mittlere Helligkeit des ganzen Bilds, die Karten-Ausschnitte. */
-export type FlashFrame = { t: number; mean: number; cards: Patches };
+export type FlashFrame = { t: number; mean: number; cards: Patches; turn?: number[] | null };
 
 /**
  * Der Ablauf des Blitz-Tests ohne Browser: wann um das Umschalten gebeten wird, wann es im Bild zu sehen
@@ -98,7 +98,7 @@ export class FlashLoop {
 
   /** Neues Bild → true, wenn dabei mindestens eine Karte eine Messung bekommen hat. */
   frame(f: FlashFrame): boolean {
-    const shot: Shot = { n: this.count++, t: f.t, mean: f.mean, cards: f.cards };
+    const shot: Shot = { n: this.count++, t: f.t, mean: f.mean, cards: f.cards, turn: f.turn ?? null };
     this.shots.push(shot);
     if (this.shots.length > SHOTS_KEPT) this.shots.shift();
     // ist das erbetene Umschalten im vorletzten Bild zu sehen? (Sprung in die erwartete Richtung gegenüber
@@ -142,7 +142,7 @@ export class FlashLoop {
     last.cards.forEach((c, key) => {
       const p = prev?.cards.get(key);
       const pos = c.pos && p?.pos ? { tx: (c.pos.tx + p.pos.tx) / 2, ty: (c.pos.ty + p.pos.ty) / 2 } : c.pos ?? null;
-      ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg, pos });
+      ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg, pos, q: c.q });
     });
     ended.means = [prev, last].filter((x): x is Shot => !!x).map((x) => Math.round(x.mean));
     const older = this.phase;
@@ -151,7 +151,7 @@ export class FlashLoop {
     if (!older || older.lit === ended.lit || older.endN !== before.n) { this.log("live.flash.seen", { ...seenLog, frames: usable.length }); return false; }
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
-    const seen: Record<string, (number | null)[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel, tx, ty, Raum]
+    const seen: Record<string, unknown[]> = {};   // Protokoll: je Karte [Anteil, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
@@ -163,12 +163,15 @@ export class FlashLoop {
       const rl = this.rooms.get(key);
       const room = rl && rl.length ? [...rl].sort((x, y) => x - y)[rl.length >> 1] : null;
       const r2 = (x: number | null) => (x == null ? null : Math.round(x * 100) / 100);
-      seen[key] = [sh == null ? null : Math.round(sh * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room)];
+      const q3 = (q?: number[][]) => (q ? q.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]) : null);
+      seen[key] = [sh == null ? null : Math.round(sh * 1000) / 1000, Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
+        q3(a.q), q3(b.q)];
       if (sh == null || tx == null || ty == null) return;
       this.tally.add(key, { share: sh, tx, ty, room }, deg, r.on);
       added = true;
     });
-    this.log("live.flash.switch", { ...seenLog, ends: { dark: darkPh.means, lit: litPh.means }, frames: [usable.length, window.length], cards: seen });
+    const turn = ev.turn ? ev.turn.map((x) => Math.round(x * 10000) / 10000) : null;
+    this.log("live.flash.switch", { ...seenLog, ends: { dark: darkPh.means, lit: litPh.means }, frames: [usable.length, window.length], cards: seen, turn });
     return added;
   }
 }
@@ -187,6 +190,8 @@ export class FlashMonitor {
   colorFix: () => boolean = () => false;
   /** Zoom der Kamera gegenüber dem Start (für den Blickwinkel) — die Seite setzt das. */
   zoom: () => number = () => 1;
+  /** Drehung des Handys seit „Gerade" (Lagesensor, lib/tiltGrid) oder null — die Seite setzt das. */
+  turn: () => number[] | null = () => null;
 
   /**
    * cards(): die Karten, die gemessen werden — null oder leer: nicht blinken.
@@ -277,7 +282,7 @@ export class FlashMonitor {
     const mean = sum / (tp.length / 4) / 3;
     // die offenen Karten ausschneiden
     const list = (this.cards() ?? []).filter((c) => c.quad.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
-    const shot: FlashFrame = { t: performance.now(), mean, cards: new Map() };
+    const shot: FlashFrame = { t: performance.now(), mean, cards: new Map(), turn: this.turn() };
     if (list.length) {
       if (this.atlas.width !== list.length * FLASH_W || this.atlas.height !== FLASH_H) {
         this.atlas.width = list.length * FLASH_W;
@@ -303,8 +308,8 @@ export class FlashMonitor {
         if (this.colorFix()) fixCanvasColors(actx, this.atlas.width, this.atlas.height);
         const data = actx.getImageData(0, 0, this.atlas.width, this.atlas.height).data;
         list.forEach((c, i) => {
-          const cc = cardCamera(px[i], vw, vh, focal);
-          shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: cc?.deg ?? null, pos: cc ? { tx: cc.tx, ty: cc.ty } : null });
+          const cc = cardOffset(px[i], vw, vh, focal, shot.turn ?? null);
+          shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: cc?.deg ?? null, pos: cc ? { tx: cc.tx, ty: cc.ty } : null, q: c.quad });
         });
       }
     }
