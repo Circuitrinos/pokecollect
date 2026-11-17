@@ -19,7 +19,7 @@ import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 import { outlineSuggestion } from "@/lib/outline";
 import SlotPicker, { pageSizeOf } from "@/components/SlotPicker";
 import { cropToCardPhoto, loadImg, normalizeOrientation, shrinkForUpload, CropTransform } from "@/lib/cardCrop";
-import { ringOrder } from "@/lib/cropOrient";
+import { cardOrder, ringOrder, screenOrder, viewFor } from "@/lib/cropOrient";
 import { defaultCardLang, setCodeFromEdition } from "@/lib/utils";
 import { findCardInGuide, guideAspect, guideRect, lockMovement, toGray, type Lock, type Pt } from "@/lib/cardLock";
 import { fromGuide, squareToQuad, straightenToGuide, tiltedGuide, tiltHomography, turnDegrees, type Quad } from "@/lib/tiltGrid";
@@ -620,6 +620,7 @@ export default function ScanPage() {
         setFileMode("direct");
       }
       dlog("camera.file", { name: file.name, size: file.size, type: file.type, mode, via: stream ? "stream" : "direct" });
+      lastDoneRef.current = null;   // neues Video: auch dieselbe Karte wie zuletzt wird wieder fertig (sonst „dieselbe Seite")
       setCameraOn(true);
     })();
   };
@@ -1088,13 +1089,16 @@ export default function ScanPage() {
       const w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
       if (src.width !== w || src.height !== h) { src.width = w; src.height = h; }
       sctx.drawImage(v, 0, 0, w, h);
-      const cards = st.tracks.map((t) => ({ key: t.key, q: applyM(toNow, viewQuad(st, t)).map(([x, y]) => [x * w, y * h]) }))
-        .filter(({ q }) => q.every(([x, y]) => x >= 0 && x <= w && y >= 0 && y <= h)
-          && Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) >= 36)
-        .slice(0, 2 * COLS);
-      if (!cards.length) return;
+      const all = st.tracks.map((t) => ({ key: t.key, q: applyM(toNow, viewQuad(st, t)).map(([x, y]) => [x * w, y * h]) }))
+        .filter(({ q }) => Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) >= 36);
+      const inside = (q: number[][], m: number) => q.every(([x, y]) => x >= -m && x <= w + m && y >= -m && y <= h + m);
+      const cards = all.filter(({ q }) => inside(q, 0)).slice(0, 2 * COLS);
+      // Neige-Test: der verfolgte Umriss darf ein Stück aus dem Bild ragen — er liegt oft daneben (17.11.: bis ~45 % zu
+      // groß), die Karte selbst ist meist ganz im Bild; ausgeschnitten wird nur, was im Bild ist
+      const tiltCard = all.find(({ q }) => inside(q, 0.3 * Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]))) ?? null;
+      if (!cards.length && !tiltCard) return;
       const tNow = performance.now();
-      if (mctx && foilTiltOnRef.current && modeRef.current === "single") {
+      if (tiltCard && mctx && foilTiltOnRef.current && modeRef.current === "single") {
         let runner = tiltRunnerRef.current;
         if (!runner) {
           runner = tiltRunnerRef.current = new TiltFoilRunner();
@@ -1108,7 +1112,7 @@ export default function ScanPage() {
             }
           };
         }
-        const key = cards[0].key;
+        const key = tiltCard.key;
         const trk = st.tracks.find((x) => x.key === key);
         const settledOne = !!trk && verdict(trk).level === "green" && !flashNeed(trk);   // nur eine Folierung: nichts zu prüfen
         const vid = trk && verdict(trk).level === "green" ? verdict(trk).id : null;
@@ -1126,7 +1130,7 @@ export default function ScanPage() {
         }
         if (!settledOne && tNow - lastTiltAdd >= TILT_EVERY && runner.pending < 2) {   // Worker hinterher: Bild auslassen
           lastTiltAdd = tNow;
-          const qv = cards[0].q.map(([x, y]) => [x / k, y / k]);   // Kamerapixel
+          const qv = tiltCard.q.map(([x, y]) => [x / k, y / k]);   // Kamerapixel
           const cw = Math.max(Math.hypot(qv[1][0] - qv[0][0], qv[1][1] - qv[0][1]), Math.hypot(qv[2][0] - qv[3][0], qv[2][1] - qv[3][1]));
           const sc = Math.min(1, (2 * TILT_W) / Math.max(cw, 1));
           const mw = Math.round(v.videoWidth * sc), mh = Math.round(v.videoHeight * sc);
@@ -1155,24 +1159,28 @@ export default function ScanPage() {
           void runner.result(key, opts).then((r) => {
             tiltBusy = false;
             if (!r || !foilTiltOnRef.current) return;
-            tiltResRef.current.set(key, r);
-            setTiltView({ [key]: { kind: r.kind, progress: Math.round(r.progress * 20) / 20 } });
+            // ein Urteil bleibt stehen: spätere Bilder können es nur durch ein anderes ersetzen, nicht wieder offen
+            // machen (17.11.: Holo, dann hielt die Karte still — die Neigung im Fenster sank, das Urteil fiel weg)
             const before = tiltKinds.get(key) ?? null;
+            const kind = r.kind ?? before;
+            tiltResRef.current.set(key, { ...r, kind });
+            setTiltView({ [key]: { kind, progress: kind ? 1 : Math.round(r.progress * 20) / 20 } });
             const now2 = performance.now();
-            if (before !== r.kind || now2 - lastTiltLog > 3000) {
+            if (before !== kind || now2 - lastTiltLog > 3000) {
               lastTiltLog = now2;
-              dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind: r.kind, n: r.n, used: r.used, tilt: r2(r.tilt), lit: r2(r.lit),
+              dlog("live.tiltfoil", { key, id: tr ? verdict(tr).id : null, kind, now: r.kind, early: r.early && !r.ready, n: r.n, used: r.used, tilt: r2(r.tilt), lit: r2(r.lit),
                 art: r2(r.art), frame: r2(r.frame), ratio: r2(r.ratio), swing: r2(r.swing), tex: r2(r.tex), holo: r.holo, rh: r.rh,
                 dropped: r.dropped, rms: r2(r.rms), snap: r2(r.snap), options: opts });
             }
-            tiltKinds.set(key, r.kind);
-            if (r.kind && !before && !liveInFlightRef.current) autoFinishRef.current(liveRef.current);   // wartete aufs Neigen
+            tiltKinds.set(key, kind);
+            // wartete aufs Neigen: gleich weiter (eine noch laufende Prüfung eines Bilds muss nicht abgewartet werden)
+            if (kind && !before) autoFinishRef.current(liveRef.current);
           });
         }
       }
-      if (tctx && modeRef.current === "single" && debugEnabled() && tNow - lastTilt >= 300) {
+      if (tiltCard && tctx && modeRef.current === "single" && debugEnabled() && tNow - lastTilt >= 300) {
         lastTilt = tNow;
-        const m = patchTransform(cards[0].q, FLASH_W, FLASH_H);
+        const m = patchTransform(tiltCard.q, FLASH_W, FLASH_H);
         if (m) {
           tctx.setTransform(1, 0, 0, 1, 0, 0);
           tctx.clearRect(0, 0, FLASH_W, FLASH_H);
@@ -1182,12 +1190,13 @@ export default function ScanPage() {
           const r3 = (x: number) => Math.round(x * 1000) / 1000;
           const turn = tiltTurnRef.current;
           tiltN += 1;   // zwei Ereignisse: der Server kürzt jedes auf 3000 Zeichen, das Bild allein hat 2936
-          dlog("live.tilt", { i: tiltN, key: cards[0].key, id: verdict(st.tracks.find((t) => t.key === cards[0].key)!).id,
+          dlog("live.tilt", { i: tiltN, key: tiltCard.key, id: verdict(st.tracks.find((t) => t.key === tiltCard.key)!).id,
             t: Math.round(tNow), turn: turn ? turn.map((x) => Math.round(x * 10000) / 10000) : null,
-            q: cards[0].q.map(([x, y]) => [r3(x / w), r3(y / h)]) });
+            q: tiltCard.q.map(([x, y]) => [r3(x / w), r3(y / h)]), inside: cards.some((c) => c.key === tiltCard.key) });
           dlog("live.tilt.px", { i: tiltN, b64: lumaB64(tp) });
         }
       }
+      if (!cards.length) return;
       const aw = COLS * PATCH_W, ah = Math.ceil(cards.length / COLS) * PATCH_H;
       if (atlas.width !== aw || atlas.height !== ah) { atlas.width = aw; atlas.height = ah; }
       actx.imageSmoothingEnabled = true;
@@ -2011,6 +2020,7 @@ export default function ScanPage() {
     setCandidates(list);
     setStep("review");
     void startDraftRef.current(photo, list);
+    void autoCorners(photo, list.filter((c) => c.match?.tcgdex_card_id && (c.raw?.quad || c.raw?.bbox)).map((c) => c.key));
     // Foto-Zuschnitte je Karte (aus der bbox) für Vorschau erzeugen
     list.forEach(async (c) => {
       if (!c.raw?.bbox && !c.raw?.quad) return;
@@ -2161,24 +2171,56 @@ export default function ScanPage() {
   // Manuell gesetzte Ecken/Ausrichtung übernehmen → Foto neu entzerren.
   const applyCorners = async (idx: number, quad: number[][], transform: CropTransform) => {
     setEditorIdx(null);
-    const blob = sourceBlobRef.current;
     const key = candidates[idx]?.key;
-    if (!blob || !key) return;
+    if (key) await applyCornersTo(key, quad, transform);
+  };
+  const applyCornersTo = async (key: string, quad: number[][], transform: CropTransform, quiet = false) => {
+    const blob = sourceBlobRef.current;
+    if (!blob) return;
     try {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
       patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u, foil: undefined,
         usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: true }));
-      void rematch(key, f);
+      await rematch(key, f, quiet);
     } catch { /* Entzerrung optional */ }
+  };
+
+  // Brian 17.11.: der Eck-Vorschlag (Ecken am Katalogbild angelegt) ist meist richtig — nach dem Scan je erkannte Karte
+  // einmal von selbst übernehmen, wie „Ecken anpassen" → Vorschlag → Übernehmen; nur verlässliche (grüne) Vorschläge,
+  // nacheinander, und nicht, wenn die Ecken inzwischen von Hand geändert wurden
+  const autoCorners = async (photo: Blob, keys: string[]) => {
+    let size: { w: number; h: number };
+    try {
+      const bm = await createImageBitmap(photo);
+      size = { w: bm.width, h: bm.height };
+      bm.close();
+    } catch { return; }
+    const { w, h } = size;
+    const upright = (q: number[][]) => screenOrder(q, viewFor(q, w, h), w, h);   // so herum, wie der Editor sie zeigt
+    for (const key of keys) {
+      const c = candidatesRef.current.find((x) => x.key === key);
+      const id = c?.match?.tcgdex_card_id;
+      if (sourceBlobRef.current !== photo) return;
+      if (!c || !id || c.editedQuad || c.saved) continue;
+      const start = upright(cardOrder(initialQuadFor(c), w, h, true));
+      let sug: CornerSuggestion | null = null;
+      try { sug = await outlineSuggest(id)(start); } catch { sug = null; }
+      const now = candidatesRef.current.find((x) => x.key === key);
+      const move = sug ? Math.max(...sug.quad.map((p) => Math.min(...start.map((q) => Math.hypot((p[0] - q[0]) * w, (p[1] - q[1]) * h))))) / w : null;
+      dlog("scan.autocorners", { key, id, ok: sug?.ok ?? null, label: sug?.label ?? null, move: move != null ? Math.round(move * 1000) / 1000 : null,
+        skipped: !now || !!now.editedQuad || !!now.saved || sourceBlobRef.current !== photo });
+      if (!sug?.ok || !now || now.editedQuad || now.saved || sourceBlobRef.current !== photo) continue;
+      await applyCornersTo(key, upright(cardOrder(sug.quad, w, h)), { flipH: false, flipV: false, rotate: 0 }, true);
+    }
   };
 
   // Neue Ecken = neuer Zuschnitt → die Karte damit neu abgleichen (Modus „card":
   // der Bild-Abgleich überspringt die Erkennung). Treffer, Alternativen und
   // Auswahlbedarf kommen neu; Ecken, Foto-Wahl, Anzahl, Prize Pack bleiben.
   // Ist der neue Abgleich unsicherer als der bisherige, bleibt die Karte (lib/rematch).
-  const rematch = async (key: string, crop: Blob) => {
-    const old = candidates.find((c) => c.key === key);
+  const rematch = async (key: string, crop: Blob, quiet = false) => {
+    const old = candidatesRef.current.find((c) => c.key === key);
     const before = old?.match?.tcgdex_card_id;
     try {
       const res = await scanApi.scan(crop, { mode: "card", default_language: defaultLang });
@@ -2201,10 +2243,12 @@ export default function ScanPage() {
           rematching: false,
         };
       }));
-      if (!n) toast(t.scan_rematch_none, { icon: "⚠️" });
+      const same = !!n?.match?.tcgdex_card_id && n.match.tcgdex_card_id === before && !n.needs_choice;
+      if (quiet && (!n || weak || same)) { /* von selbst angelegt: nur melden, wenn sich die Karte ändert */ }
+      else if (!n) toast(t.scan_rematch_none, { icon: "⚠️" });
       else if (weak) toast(t.scan_rematch_kept(String((old?.suggested as Record<string, unknown>)?.kartenname
         ?? old?.match?.name ?? "?")), { icon: "ℹ️" });
-      else if (n.match?.tcgdex_card_id && n.match.tcgdex_card_id === before && !n.needs_choice) toast.success(t.scan_rematch_same);
+      else if (same) toast.success(t.scan_rematch_same);
       else toast.success(t.scan_rematched(String((n.suggested as Record<string, unknown>)?.kartenname ?? n.raw.name ?? "?")));
     } catch {
       patchCand(key, (c) => ({ ...c, rematching: false }));
@@ -2689,9 +2733,11 @@ export default function ScanPage() {
                   )}
                   {fromFile && (
                     <button type="button" data-testid="scan-video-restart" title={t.scan_video_restart}
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.currentTarget.blur();   // gehaltene Leertaste/Enter löst sonst immer wieder aus (17.11.: 17× in 3 s)
                         const v = fileVidRef.current ?? videoRef.current;   // Weg „stream": das versteckte Video
                         if (v) { v.currentTime = 0; fileTimeRef.current = 0; v.play().catch(() => {}); }
+                        lastDoneRef.current = null;
                         dlog("camera.file.restart");
                       }}
                       className="absolute bottom-24 right-2 z-10 max-w-[60%] truncate rounded-full bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80">

@@ -30,6 +30,23 @@ const mapUV = (H: number[], u: number, v: number): [number, number] => {
   return [(H[0] * u + H[1] * v + H[2]) / w, (H[3] * u + H[4] * v + H[5]) / w];
 };
 
+/** Punkte (Bildkoordinaten) → ihre Lage im Umriss `q` (u, v im Einheitsquadrat). */
+export function quadToUV(q: number[][], pts: number[][]): number[][] | null {
+  const H = quadHomography(q);
+  if (!H) return null;
+  const [a, b, c, d, e, f, g, h] = H;
+  const i00 = e - f * h, i01 = c * h - b, i02 = b * f - c * e, i10 = f * g - d, i11 = a - c * g, i12 = c * d - a * f;
+  const i20 = d * h - e * g, i21 = b * g - a * h, i22 = a * e - b * d;
+  const out = pts.map(([x, y]) => { const w = i20 * x + i21 * y + i22; return [(i00 * x + i01 * y + i02) / w, (i10 * x + i11 * y + i12) / w]; });
+  return out.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1])) ? out : null;
+}
+
+/** Lage im Umriss `q` (u, v) → Bildkoordinaten. */
+export function quadFromUV(q: number[][], uv: number[][]): number[][] | null {
+  const H = quadHomography(q);
+  return H ? uv.map(([u, v]) => mapUV(H, u, v)) : null;
+}
+
 /** Die Karte perspektivisch entzerren: w×h RGBA, je Punkt 2×2 Proben (bilinear) aus `src`
  *  (ein Ausschnitt des Kamerabilds ab ox/oy, in denselben Koordinaten wie `quad`). Außerhalb: Alpha 0. */
 export function warpCard(src: Pixels, quad: number[][], w: number, h: number, ss: 1 | 2 = 2): Uint8ClampedArray | null {

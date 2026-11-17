@@ -18,7 +18,8 @@
 // die Werte, um sie an mehr Karten nachzustellen. Reine Rechnung ohne DOM (prüfbar für sich).
 
 import type { FoilKind } from "./liveFoil";
-import { alignToCatalog, alignToRef, catalogEdges, keystone, pyramid, warpCard, type Pixels, type Pyramid } from "./cardAlign";
+import { alignToCatalog, alignToRef, catalogEdges, keystone, pyramid, quadFromUV, quadToUV, warpCard, type Aligned, type Pixels,
+  type Pyramid } from "./cardAlign";
 
 export { keystone, quadHomography, warpCard, type Pixels } from "./cardAlign";
 
@@ -27,8 +28,9 @@ export const TILT_H = 176;
 const N = TILT_W * TILT_H;
 
 const KEEP = 60;               // je Karte die letzten Bilder (~8 s)
-const REF_PICK = 12;           // Bezugsbild: das schärfste der ersten so vielen …
-const REF_WAIT = 24;           // … sobald das Katalogbild da ist (am Katalog angelegt); spätestens nach so vielen
+const REF_PICK = 6;            // Bezugsbild: frühestens nach so vielen Bildern am Katalogbild angelegt (das am besten passende
+const REF_TRY = 5;             // der so vielen schärfsten); passt keins, mit jedem weiteren Bild neu versucht …
+const REF_WAIT = 24;           // … ohne Katalogbild (oder ohne Treffer) nach so vielen das schärfste mit dem verfolgten Umriss
 const MIN_INL = 16, MAX_RMS = 2.0;   // ausgerichtetes Bild gilt nur mit so vielen passenden Blöcken (von 48) und so wenig Rest (Punkte)
 const LOG_EVERY = 6;           // Debug: jedes so-vielte ausgerichtete Bild verkleinert protokollieren
 const CLIP = 245;              // so hell: überstrahlt (nach dem Verkleinern)
@@ -36,6 +38,8 @@ const GLARE = 0.02;            // Anteil überstrahlter Punkte: ab hier Blendung
 const BRIGHT = Math.log(0.6);  // gleich hell: mindestens 60 % des Rahmens
 const SIGMA = 2;               // feines Muster: Abweichung vom Mittel der Umgebung (~2 mm)
 export const TILT_MIN_USED = 20;    // so viele scharfe Bilder mindestens
+export const TILT_EARLY = 14;       // schon ab so vielen: nur ein deutliches Ja (Holo; Reverse Holo am schwankenden Rahmen) —
+                                    // „keine Folie" und Muster im Rahmen brauchen mehr (16.11., Lampe: sonst früh falsch)
 export const TILT_SPREAD = 0.10;    // Neigung: Spanne der Verzerrung (p10–p90) in einer Richtung
 export const LIT_RANGE = 1.3;       // hellste Momente mindestens so viel heller als üblich (zum Licht gedreht)
 export const HOLO_RATIO = 2.1, HOLO_RATIO_NO = 1.6, HOLO_ART = 0.15;   // 17.11.: Brock's Scouting (normal) bis 1.8–2.15
@@ -61,12 +65,15 @@ type Sample = {
   L: Float32Array; B: Uint8Array; LG: Float32Array; nm: number; tex: number;
   sharp: number; clip: number; ks: [number, number]; t: number; inl: number; rms: number;
 };
-type Raw = { px: Pixels; quad: number[][]; t: number; sharp: number };
+type Raw = { px: Pixels; quad: number[][]; t: number; sharp: number; tried?: boolean };
 type Card = {
   cat: Float32Array | null;                           // Kanten des Katalogbilds (Stufe 0), wenn bekannt
   snap: number | null;                                // Bezug am Katalog verschoben (größte Ecke, Anteil der Breite); null: nicht angelegt
   raws: Raw[];                                        // bis das Bezugsbild feststeht
   ref: { pyr: Pyramid; grad: Float32Array; calm: Uint8Array } | null;
+  // wo die Karte zuletzt wirklich lag, relativ zum verfolgten Umriss (u, v): Startpunkt fürs nächste Bild —
+  // Brian 17.11.: der Umriss lag über Sekunden gleichbleibend daneben (bis ~45 % zu groß, ~25 % verschoben)
+  corr: number[][] | null;
   list: Sample[]; dropped: number; seen: number;
 };
 
@@ -174,6 +181,7 @@ export type TiltResult = {
   tex: number | null;               // feines Muster im Rahmen: hellste Momente gegen übliche
   holo: "yes" | "no" | null; rh: "yes" | "no" | null;
   ready: boolean; progress: number; // genug Bilder und genug geneigt
+  early: boolean;                   // erst genug für ein deutliches Ja
   kind: FoilKind | null;            // nur unter den Folierungen der Karte
   dropped: number;                  // Bilder, die sich nicht ausrichten ließen
   rms: number | null;               // Ausrichtung: Restabweichung der Blöcke (Punkte, Median)
@@ -181,9 +189,15 @@ export type TiltResult = {
 };
 
 /** Folierung aus den beiden Prüfungen, nur unter `options` (leer: alle). */
-export function tiltKind(r: Pick<TiltResult, "holo" | "rh" | "ready">, options: string[]): FoilKind | null {
-  if (!r.ready) return null;
+export function tiltKind(r: Pick<TiltResult, "holo" | "rh" | "ready"> & Partial<Pick<TiltResult, "early" | "swing">>,
+  options: string[]): FoilKind | null {
   const has = (k: FoilKind) => !options.length || options.includes(k);
+  if (!r.ready) {
+    if (!r.early) return null;
+    if (r.swing != null && r.swing >= RH_SWING && r.holo !== "yes" && has("Reverse Holo")) return "Reverse Holo";
+    if (r.holo === "yes" && r.rh !== "yes" && has("Holo")) return "Holo";
+    return null;
+  }
   if (r.rh === "yes" && has("Reverse Holo")) return "Reverse Holo";
   if (r.holo === "yes" && r.rh !== "yes" && has("Holo")) return "Holo";
   const noRh = r.rh === "no" || !has("Reverse Holo");
@@ -212,21 +226,27 @@ export class FoilTilt {
       c.raws.push({ px, quad, t, sharp: sharpness(rgba) });
       if (c.raws.length < REF_PICK || (!c.cat && c.raws.length < REF_WAIT)) return;
       let best = c.raws.reduce((a, b) => (b.sharp > a.sharp ? b : a));
+      let refQuad = best.quad;
       if (c.cat) {
-        // die schärfsten paar am Katalog anlegen; das am besten passende wird der Bezug
+        // die schärfsten paar (noch nicht versuchten) am Katalog anlegen; das am besten passende wird der Bezug
         let pick: { raw: Raw; quad: number[][]; inl: number; rms: number } | null = null;
-        for (const raw of [...c.raws].sort((a, b) => b.sharp - a.sharp).slice(0, 5)) {
+        for (const raw of [...c.raws].sort((a, b) => b.sharp - a.sharp).slice(0, REF_TRY)) {
+          if (raw.tried) continue;
+          raw.tried = true;
           const sn = alignToCatalog(raw.px, raw.quad, c.cat);
           if (sn && (!pick || sn.inliers > pick.inl || (sn.inliers === pick.inl && sn.rms < pick.rms))) pick = { raw, quad: sn.quad, inl: sn.inliers, rms: sn.rms };
         }
         if (pick) {
           best = pick.raw;
+          refQuad = pick.quad;
           const w = Math.hypot(best.quad[1][0] - best.quad[0][0], best.quad[1][1] - best.quad[0][1]);
           c.snap = Math.max(...pick.quad.map((p, i) => Math.hypot(p[0] - best.quad[i][0], p[1] - best.quad[i][1]))) / Math.max(w, 1);
-          best.quad = pick.quad;
+        } else if (c.raws.length < REF_WAIT) {
+          return;   // keins passte: mit dem nächsten Bild noch einmal (der Umriss wird oft erst später besser)
         }
       }
-      const pyr = pyramid(best.px, best.quad), refRgba = warpCard(best.px, best.quad, TILT_W, TILT_H);
+      c.corr = quadToUV(best.quad, refQuad);
+      const pyr = pyramid(best.px, refQuad), refRgba = warpCard(best.px, refQuad, TILT_W, TILT_H);
       if (!pyr || !refRgba) { c.raws = []; return; }
       const grad = basics(refRgba).grad;
       // ruhige Stellen (keine Druckkanten): Kanten des Bezugsbilds unter dem 70. Perzentil
@@ -239,7 +259,7 @@ export class FoilTilt {
       c.ref = { pyr, grad, calm };
       const raws = c.raws;
       c.raws = [];
-      for (const r of raws) this.process(key, c, r.px, r.quad, r.t, r === best);
+      for (const r of raws) this.process(key, c, r.px, r === best ? refQuad : r.quad, r.t, r === best);
       return;
     }
     this.process(key, c, px, quad, t, false);
@@ -247,8 +267,24 @@ export class FoilTilt {
 
   private process(key: string, c: Card, px: Pixels, quad: number[][], t: number, isRef: boolean) {
     const ref = c.ref!;
-    const al = isRef ? { quad, inliers: 0, rms: 0 } : alignToRef(px, quad, ref.pyr);
-    if (!al || (!isRef && (al.inliers < MIN_INL || al.rms > MAX_RMS))) { c.dropped += 1; return; }
+    const good = (a: Aligned | null): a is Aligned => !!a && a.inliers >= MIN_INL && a.rms <= MAX_RMS;
+    let al: Aligned | null = isRef ? { quad, inliers: 0, rms: 0 } : null;
+    if (!isRef) {
+      // erst dort, wo die Karte relativ zum Umriss zuletzt lag; sonst am Umriss selbst; sonst grob am Katalogbild
+      const prior = c.corr ? quadFromUV(quad, c.corr) : null;
+      for (const q0 of prior ? [prior, quad] : [quad]) {
+        const a = alignToRef(px, q0, ref.pyr);
+        if (good(a)) { al = a; break; }
+      }
+      if (!al && c.cat) {
+        const sn = alignToCatalog(px, prior ?? quad, c.cat);
+        const a = sn ? alignToRef(px, sn.quad, ref.pyr) : null;
+        if (good(a)) al = a;
+      }
+      if (!al) { c.dropped += 1; return; }
+      c.corr = quadToUV(quad, al.quad) ?? c.corr;
+    }
+    if (!al) return;
     const rgba = warpCard(px, al.quad, TILT_W, TILT_H);
     if (!rgba) { c.dropped += 1; return; }
     const { lum: L, bad: B, sharp, clip } = basics(rgba);
@@ -280,14 +316,14 @@ export class FoilTilt {
 
   private card(key: string): Card {
     let c = this.cards.get(key);
-    if (!c) { c = { cat: null, snap: null, raws: [], ref: null, list: [], dropped: 0, seen: 0 }; this.cards.set(key, c); }
+    if (!c) { c = { cat: null, snap: null, raws: [], ref: null, corr: null, list: [], dropped: 0, seen: 0 }; this.cards.set(key, c); }
     return c;
   }
 
-  /** Katalogbild der Karte (Grauwerte w×h, sRGB-kodiert wie /scan/catalog-luma): legt das Bezugsbild daran an. */
+  /** Katalogbild der Karte (Grauwerte w×h, sRGB-kodiert wie /scan/catalog-luma): legt das Bezugsbild daran an
+   *  (und fängt danach Bilder auf, die sich am Bezug nicht ausrichten ließen). */
   setCatalog(key: string, gray: Uint8Array, w: number, h: number) {
-    const c = this.card(key);
-    if (!c.ref) c.cat = catalogEdges(gray, w, h);
+    this.card(key).cat = catalogEdges(gray, w, h);
   }
 
   count(key: string): number { return this.cards.get(key)?.list.length ?? 0; }
@@ -305,7 +341,7 @@ export class FoilTilt {
     if (!ref || !list.length) {
       const n = card.raws.length;
       return { n, used: 0, tilt: 0, lit: 1, art: null, frame: null, ratio: null, swing: null, tex: null, holo: null, rh: null,
-        ready: false, progress: Math.min(0.2, (0.4 * n) / TILT_MIN_USED), kind: null, dropped: card.dropped, rms: null, snap: null };
+        ready: false, early: false, progress: Math.min(0.2, (0.4 * n) / TILT_MIN_USED), kind: null, dropped: card.dropped, rms: null, snap: null };
     }
     const calm = ref.calm;
 
@@ -318,10 +354,11 @@ export class FoilTilt {
     const p50 = quantile(nms, nms.length, 0.5), p85 = quantile(nms, nms.length, 0.85);
     const lit = p50 > 0 ? p85 / p50 : 1;
     const ready = sharp.length >= TILT_MIN_USED && tilt >= TILT_SPREAD;
+    const early = sharp.length >= TILT_EARLY && tilt >= TILT_SPREAD;
     const progress = Math.min(1, 0.4 * Math.min(1, sharp.length / TILT_MIN_USED) + 0.6 * Math.min(1, tilt / TILT_SPREAD));
     const rms = median(list.map((s) => s.rms).filter((x) => x > 0));
     const out: TiltResult = { n: list.length, used: sharp.length, tilt, lit, art: null, frame: null, ratio: null, swing: null, tex: null,
-      holo: null, rh: null, ready, progress, kind: null, dropped: card.dropped, rms: Number.isFinite(rms) ? rms : null, snap: card.snap };
+      holo: null, rh: null, ready, early, progress, kind: null, dropped: card.dropped, rms: Number.isFinite(rms) ? rms : null, snap: card.snap };
     if (sharp.length < 8) return out;
 
     // je Punkt: Helligkeit relativ zum Rahmen (log), Mitte und Spannen p10–p90
@@ -361,7 +398,10 @@ export class FoilTilt {
     }
     if (out.swing != null) {
       const texYes = out.tex != null && out.tex >= RH_TEX, texNo = out.tex == null || out.tex < RH_TEX_NO;
-      out.rh = out.swing >= RH_SWING || texYes ? "yes" : out.swing < RH_SWING_NO && texNo ? "no" : null;
+      // Holo (Bild schwankt viel stärker als der Rahmen) ist kein Reverse Holo — dort glänzt gerade das Bild nicht;
+      // eine Hülle lässt auch den Rahmen schwanken (17.11., Dawn in Hülle: 0.28 statt 0.13)
+      const swingYes = out.swing >= RH_SWING && out.holo !== "yes";
+      out.rh = swingYes || texYes ? "yes" : out.swing < RH_SWING_NO && texNo ? "no" : null;
     }
     out.kind = tiltKind(out, options);
     return out;
