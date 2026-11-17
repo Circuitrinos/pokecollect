@@ -976,7 +976,7 @@ export default function ScanPage() {
       const need = st.tracks.filter((t) => flashNeed(t));
       if (!need.some((t) => !mon.tally.settled(t.key))) return null;
       return need
-        .map((t) => ({ key: t.key, quad: applyM(toNow, viewQuad(st, t)) }));
+        .map((t) => ({ key: t.key, quad: applyM(toNow, viewQuad(st, t)), id: verdict(t).id ?? null }));
     };
     const onMeasure = () => {
       const st = liveRef.current;

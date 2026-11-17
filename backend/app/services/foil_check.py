@@ -44,6 +44,51 @@ async def reference(card_id: str) -> Optional[bytes]:
     return None
 
 
+CATALOG_LUMA_W, CATALOG_LUMA_H = 40, 55
+_luma_cache: dict[str, Optional[str]] = {}
+_LUMA_CACHE_MAX = 512
+
+
+def luma_of(image: bytes, w: int = CATALOG_LUMA_W, h: int = CATALOG_LUMA_H) -> str:
+    """Katalogbild → w×h Helligkeit (lineare Luma, wieder sRGB-kodiert, 0–255), base64. Flächenmittel
+    beim Verkleinern; durchsichtige Ecken (abgerundete Karte) auf mittlerem Grau."""
+    import base64
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(image))
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA")
+        bg = Image.new("RGBA", im.size, (128, 128, 128, 255))
+        im = Image.alpha_composite(bg, im)
+    im = im.convert("RGB").resize((w, h), Image.BOX)
+    c = np.asarray(im, dtype=np.float64) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    y = lin[..., 0] * 0.2126 + lin[..., 1] * 0.7152 + lin[..., 2] * 0.0722
+    enc = np.where(y <= 0.0031308, 12.92 * y, 1.055 * np.power(y, 1 / 2.4) - 0.055)
+    return base64.b64encode(np.clip(np.round(enc * 255), 0, 255).astype(np.uint8).tobytes()).decode()
+
+
+async def catalog_luma(card_id: str) -> Optional[str]:
+    """Helligkeit des Katalogbilds (luma_of) für den Blitz-Test der Live-Ansicht — gemerkt je Karte."""
+    if card_id in _luma_cache:
+        return _luma_cache[card_id]
+    ref = await reference(card_id)
+    out = None
+    if ref is not None:
+        try:
+            out = luma_of(ref)
+        except Exception as exc:  # noqa: BLE001 — kaputtes Bild: dann eben ohne
+            log.info("Katalog-Helligkeit %s: Bild nicht lesbar (%s)", card_id, exc)
+    if out is not None or ref is not None:      # vorübergehende Abruf-Fehler nicht merken
+        if len(_luma_cache) >= _LUMA_CACHE_MAX:
+            _luma_cache.pop(next(iter(_luma_cache)))
+        _luma_cache[card_id] = out
+    return out
+
+
 async def check(card_id: str, crop: bytes) -> dict:
     """→ {"model": False} | {"model": True, "aligned": bool, "score", "hint", "art", "frame"} | {"reference": False}."""
     if not settings.matcher_url:

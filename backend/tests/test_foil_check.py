@@ -105,3 +105,53 @@ def test_model_admin_only(client):
         assert _client_for(bob).get(f"{API}/scan-quality/foil/model").status_code == 403
     finally:
         _drop_user(bob)
+
+
+def _png(w=600, h=825, rgba=False):
+    import io
+
+    from PIL import Image
+
+    im = Image.new("RGBA" if rgba else "RGB", (w, h), (200, 100, 50, 255) if rgba else (200, 100, 50))
+    for x in range(0, w, 30):
+        for y in range(0, h, 30):
+            im.putpixel((x, y), (0, 0, 0, 255) if rgba else (0, 0, 0))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_catalog_luma_small_grey_catalog_image_for_the_flash_test(client, catalog_row, monkeypatch):
+    """Blitz-Test der Live-Ansicht: Katalogbild als 40×55 Helligkeit (base64), gemerkt je Karte; ohne Bild null."""
+    import base64
+
+    calls = []
+
+    async def fetch(url):
+        calls.append(url)
+        return _png()
+    monkeypatch.setattr(catalog_images, "_fetch_image_bytes", fetch)
+    foil_check._luma_cache.clear()
+    r = client.get(f"{API}/scan/catalog-luma/{CID}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["w"] == 40 and body["h"] == 55
+    px = base64.b64decode(body["b64"])
+    assert len(px) == 40 * 55
+    # (200, 100, 50) → lineare Luma 0.2126·0.578 + 0.7152·0.127 + 0.0722·0.032 ≈ 0.216 → sRGB ≈ 128
+    assert 120 <= sorted(px)[len(px) // 2] <= 136
+    assert client.get(f"{API}/scan/catalog-luma/{CID}").json() == body and len(calls) == 1     # gemerkt
+    assert client.get(f"{API}/scan/catalog-luma/zz%20bad").status_code == 422
+
+
+def test_catalog_luma_without_image_is_null(client, monkeypatch):
+    foil_check._luma_cache.clear()
+    r = client.get(f"{API}/scan/catalog-luma/zzunknown-001")
+    assert r.status_code == 200 and r.json()["b64"] is None
+
+
+def test_luma_of_puts_transparent_corners_on_grey():
+    import base64
+
+    px = base64.b64decode(foil_check.luma_of(_png(rgba=True)))
+    assert len(px) == 40 * 55

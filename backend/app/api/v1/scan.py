@@ -587,6 +587,21 @@ async def scan_foil(file: UploadFile = File(...), card_id: str = Form(...)):
         return {"model": False}
 
 
+@router.get("/catalog-luma/{card_id}")
+async def scan_catalog_luma(card_id: str):
+    """
+    Katalogbild einer Karte, klein und grau (40×55, lineare Luma sRGB-kodiert, base64) — der Blitz-Test der
+    Live-Ansicht richtet seine Ausschnitte daran aus und weiß, wo Druckkanten sind (lib/flashCheck).
+    → {"w": 40, "h": 55, "b64": str} oder {"b64": null}, wenn es kein Katalogbild gibt.
+    """
+    from app.services import foil_check
+
+    if not _CARD_ID_RE.fullmatch(card_id or ""):
+        raise HTTPException(status_code=422, detail="Ungültige Karten-ID")
+    b64 = await foil_check.catalog_luma(card_id)
+    return {"w": foil_check.CATALOG_LUMA_W, "h": foil_check.CATALOG_LUMA_H, "b64": b64}
+
+
 @router.post("/outline")
 async def scan_outline(file: UploadFile = File(...), quad: str = Form(""), card_id: str = Form(""),
                        db: Session = Depends(get_db)):

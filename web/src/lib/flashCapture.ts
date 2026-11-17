@@ -19,16 +19,16 @@
 // wo sie stand (lib/flashCheck: das Urteil vergleicht mit dem dort erwarteten Messwert).
 import {
   FLASH_H, FLASH_W, FlashTally, alignPatch, atlasPatch, averagePatch, cardOffset, flashFocal, flashReachable,
-  flashLift, flashRoom, flashShare, flashShareFlat, flashTransform, litLevel,
+  catalogLuma, fitToCatalog, flashLift, flashRoom, flashShare, flashShareFlat, flashTexture, flashTransform, litLevel, type CatalogFit,
 } from "./flashCheck";
 import { fixCanvasColors } from "./cameraColors";
 import { FLASH_ROOM_SPLIT } from "./flashTable";
 import { debugEnabled, dlog } from "./debugLog";
 
 /** Eine noch offene Karte: Schlüssel und Umriss jetzt (TL, TR, BR, BL; Anteile des Kamerabilds). */
-export type FlashCard = { key: string; quad: number[][] };
+export type FlashCard = { key: string; quad: number[][]; id?: string | null };   // id: Karten-ID (Katalogbild für flashTexture)
 
-type Patches = Map<string, { px: Uint8ClampedArray; deg: number | null; pos?: { tx: number; ty: number } | null; q?: number[][] }>;
+type Patches = Map<string, { px: Uint8ClampedArray; deg: number | null; pos?: { tx: number; ty: number } | null; q?: number[][]; cat?: Float32Array | null; catWait?: boolean }>;
 type Shot = { n: number; t: number; mean: number; cards: Patches; turn?: number[] | null };
 type Phase = { lit: boolean; endN: number; means: number[]; cards: Patches };
 /** Bitte ums Umschalten: wann, wohin, und wann es im Bild zu sehen war. */
@@ -46,6 +46,7 @@ const ANGLE_MS = 250;
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const LIN8 = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+const lumLin = (px: Uint8ClampedArray, i: number) => 0.2126 * LIN8[px[4 * i]] + 0.7152 * LIN8[px[4 * i + 1]] + 0.0722 * LIN8[px[4 * i + 2]];
 
 /** Ausschnitt fürs Protokoll: Helligkeit (lineare Luma, wieder sRGB-kodiert, 0–255; 255 = überstrahlt), base64. */
 export function lumaB64(px: Uint8ClampedArray): string {
@@ -83,6 +84,7 @@ export class FlashLoop {
   private jumps: number[] = [];       // |ln| der zuletzt gesehenen Sprünge beim Umschalten (diese Kamera)
   private rooms = new Map<string, number[]>();   // je Karte: Lampe / Raum (die letzten Umschalter)
   private near: { j1: number; j2: number; means: number[] } | null = null;   // größter Sprung seit der Bitte (Protokoll, wenn verpasst)
+  private fits = new Map<string, CatalogFit>();   // je Karte: zuletzt gefundene Lage am Katalogbild
   /** Ausschnitte (Lampe aus / an) je Messung mitprotokollieren — zum Nachrechnen anderer Maße (Debug). */
   dumpPatches = false;
   /** Protokoll (im Browser: dlog) */
@@ -90,7 +92,7 @@ export class FlashLoop {
 
   /** Alles vergessen (Blinken aus). */
   reset(): void {
-    this.shots = []; this.phase = null; this.lastSeen = null; this.req = null; this.jumps = []; this.rooms.clear();
+    this.shots = []; this.phase = null; this.lastSeen = null; this.req = null; this.jumps = []; this.rooms.clear(); this.fits.clear();
   }
 
   /** Mindestsprung (|ln|) fürs Umschalten: EVENT_STEP, nach zwei gesehenen 40 % des üblichen Sprungs dieser Kamera. */
@@ -173,7 +175,7 @@ export class FlashLoop {
     last.cards.forEach((c, key) => {
       const p = prev?.cards.get(key);
       const pos = c.pos && p?.pos ? { tx: (c.pos.tx + p.pos.tx) / 2, ty: (c.pos.ty + p.pos.ty) / 2 } : c.pos ?? null;
-      ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg, pos, q: c.q });
+      ended.cards.set(key, { px: p ? averagePatch(p.px, c.px) : c.px, deg: c.deg, pos, q: c.q, cat: c.cat ?? p?.cat ?? null, catWait: !!c.catWait && !(p?.cat) });
     });
     ended.means = [prev, last].filter((x): x is Shot => !!x).map((x) => Math.round(x.mean));
     const older = this.phase;
@@ -183,7 +185,7 @@ export class FlashLoop {
     const darkPh = ended.lit ? older : ended, litPh = ended.lit ? ended : older;
     let added = false;
     const seen: Record<string, unknown[]> = {};
-    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flat, flat mit Raum-Schwelle]
+    const patches: Record<string, string[]> = {};   // Debug: je Karte [aus, an] (lumaB64, 40×55)   // Protokoll: je Karte [Messwert, Helligkeit an/aus, Winkel, tx, ty, Raum, Umriss aus, Umriss an, flashShare, flat, flat mit Raum-Schwelle, Körnung, Lage am Katalog]
     litPh.cards.forEach((b, key) => {
       const a = darkPh.cards.get(key);
       if (!a || b.deg == null || a.deg == null) return;
@@ -195,7 +197,19 @@ export class FlashLoop {
       const shNow = ok ? flashShare(a.px, lit) : null;
       const shFlat = ok ? flashShareFlat(a.px, lit) : null;
       const shRoom = ok ? flashShareFlat(a.px, lit, FLASH_W, FLASH_H, flashLift(room0)) : null;
-      const sh = room0 != null && room0 >= FLASH_ROOM_SPLIT ? shFlat : shNow;   // shRoom: nur protokolliert (Vergleich)
+      const dark = room0 != null && room0 >= FLASH_ROOM_SPLIT;
+      const sh = dark ? shFlat : shNow;   // shRoom: nur protokolliert (Vergleich)
+      // dunkler Raum mit Katalogbild: Körnung (flashTexture), am Katalogbild ausgerichtet
+      let fit: CatalogFit | null = null, tex: number | null = null;
+      if (ok && dark && a.cat) {
+        const lum = new Float32Array(FLASH_W * FLASH_H);
+        for (let i = 0; i < lum.length; i++) lum[i] = lumLin(a.px, i);
+        const before = this.fits.get(key) ?? null;
+        fit = fitToCatalog(lum, a.cat, before);
+        if (before && fit.corr < 0.5) fit = fitToCatalog(lum, a.cat);
+        if (fit.corr >= 0.5) this.fits.set(key, fit); else this.fits.delete(key);
+        tex = fit.corr >= 0.35 ? flashTexture(a.px, lit, a.cat, fit)?.ratio ?? null : null;
+      }
       const deg = (a.deg + b.deg) / 2;
       const tx = a.pos && b.pos ? (a.pos.tx + b.pos.tx) / 2 : null, ty = a.pos && b.pos ? (a.pos.ty + b.pos.ty) / 2 : null;
       const room = room0;
@@ -203,10 +217,13 @@ export class FlashLoop {
       const q3 = (q?: number[][]) => (q ? q.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]) : null);
       const r3 = (x: number | null) => (x == null ? null : Math.round(x * 1000) / 1000);
       seen[key] = [r3(sh), Math.round(litLevel(lit)), Math.round(litLevel(a.px)), Math.round(deg), r2(tx), r2(ty), r2(room),
-        q3(a.q), q3(b.q), r3(shNow), r3(shFlat), r3(shRoom)];
+        q3(a.q), q3(b.q), r3(shNow), r3(shFlat), r3(shRoom), r3(tex),
+        fit ? [r2(fit.dx), r2(fit.dy), r3(fit.sx), r3(fit.sy), r2(fit.corr)] : null];
       if (this.dumpPatches) { patches[key] = [lumaB64(a.px), lumaB64(lit)]; }
       if (sh == null || tx == null || ty == null) return;
-      this.tally.add(key, { share: sh, tx, ty, room }, deg, r.on);
+      // dunkler Raum: Katalogbild kommt noch, oder es ist da und die Körnung nicht messbar — nicht mit dem alten Maß raten
+      if (dark && (a.catWait || (a.cat && tex == null))) return;
+      this.tally.add(key, { share: sh, tx, ty, room, tex }, deg, r.on);
       added = true;
     });
     const turn = ev.turn ? ev.turn.map((x) => Math.round(x * 10000) / 10000) : null;
@@ -236,6 +253,38 @@ export class FlashMonitor {
   zoom: () => number = () => 1;
   /** Drehung des Handys seit „Gerade" (Lagesensor, lib/tiltGrid) oder null — die Seite setzt das. */
   turn: () => number[] | null = () => null;
+  private catalog = new Map<string, Float32Array | null>();   // Karten-ID → Katalogbild (40×55, linear), null: keins
+  private catalogPending = new Set<string>();
+  private catalogFails = new Map<string, number>();
+
+  /** Katalogbild einer Karte (Server /scan/catalog-luma), einmal je ID geholt; null: keins, undefined: kommt noch. */
+  private catalogFor(id: string | null | undefined): Float32Array | null | undefined {
+    if (!id) return null;
+    if (this.catalog.has(id)) return this.catalog.get(id) ?? null;
+    if (!this.catalogPending.has(id)) {
+      this.catalogPending.add(id);
+      void (async () => {
+        try {
+          const { api } = await import("./api");
+          const r = await api.get<{ b64: string | null }>(`/scan/catalog-luma/${encodeURIComponent(id)}`);
+          this.catalog.set(id, r.data.b64 ? catalogLuma(r.data.b64) : null);
+          dlog("live.flash.catalog", { id, ok: !!r.data.b64 });
+        } catch {
+          // noch einmal versuchen; nach dem dritten Fehlschlag ohne Katalogbild weiter (altes Maß)
+          const n = (this.catalogFails.get(id) ?? 0) + 1;
+          this.catalogFails.set(id, n);
+          if (n >= 3) { this.catalog.set(id, null); dlog("live.flash.catalog", { id, ok: false, fails: n }); }
+        } finally {
+          this.catalogPending.delete(id);
+        }
+      })();
+    }
+    return undefined;
+  }
+  private catalogOf(id: string | null | undefined): { cat: Float32Array | null; catWait: boolean } {
+    const c = this.catalogFor(id);
+    return { cat: c ?? null, catWait: c === undefined };
+  }
 
   /**
    * cards(): die Karten, die gemessen werden — null oder leer: nicht blinken.
@@ -354,7 +403,8 @@ export class FlashMonitor {
         const data = actx.getImageData(0, 0, this.atlas.width, this.atlas.height).data;
         list.forEach((c, i) => {
           const cc = cardOffset(px[i], vw, vh, focal, shot.turn ?? null);
-          shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: cc?.deg ?? null, pos: cc ? { tx: cc.tx, ty: cc.ty } : null, q: c.quad });
+          shot.cards.set(c.key, { px: atlasPatch(data, i, list.length), deg: cc?.deg ?? null, pos: cc ? { tx: cc.tx, ty: cc.ty } : null, q: c.quad,
+            ...this.catalogOf(c.id) });
         });
       }
     }

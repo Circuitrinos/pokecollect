@@ -223,6 +223,187 @@ function solve3(M: number[], r: number[]): number[] | null {
   return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]];
 }
 
+// ── Folie als Körnung (dunkler Raum) ─────────────────────────────────────────
+// Brians Matte (17.11., 152 Messungen mit Bildern, Lampe 2–30× Raumlicht): Folie hellt körnig auf
+// (Flitter im Bild, Pokéball-Prägung im Rahmen), Papier glatt — außer an Druckkanten, und dort machen
+// schon kleine Verschiebungen zwischen den Bildern rote/blaue Flecken. Darum: den Ausschnitt am Katalogbild
+// der Karte ausrichten (Umriss lag 2 px daneben, bis 5 px und 6 % in der Größe), die Druckkanten des
+// Katalogbilds und den Glanzpunkt auslassen, dann Körnung im Bildfenster gegen Körnung im Rahmen (log).
+// Trennt Holo gut, Reverse Holo von normal nur knapp (gleiche Karte: ja, verschiedene Karten überlappen) —
+// darum lieber „offen" als falsch: an Brians 9 Karten 2 richtig, 0 falsch, 7 offen (die App bisher: 4 richtig, 5 falsch).
+
+/** Katalogbild der Karte (Server /scan/catalog-luma, 40×55, sRGB-kodiert) → lineare Helligkeit. */
+export function catalogLuma(b64: string, w = FLASH_W, h = FLASH_H): Float32Array | null {
+  let bin: string;
+  try { bin = atob(b64); } catch { return null; }
+  if (bin.length !== w * h) return null;
+  const out = new Float32Array(w * h);
+  for (let i = 0; i < out.length; i++) out[i] = LIN[bin.charCodeAt(i)];
+  return out;
+}
+
+const refl = (i: number, n: number) => (i < 0 ? -i : i >= n ? 2 * n - 2 - i : i);   // Rand wie OpenCV (reflect 101)
+
+/** Kantenstärke des log-Bilds (Sobel 3×3) — unabhängig davon, wie das Licht fällt. */
+function edgeStrength(x: Float32Array, w = FLASH_W, h = FLASH_H): Float32Array {
+  const l = new Float32Array(w * h);
+  for (let i = 0; i < l.length; i++) l[i] = Math.log(Math.max(x[i], 1e-3));
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let xx = 0; xx < w; xx++) {
+      const at = (dx: number, dy: number) => l[refl(y + dy, h) * w + refl(xx + dx, w)];
+      const gx = at(1, -1) + 2 * at(1, 0) + at(1, 1) - at(-1, -1) - 2 * at(-1, 0) - at(-1, 1);
+      const gy = at(-1, 1) + 2 * at(0, 1) + at(1, 1) - at(-1, -1) - 2 * at(0, -1) - at(1, -1);
+      out[y * w + xx] = Math.hypot(gx, gy);
+    }
+  }
+  return out;
+}
+
+export type CatalogFit = { dx: number; dy: number; sx: number; sy: number; corr: number };
+
+/** Bild in die Lage des Katalogbilds bringen: Katalog-Punkt (u, v) ↔ Ausschnitt (cx + sx(u−cx) + dx, …); außen NaN. */
+function warpToCatalog(img: Float32Array, p: CatalogFit, w = FLASH_W, h = FLASH_H): Float32Array {
+  const cx = (w - 1) / 2, cy = (h - 1) / 2, out = new Float32Array(w * h);
+  for (let v = 0; v < h; v++) {
+    const yy = cy + p.sy * (v - cy) + p.dy, y0 = Math.floor(yy), fy = yy - y0;
+    for (let u = 0; u < w; u++) {
+      const xx = cx + p.sx * (u - cx) + p.dx, x0 = Math.floor(xx), fx = xx - x0;
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= w || y0 + 1 >= h) { out[v * w + u] = NaN; continue; }
+      const i = y0 * w + x0;
+      out[v * w + u] = (img[i] * (1 - fx) + img[i + 1] * fx) * (1 - fy) + (img[i + w] * (1 - fx) + img[i + w + 1] * fx) * fy;
+    }
+  }
+  return out;
+}
+
+const catEdgeCache = new WeakMap<Float32Array, { strength: Float32Array; edges: Uint8Array }>();
+function catalogEdges(cat: Float32Array, w = FLASH_W, h = FLASH_H): { strength: Float32Array; edges: Uint8Array } {
+  const hit = catEdgeCache.get(cat);
+  if (hit) return hit;
+  const strength = edgeStrength(cat, w, h);
+  const { art, frame } = masks(w, h);
+  const vals: number[] = [];
+  for (let i = 0; i < w * h; i++) if (art[i] || frame[i]) vals.push(strength[i]);
+  const q = quantile(vals, 0.7);
+  const edges = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) edges[i] = strength[i] > q ? 1 : 0;
+  const r = { strength, edges };
+  catEdgeCache.set(cat, r);
+  return r;
+}
+
+function quantile(v: number[], q: number): number {
+  if (!v.length) return NaN;
+  const s = [...v].sort((a, b) => a - b), pos = (s.length - 1) * q, lo = Math.floor(pos);
+  return lo + 1 < s.length ? s[lo] + (s[lo + 1] - s[lo]) * (pos - lo) : s[lo];
+}
+
+/**
+ * Ausschnitt (Lampe aus, lineare Helligkeit) am Katalogbild ausrichten: Verschiebung und Maßstab mit der
+ * besten Korrelation der Kantenstärke. Ohne Startwert grob (±6 / ±8 px), dann fein (½, ¼ px, ±3 %);
+ * mit Startwert (letzte Lage dieser Karte) nur nahe daran.
+ */
+export function fitToCatalog(dark: Float32Array, cat: Float32Array, start: CatalogFit | null = null, w = FLASH_W, h = FLASH_H): CatalogFit {
+  const C = catalogEdges(cat, w, h).strength, P = edgeStrength(dark, w, h);
+  const inner = new Uint8Array(w * h);
+  let nInner = 0;
+  for (let y = 3; y < h - 3; y++) for (let x = 3; x < w - 3; x++) { inner[y * w + x] = 1; nInner++; }
+  const score = (p: CatalogFit): number => {
+    const Q = warpToCatalog(P, p, w, h);
+    let n = 0, sa = 0, sb = 0;
+    for (let i = 0; i < w * h; i++) if (inner[i] && Number.isFinite(Q[i])) { n++; sa += C[i]; sb += Q[i]; }
+    if (n < 0.6 * nInner) return -1;
+    const ma = sa / n, mb = sb / n;
+    let ab = 0, aa = 0, bb = 0;
+    for (let i = 0; i < w * h; i++) {
+      if (!inner[i] || !Number.isFinite(Q[i])) continue;
+      const a = C[i] - ma, b = Q[i] - mb;
+      ab += a * b; aa += a * a; bb += b * b;
+    }
+    return ab / Math.sqrt(aa * bb + 1e-9);
+  };
+  let best: CatalogFit = { dx: 0, dy: 0, sx: 1, sy: 1, corr: -2 };
+  const tryP = (p: CatalogFit) => { const c = score(p); if (c > best.corr) best = { ...p, corr: c }; };
+  if (!start) {
+    for (let dx = -6; dx <= 6; dx++) for (let dy = -8; dy <= 8; dy++) tryP({ dx, dy, sx: 1, sy: 1, corr: 0 });
+    for (const step of [0.5, 0.25]) {
+      const p = best;
+      for (const ddx of [-step, 0, step]) for (const ddy of [-step, 0, step]) for (const ds of [-0.03, 0, 0.03]) for (const dt of [-0.03, 0, 0.03]) {
+        tryP({ dx: p.dx + ddx, dy: p.dy + ddy, sx: p.sx * (1 + ds), sy: p.sy * (1 + dt), corr: 0 });
+      }
+    }
+  } else {
+    best = { ...start, corr: score(start) };
+    const p0 = best;
+    for (const ddx of [-1, -0.5, 0, 0.5, 1]) for (const ddy of [-1, -0.5, 0, 0.5, 1]) tryP({ ...p0, dx: p0.dx + ddx, dy: p0.dy + ddy, corr: 0 });
+    const p1 = best;
+    for (const ds of [-0.02, 0, 0.02]) for (const dt of [-0.02, 0, 0.02]) tryP({ ...p1, sx: p1.sx * (1 + ds), sy: p1.sy * (1 + dt), corr: 0 });
+  }
+  return best;
+}
+
+/**
+ * Körnung des Aufhellens: im Bildfenster gegen im Rahmen (log), am Katalogbild ausgerichtet, ohne
+ * Druckkanten (Katalog), Überstrahltes und Glanzpunkt. Holo ≈ +0.9, normal ≈ +0.6, Reverse Holo ≈ +0.2
+ * (Brian 17.11.); null, wenn zu wenig übrig bleibt.
+ */
+export function flashTexture(off: Uint8ClampedArray, on: Uint8ClampedArray, cat: Float32Array, fit: CatalogFit,
+  w = FLASH_W, h = FLASH_H): { ratio: number; art: number; frame: number } | null {
+  const n = w * h, { art, frame } = masks(w, h), edges = catalogEdges(cat, w, h).edges;
+  const A0 = new Float32Array(n), B0 = new Float32Array(n), K0 = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = 4 * i;
+    A0[i] = 0.2126 * LIN[off[o]] + 0.7152 * LIN[off[o + 1]] + 0.0722 * LIN[off[o + 2]];
+    B0[i] = 0.2126 * LIN[on[o]] + 0.7152 * LIN[on[o + 1]] + 0.0722 * LIN[on[o + 2]];
+    K0[i] = Math.max(off[o], off[o + 1], off[o + 2]) >= CLIP || Math.max(on[o], on[o + 1], on[o + 2]) >= CLIP ? 1 : 0;
+  }
+  const a = warpToCatalog(A0, fit, w, h), b = warpToCatalog(B0, fit, w, h), k = warpToCatalog(K0, fit, w, h);
+  const use = new Uint8Array(n);
+  const lit: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!(art[i] || frame[i]) || !Number.isFinite(a[i]) || !Number.isFinite(b[i]) || !Number.isFinite(k[i]) || k[i] > 0.01 || a[i] <= 0.01) continue;
+    use[i] = 1; lit.push(b[i]);
+  }
+  if (!lit.length) return null;
+  // Glanzpunkt: hellster Teil (über ¾ des 98. Perzentils), um 2 px gewachsen
+  const hi = Math.max(quantile(lit, 0.98) * 0.75, 0);
+  const glare = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (Number.isFinite(b[i]) && b[i] > hi) glare[i] = 1;
+  let nUse = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let g = 0;
+    for (let dy = -2; dy <= 2 && !g; dy++) for (let dx = -2; dx <= 2 && !g; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy >= 0 && yy < h && xx >= 0 && xx < w && glare[yy * w + xx]) g = 1;
+    }
+    if (g) use[y * w + x] = 0;
+    nUse += use[y * w + x];
+  }
+  if (nUse < 200) return null;
+  const g = new Float32Array(n);
+  for (let i = 0; i < n; i++) g[i] = use[i] ? Math.log(Math.max(b[i], 1e-3) / Math.max(a[i], 1e-4)) : 0;
+  // Körnung: Abstand zum Mittel der Nachbarn (5×5, nur gültige Pixel; Rand wie OpenCV)
+  const t = new Float32Array(n);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0, c = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const j = refl(y + dy, h) * w + refl(x + dx, w);
+      s += g[j]; c += use[j];
+    }
+    const i = y * w + x;
+    t[i] = Math.abs(g[i] - s / Math.max(c, 1e-6));
+  }
+  const ta: number[] = [], tf: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!use[i] || edges[i]) continue;
+    if (art[i]) ta.push(t[i]); else if (frame[i]) tf.push(t[i]);
+  }
+  if (ta.length < 40 || tf.length < 40) return null;
+  const ea = median(ta), ef = median(tf);
+  return { ratio: Math.log(Math.max(ea, 1e-3) / Math.max(ef, 1e-3)), art: ea, frame: ef };
+}
+
 /**
  * Umschalten der Lampe im laufenden Kamerabild finden: Bild für Bild die mittlere Helligkeit.
  * Ein Sprung zwischen zwei Bildern, der im nächsten Bild bleibt, ist ein Umschalten → Paar aus
@@ -407,7 +588,15 @@ export type FlashKind = "Holo" | "Reverse Holo" | "Normal";
 const KINDS: FlashKind[] = ["Holo", "Normal", "Reverse Holo"];
 /** Eine Messung: Messwert (flashShare), wo die Kamera stand (Mittel beider Phasen), wie hell der Raum
  *  gegen die Lampe ist (Karte mit / ohne Lampe bei gleicher Belichtung; null: unbekannt). */
-export type FlashReading = { share: number; tx: number; ty: number; room: number | null };
+export type FlashReading = { share: number; tx: number; ty: number; room: number | null; tex?: number | null };
+/**
+ * Körnung (flashTexture) je Folierung im dunklen Raum, an Brians Matte (17.11., 9 Karten, 100 Messungen): Mittel der
+ * Karten-Mediane, Streuung innerhalb und zwischen den Karten — jede Karte zählt gleich (die Reverse Holo mit 32
+ * Messungen sonst fast allein). Jede Karte ausgelassen und an den übrigen eingestellt: 2 richtig, 0 falsch, 7 offen.
+ */
+const FLASH_TEXTURE: Record<FlashKind, { mu: number; sd: number }> = {
+  Holo: { mu: 0.94, sd: 0.74 }, Normal: { mu: 0.59, sd: 0.43 }, "Reverse Holo": { mu: 0.23, sd: 0.55 },
+};
 // Urteil: je Folierung die Kosten aller Messungen (robust: log(1 + z²) + log sd, z = Abstand zur
 // Erwartung in sd). Gilt, wenn die beste um FLASH_MARGIN vor der zweitbesten liegt, ab FLASH_MIN_N
 // Messungen, und FLASH_HOLD Messungen lang so blieb. Eingestellt an der Nachbildung mit Schatten (6 Karten
@@ -437,9 +626,10 @@ export function flashExpect(tx: number, ty: number, room: number | null): Record
 export function flashCosts(rs: FlashReading[]): Record<FlashKind, number> {
   const c = { Holo: 0, Normal: 0, "Reverse Holo": 0 } as Record<FlashKind, number>;
   for (const r of rs) {
-    const e = flashExpect(r.tx, r.ty, r.room);
+    const e = r.tex != null ? FLASH_TEXTURE : flashExpect(r.tx, r.ty, r.room);
+    const x = r.tex != null ? r.tex : r.share;
     for (const k of KINDS) {
-      const z = (r.share - e[k].mu) / e[k].sd;
+      const z = (x - e[k].mu) / e[k].sd;
       c[k] += Math.log1p(z * z) + Math.log(e[k].sd);
     }
   }
