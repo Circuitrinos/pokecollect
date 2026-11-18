@@ -58,9 +58,16 @@ import { IMAGE_LANGS, imageLangOf, withImageLang } from "@/lib/imageLang";
 type Step = "setup" | "review";
 type ScanTarget = "pokedex" | "collection" | "wishlist" | "deck";
 
+// Foto als Kartenbild nur, solange es kein Katalogbild gibt — außer von Hand gewählt.
+// Brian 17.11.: TCGdex fiel kurz aus, die Karte kam ohne Bild an, und das Foto blieb
+// Kartenbild, auch nachdem die Auswahl die Karte samt Katalogbild nachgeladen hatte.
+const photoAsPicture = (c: { usePhoto: boolean; usePhotoSet?: boolean }, m: ScanCandidate["match"] | undefined) =>
+  c.usePhotoSet ? c.usePhoto : !m?.image_url;
+
 type EditableCandidate = ScanCandidate & {
   include: boolean;
   usePhoto: boolean;        // eigenes Foto als Kartenbild (true) vs. Katalogbild (false; Foto lernt trotzdem mit)
+  usePhotoSet?: boolean;    // von Hand gewählt: ein Treffer mit Katalogbild ändert es nicht mehr
   cropUrl: string | null;   // Vorschau des zugeschnittenen eigenen Fotos
   imPokedex: boolean;       // je Karte: in den Pokédex
   prizePack: boolean;       // Play!-Pokémon-Stempel (Prize Pack) — angehakt (von Hand oder vom Stempel-Fund)
@@ -2157,7 +2164,7 @@ export default function ScanPage() {
   };
 
   const toggleUsePhoto = (idx: number) =>
-    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, usePhoto: !c.usePhoto } : c)));
+    setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, usePhoto: !c.usePhoto, usePhotoSet: true } : c)));
   const togglePokedex = (idx: number) =>
     setCandidates((prev) => prev.map((c, i) => (i === idx ? { ...c, imPokedex: !c.imPokedex } : c)));
   const setCopies = (idx: number, n: number) =>
@@ -2221,7 +2228,7 @@ export default function ScanPage() {
       const f = await cropToCardPhoto(blob, { quad, ...transform });
       const u = URL.createObjectURL(f);
       patchCand(key, (cc) => ({ ...cc, editedQuad: quad, editedOrient: transform, cropUrl: u, foil: undefined,
-        usePhoto: cc.usePhoto || !cc.match?.image_url, rematching: again }));
+        usePhoto: photoAsPicture(cc, cc.match), rematching: again }));
       if (again) await rematch(key, f, quiet);   // sonst: von Hand gewählte Karte bleibt; nur Zuschnitt (und Folien-Prüfung) neu
     } catch { /* Entzerrung optional */ }
   };
@@ -2282,7 +2289,7 @@ export default function ScanPage() {
           position: c.position,
           include: !n.needs_choice,
           chosenId: null,
-          usePhoto: c.usePhoto || !n.match?.image_url,
+          usePhoto: photoAsPicture(c, n.match),
           // neuer Zuschnitt, neuer Stempel-Befund — außer Prize Pack wurde von Hand gesetzt
           prizePack: c.prizePackSet ? c.prizePack : !!n.stamp?.sure,
           rematching: false,
@@ -2405,6 +2412,7 @@ export default function ScanPage() {
       setCandidates((prev) => prev.map((cc) => cc.key === c.key ? {
         ...cc,
         match: nc.match,
+        usePhoto: (cc.raw?.bbox || cc.raw?.quad || cc.editedQuad) ? photoAsPicture(cc, nc.match) : cc.usePhoto,
         foil_options: nc.foil_options,
         uncertain_fields: nc.uncertain_fields,
         confidence: nc.confidence,
@@ -2437,6 +2445,7 @@ export default function ScanPage() {
       setCandidates((prev) => prev.map((cc) => cc.key === c.key ? {
         ...cc,
         match: nc.match,
+        usePhoto: (cc.raw?.bbox || cc.raw?.quad || cc.editedQuad) ? photoAsPicture(cc, nc.match) : cc.usePhoto,
         foil_options: nc.foil_options,
         uncertain_fields: nc.uncertain_fields,
         confidence: nc.confidence,

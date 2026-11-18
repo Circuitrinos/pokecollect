@@ -1,9 +1,9 @@
 """
 #43 (Epic #41, Slice 2): Lokaler Bild-Cache für den Katalog.
 
-Drei Stufen (Setting catalog_image_cache_level): "urls" (Default, nur externe
-URLs) | "owned" (besessene + wunschgelistete Karten lokal) | "all" (ganzer
-Katalog). Ein Nachtlauf-Schritt (services/cron.py, NACH dem €-Repass) füllt
+Stufen (Setting catalog_image_cache_level): "urls" (Default, nur externe
+URLs) | "owned" (besessene + wunschgelistete Karten lokal) | "standard" (dazu
+alles gerade Standard-legale, mit Reprint-Regel) | "all" (ganzer Katalog). Ein Nachtlauf-Schritt (services/cron.py, NACH dem €-Repass) füllt
 den Cache gemäß Stufe in Etappen; das Detail-Popup cached zusätzlich
 on-demand. Antworten liefern bei vorhandenem, tatsächlich existierendem Cache
 den lokalen Pfad statt der CDN-URL (services/catalog_images.py).
@@ -154,8 +154,8 @@ def test_bild_cache_stufe_lehnt_unsinn_ab(client, cache_stufe):
         assert r.status_code == 422, f"{bad!r} haette 422 liefern muessen: {r.text}"
 
 
-def test_bild_cache_stufe_akzeptiert_die_drei_werte(client, cache_stufe):
-    for good in ("urls", "owned", "all"):
+def test_bild_cache_stufe_akzeptiert_die_stufen(client, cache_stufe):
+    for good in ("urls", "owned", "standard", "all"):
         r = client.put("/api/v1/settings", json={"catalog_image_cache_level": good})
         assert r.status_code == 200, r.text
         assert r.json()["catalog_image_cache_level"] == good
@@ -993,3 +993,78 @@ def test_webp_wird_mit_image_webp_content_type_ausgeliefert(client):
         assert r.headers["content-type"].startswith("image/webp"), r.headers.get("content-type")
     finally:
         dest.unlink(missing_ok=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stufe "standard" (Brian 18.11.): besessen + Wunschliste + alles, was gerade im
+# Standard-Format legal ist — auch alte Drucke über die Reprint-Regel („Switch")
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _std(db, cid, name, category, mark, *, effect=None, energy_type=None, checked=True):
+    db.add(TcgdexCatalog(card_id=cid, region="west", set_id="test43set", set_code="T43", local_id="1",
+                         name=name, name_en=name, category=category, regulation_mark=mark,
+                         effect_key=effect, energy_type=energy_type, regulation_checked=checked,
+                         effect_checked=checked, image_url=_url(cid)))
+
+
+LEGAL = {"test43-std-neu", "test43-std-switch-neu", "test43-std-switch-alt", "test43-std-energie"}
+
+
+def _standard_katalog(db):
+    _std(db, "test43-std-neu", "Test43 Mon", "Pokemon", "J")
+    _std(db, "test43-std-alt", "Test43 Mon", "Pokemon", "D")              # Pokémon: keine Reprint-Regel
+    _std(db, "test43-std-switch-neu", "Test43 Switch", "Trainer", "J", effect="test43-tausch")
+    _std(db, "test43-std-switch-alt", "Test43 Switch", "Trainer", None, effect="test43-tausch")
+    _std(db, "test43-std-switch-anders", "Test43 Switch", "Trainer", "D", effect="test43-anderer-text")
+    _std(db, "test43-std-energie", "Fire Energy", "Energy", None, energy_type="Basic")
+    _std(db, "test43-std-ungeprueft", "Test43 Neu", "Pokemon", None, checked=False)
+    _std(db, "test43-std-besessen", "Test43 Alt", "Pokemon", "C")
+    db.add(PokemonCard(kartenname="Test43-Std-Besessen", besessen=True, tcgdex_card_id="test43-std-besessen"))
+    db.commit()
+
+
+def test_stufe_standard_laedt_legale_drucke_mit_reprints_und_besessene(db, monkeypatch, cache_stufe, png_bytes):
+    cache_stufe("standard")
+    _standard_katalog(db)
+
+    async def fake_bytes(url):
+        return png_bytes
+    monkeypatch.setattr(catalog_images, "_fetch_image_bytes", fake_bytes)
+
+    asyncio.run(catalog_images.run_catalog_image_cache(db, limit=5000))
+    db.expire_all()
+    cached = {r.card_id for r in db.query(TcgdexCatalog).filter(
+        TcgdexCatalog.card_id.ilike("test43-std-%"), TcgdexCatalog.image_pfad.isnot(None))}
+    # alter Switch mit gleichem Text: legal (Reprint); mit anderem Text: nicht.
+    # Basis-Energie ohne Zeichen: immer legal. Besessen: wie bei "owned".
+    assert cached == LEGAL | {"test43-std-besessen"}
+
+
+def test_on_demand_standard_kennt_die_reprint_regel(db, monkeypatch, cache_stufe, png_bytes):
+    cache_stufe("standard")
+    _standard_katalog(db)
+
+    async def fake_bytes(url):
+        return png_bytes
+    monkeypatch.setattr(catalog_images, "_fetch_image_bytes", fake_bytes)
+
+    for cid in ("test43-std-switch-alt", "test43-std-switch-anders", "test43-std-alt"):
+        asyncio.run(catalog_images.cache_one_on_demand(cid))
+    db.expire_all()
+    assert db.get(TcgdexCatalog, "test43-std-switch-alt").image_pfad is not None
+    assert db.get(TcgdexCatalog, "test43-std-switch-anders").image_pfad is None
+    assert db.get(TcgdexCatalog, "test43-std-alt").image_pfad is None
+
+
+def test_meta_zaehlt_standard_bilder_nur_auf_anfrage(db, client):
+    assert "standard_total" not in client.get("/api/v1/catalog/meta").json()
+    vorher = client.get("/api/v1/catalog/meta", params={"standard": 1}).json()
+    _standard_katalog(db)
+    nachher = client.get("/api/v1/catalog/meta", params={"standard": 1}).json()
+    assert nachher["standard_total"] - vorher["standard_total"] == len(LEGAL)
+    assert nachher["standard_cached"] == vorher["standard_cached"]
+
+    db.get(TcgdexCatalog, "test43-std-switch-alt").image_pfad = "catalog/test43-std-switch-alt.webp"
+    db.commit()
+    zuletzt = client.get("/api/v1/catalog/meta", params={"standard": 1}).json()
+    assert zuletzt["standard_cached"] == vorher["standard_cached"] + 1

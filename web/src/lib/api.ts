@@ -1114,7 +1114,8 @@ export const catalogApi = {
   },
   detail: (cardId: string, opts?: { signal?: AbortSignal }) =>
     api.get<CatalogDetail>(`/catalog/${encodeURIComponent(cardId)}/detail`, opts),
-  meta: () => api.get<{ total: number; enriched: number; cached_images: number }>("/catalog/meta"),
+  meta: (standard = false) => api.get<{ total: number; enriched: number; cached_images: number;
+    standard_total?: number; standard_cached?: number }>("/catalog/meta", { params: standard ? { standard: 1 } : undefined }),
   sync: () => api.post<{ detail: string }>("/catalog/sync"),
   // Turnier-Legalität: Stand + Nachholen der Regulation Marks (Admin)
   regulation: () => api.get<{ min_mark: string; pending_owned: number; pending_catalog: number }>("/catalog/regulation"),

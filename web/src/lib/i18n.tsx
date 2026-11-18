@@ -964,6 +964,10 @@ const DE = {
   settings_catalog_cache_level_hint: "Bestimmt, welche Katalogbilder zusätzlich zur externen URL lokal gespeichert werden (schneller, offline-fähig). Ein Stufen-Wechsel löscht keine bereits gecachten Bilder.",
   settings_catalog_cache_urls: "Nur externe URLs (Standard)",
   settings_catalog_cache_owned: "Besessene + Wunschliste",
+  settings_catalog_cache_standard: (gb: string | null) =>
+    `Besessene + Wunschliste + Standard-Format inkl. Reprints${gb ? ` (geschätzt ~${gb} GB)` : ""}`,
+  settings_catalog_cache_status_standard: (cached: string, total: string) =>
+    `${cached} von ${total} Standard-Bildern lokal gecacht (dazu besessene und Wunschliste)`,
   settings_catalog_cache_all: (gb: string) => `Alle Katalogbilder (geschätzt ~${gb} GB)`,
   settings_catalog_cache_status: (cached: string, total: string) => `${cached} von ${total} Katalogbildern lokal gecacht`,
   // #43-Nacharbeit: bei Stufe "owned" ist `total` (ganzer Katalog) NICHT die
@@ -2256,6 +2260,10 @@ const EN: typeof DE = {
   settings_catalog_cache_level_hint: "Determines which catalog images are additionally stored locally besides the external URL (faster, offline-capable). Switching tiers does not delete already cached images.",
   settings_catalog_cache_urls: "External URLs only (default)",
   settings_catalog_cache_owned: "Owned + wishlist",
+  settings_catalog_cache_standard: (gb: string | null) =>
+    `Owned + wishlist + Standard format incl. reprints${gb ? ` (estimated ~${gb} GB)` : ""}`,
+  settings_catalog_cache_status_standard: (cached: string, total: string) =>
+    `${cached} of ${total} Standard-format images cached locally (plus owned and wishlist)`,
   settings_catalog_cache_all: (gb: string) => `All catalog images (estimated ~${gb} GB)`,
   settings_catalog_cache_status: (cached: string, total: string) => `${cached} of ${total} catalog images cached locally`,
   settings_catalog_cache_status_owned: (cached: string) => `${cached} images cached locally`,

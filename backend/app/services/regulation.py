@@ -262,6 +262,39 @@ def standard_legal_clause(min_mark: str):
     return (PokemonCard.basic_energy == True) | (PokemonCard.legal_mark >= min_mark)  # noqa: E712
 
 
+def _legal_now(row, reprints: dict[tuple, str], min_mark: str) -> bool:
+    _, legal, basic, _ = _compute(row, None, reprints)
+    return basic or (legal is not None and legal != NO_MARK and legal >= min_mark)
+
+
+_STANDARD_COLS = (TcgdexCatalog.card_id, TcgdexCatalog.category, TcgdexCatalog.energy_type,
+                  TcgdexCatalog.name, TcgdexCatalog.name_en, TcgdexCatalog.regulation_mark,
+                  TcgdexCatalog.effect_key, TcgdexCatalog.regulation_checked)
+
+
+def standard_catalog_ids(db: Session) -> set[str]:
+    """
+    Westliche Katalogzeilen, die gerade im Standard-Format legal sind — dieselbe
+    Regel wie für die eigenen Karten (_compute): Zeichen ab standard_min_mark,
+    Basis-Energie, und ältere Trainer/Spezial-Energien über die Reprint-Regel
+    (Brian 18.11.: „auch alte Switch-Karten"). Für den Bild-Cache („standard").
+    Zeilen ohne geholte Legalitätsdaten zählen nicht (der Nachtlauf holt sie nach).
+    """
+    rows = db.execute(select(*_STANDARD_COLS).where(
+        TcgdexCatalog.region == "west", TcgdexCatalog.regulation_checked == True)).all()  # noqa: E712
+    reprints = _reprint_marks(db, {k for r in rows if (k := _reprint_key(r))})
+    min_mark = standard_min_mark(db)
+    return {r.card_id for r in rows if _legal_now(r, reprints, min_mark)}
+
+
+def catalog_row_is_standard(db: Session, row: Optional[TcgdexCatalog]) -> bool:
+    """Wie standard_catalog_ids, für eine einzelne Katalogzeile (Bild auf Abruf)."""
+    if row is None or row.region != "west" or not row.regulation_checked:
+        return False
+    key = _reprint_key(row)
+    return _legal_now(row, _reprint_marks(db, {key} if key else set()), standard_min_mark(db))
+
+
 def _needs_fetch():
     """Zeile braucht (nochmal) Volldaten: Zeichen noch nie geholt, oder
     Trainer/Energie ohne geholten Text (vor der Text-Prüfung geprüft)."""

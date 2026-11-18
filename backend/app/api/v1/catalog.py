@@ -148,7 +148,7 @@ def list_catalog(
 
 
 @router.get("/meta")
-def catalog_meta(db: Session = Depends(get_db)):
+def catalog_meta(db: Session = Depends(get_db), standard: bool = Query(False)):
     total = db.scalar(select(func.count()).select_from(TcgdexCatalog)) or 0
     enriched = db.scalar(
         select(func.count()).select_from(TcgdexCatalog).where(TcgdexCatalog.enriched == True)  # noqa: E712
@@ -159,7 +159,19 @@ def catalog_meta(db: Session = Depends(get_db)):
     cached_images = db.scalar(
         select(func.count()).select_from(TcgdexCatalog).where(TcgdexCatalog.image_pfad.isnot(None))
     ) or 0
-    return {"total": int(total), "enriched": int(enriched), "cached_images": int(cached_images)}
+    out = {"total": int(total), "enriched": int(enriched), "cached_images": int(cached_images)}
+    if standard:
+        # Bild-Cache-Stufe "standard" (Admin): wie viele Standard-legale Drucke (mit
+        # Reprints) es gibt und wie viele davon schon lokal liegen. Nur auf Anfrage —
+        # die Rechnung geht über den ganzen Katalog, die Katalogseite braucht sie nicht.
+        legal = regulation.standard_catalog_ids(db)
+        rows = [r for r in db.execute(select(TcgdexCatalog.card_id, TcgdexCatalog.image_pfad,
+                                             TcgdexCatalog.image_url)
+                                      .where(TcgdexCatalog.region == "west")).all()
+                if r.card_id in legal and (r.image_pfad or r.image_url)]
+        out["standard_total"] = len(rows)
+        out["standard_cached"] = sum(1 for r in rows if r.image_pfad)
+    return out
 
 
 @router.post("/sync", dependencies=[Depends(require_admin)])

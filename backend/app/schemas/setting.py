@@ -131,7 +131,7 @@ class SettingsUpdate(BaseModel):
     openrouter_model: Optional[str] = None
     # #43: nur die drei Stufen — Literal liefert 422 bei jedem anderen Wert,
     # ohne einen eigenen Validator (Muster: CollectionTyp/ScanMode).
-    catalog_image_cache_level: Optional[Literal["urls", "owned", "all"]] = None
+    catalog_image_cache_level: Optional[Literal["urls", "owned", "standard", "all"]] = None
     standard_min_mark: Optional[str] = Field(default=None, pattern="^[A-Z]$")
 
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)

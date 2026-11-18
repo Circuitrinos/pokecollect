@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+from contextvars import ContextVar
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -222,16 +223,28 @@ def normalize_lang(sprache: Optional[str]) -> str:
 
 # ── HTTP-Aufrufe ─────────────────────────────────────────────────────────────
 
+# TCGdex antwortet gerade nicht (Netzfehler, 5xx, 429) — das heißt NICHT „gibt es nicht".
+# Brian 17.11.: über Stunden ~5 % 503; der Scan machte daraus „Karte unbekannt" (Bild,
+# Set, Nummer, Folien-Varianten weg). _get_json setzt den Merker im laufenden Ablauf;
+# wer nach einem None unterscheiden muss (scan/resolver), setzt ihn vorher auf False.
+UNREACHABLE: ContextVar[bool] = ContextVar("tcgdex_unreachable", default=False)
+_TRANSIENT = {408, 425, 429, 500, 502, 503, 504}
+
+
 async def _get_json(client: httpx.AsyncClient, path: str, params: Optional[dict] = None) -> Optional[Any]:
     try:
         resp = await client.get(path, params=params)
     except httpx.HTTPError as exc:
-        log.warning("TCGdex-Request fehlgeschlagen (%s): %s", path, exc)
+        # Zeitüberschreitungen haben oft keinen Text — dann wenigstens die Art
+        log.warning("TCGdex-Request fehlgeschlagen (%s): %s", path, str(exc) or type(exc).__name__)
+        UNREACHABLE.set(True)
         return None
     if resp.status_code == 404:
         return None
     if resp.status_code != 200:
         log.warning("TCGdex unerwarteter Status %s für %s", resp.status_code, path)
+        if resp.status_code in _TRANSIENT:
+            UNREACHABLE.set(True)
         return None
     try:
         return resp.json()

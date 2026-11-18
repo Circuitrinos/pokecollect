@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import random
 import re
 from pathlib import Path
 from typing import Optional
@@ -47,7 +48,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
-from app.services import fremdbild_abruf, tcgdex
+from app.services import fremdbild_abruf, regulation, tcgdex
 from app.services.card_images import _MAX_UPLOAD_BYTES, safe_media_path
 from app.services.settings import get_setting
 
@@ -171,26 +172,34 @@ def _owned_or_wishlisted_cid_upper_subquery():
     )
 
 
+# Stufen, die herunterladen ("urls" und Unbekanntes: nie — fail-closed)
+DOWNLOAD_STAGES = ("owned", "standard", "all")
+
+
 def stage_allows(db: Session, card_id: str, stage: str) -> bool:
     """
     Ob EINE Katalogzeile unter der aktuellen Stufe heruntergeladen werden darf
     — Einzelprüfung für den On-demand-Pfad, dieselbe Regel wie der
     Mengen-Filter des Nachtlaufs (_owned_or_wishlisted_clause, s. o.).
     "all": immer. "owned": nur wenn card_id (case-tolerant, #67) zu einer
-    besessenen ODER wunschgelisteten Karte gehört. Alles andere (u. a.
-    "urls" und ein unbekannter/künftiger Wert): nie — fail-closed, kein
-    Download ohne erkannte Erlaubnis.
+    besessenen ODER wunschgelisteten Karte gehört. "standard": das ODER die
+    Karte ist gerade im Standard-Format legal (inkl. Reprint-Regel,
+    regulation.catalog_row_is_standard). Alles andere (u. a. "urls" und ein
+    unbekannter/künftiger Wert): nie — fail-closed, kein Download ohne
+    erkannte Erlaubnis.
     """
     if stage == "all":
         return True
-    if stage != "owned":
+    if stage not in ("owned", "standard"):
         return False
     cid_upper = (card_id or "").upper()
-    return bool(db.scalar(
+    if db.scalar(
         select(PokemonCard.id).where(
             func.upper(PokemonCard.tcgdex_card_id) == cid_upper, _owned_or_wishlisted_clause(),
         ).limit(1)
-    ))
+    ):
+        return True
+    return stage == "standard" and regulation.catalog_row_is_standard(db, db.get(TcgdexCatalog, card_id))
 
 
 async def _fetch_image_bytes(url: str) -> bytes:
@@ -307,7 +316,7 @@ async def run_catalog_image_cache(db: Session, limit: int = 60) -> dict:
     zeile je Lauf.
     """
     stage = get_setting(db, "catalog_image_cache_level")
-    if stage != "owned" and stage != "all":
+    if stage not in DOWNLOAD_STAGES:
         return {"stage": stage, "loaded": 0, "skipped": 0, "failed": 0}
 
     # image_pfad IS NULL hier ist eine EFFIZIENZ-Grenze (nicht erst Tausende
@@ -323,6 +332,13 @@ async def run_catalog_image_cache(db: Session, limit: int = 60) -> dict:
     )
     if stage == "owned":
         query = query.where(func.upper(TcgdexCatalog.card_id).in_(_owned_or_wishlisted_cid_upper_subquery()))
+    if stage == "standard":
+        # Standard-Legalität (Reprint-Regel) rechnet Python wie bei den eigenen
+        # Karten — kein SQL-Filter; Auswahl darum hier, gleich zufällig (s. u.)
+        owned = set(db.scalars(_owned_or_wishlisted_cid_upper_subquery()).all())
+        legal = regulation.standard_catalog_ids(db)
+        pool = [cid for cid in db.scalars(query).all() if cid in legal or cid.upper() in owned]
+        ids = random.sample(pool, min(limit, len(pool)))
     # #43-Nacharbeit G: zufällige statt card_id-sortierte Auswahl — sonst
     # blockieren dauerhaft fehlschlagende Zeilen (z. B. tote CDN-URLs) mit
     # LIMIT n jede Nacht dieselben Budgetplätze (Panel-Sonde: drei Nächte in
@@ -330,7 +346,8 @@ async def run_catalog_image_cache(db: Session, limit: int = 60) -> dict:
     # nie an die Reihe). Kein eigener Test hierfür (keine neue Zusage — die
     # bestehenden Tests sind mengen-, nicht reihenfolgebasiert und bleiben
     # unter zufälliger Reihenfolge unverändert grün).
-    ids = list(db.scalars(query.order_by(func.random()).limit(limit)).all())
+    else:
+        ids = list(db.scalars(query.order_by(func.random()).limit(limit)).all())
 
     loaded = skipped = failed = 0
     for cid in ids:
@@ -340,7 +357,7 @@ async def run_catalog_image_cache(db: Session, limit: int = 60) -> dict:
         # Budget zu Ende zu laden. Rest bleibt ungezählt liegen (nächste Nacht
         # greift der Auswahl-Filter oben erneut).
         current_stage = get_setting(db, "catalog_image_cache_level")
-        if current_stage != "owned" and current_stage != "all":
+        if current_stage not in DOWNLOAD_STAGES:
             break
         row = db.get(TcgdexCatalog, cid)
         # row.image_pfad hier ist die MASSGEBLICHE Korrektheits-Prüfung (s. o.):

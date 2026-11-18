@@ -50,7 +50,8 @@ export default function AdminPage() {
   const [modelList, setModelList] = useState<ScanModelSuggestion[]>([]);
   const [modelSource, setModelSource] = useState<"live" | "curated" | null>(null);
   // Lokaler Bild-Cache (#43): Katalog-Kennzahlen für Status + Größenschätzung.
-  const [catalogMeta, setCatalogMeta] = useState<{ total: number; cached_images: number } | null>(null);
+  const [catalogMeta, setCatalogMeta] = useState<{ total: number; cached_images: number;
+    standard_total?: number; standard_cached?: number } | null>(null);
   const [regStatus, setRegStatus] = useState<{ min_mark: string; pending_owned: number } | null>(null);
   const [regLoading, setRegLoading] = useState(false);
   // Nachholen läuft im Hintergrund: Stand alle 5 s neu holen, bis nichts mehr
@@ -78,7 +79,7 @@ export default function AdminPage() {
   useEffect(() => {
     if (!isAdmin) return;
     scanApi.usage().then((r) => setUsage(r.data)).catch(() => {});
-    catalogApi.meta().then((r) => setCatalogMeta(r.data)).catch(() => {});
+    catalogApi.meta(true).then((r) => setCatalogMeta(r.data)).catch(() => {});
     catalogApi.regulation().then((r) => setRegStatus(r.data)).catch(() => {});
     usersApi.list().then((r) => setUsers(r.data)).catch(() => setUsers(null));
     dataApi.scanDatasetSummary().then((r) => setScanSummary(r.data)).catch(() => {});
@@ -425,6 +426,10 @@ export default function AdminPage() {
           >
             <option value="urls">{t.settings_catalog_cache_urls}</option>
             <option value="owned">{t.settings_catalog_cache_owned}</option>
+            <option value="standard">
+              {t.settings_catalog_cache_standard(catalogMeta?.standard_total != null
+                ? ((catalogMeta.standard_total * 0.1) / 1000).toFixed(1) : null)}
+            </option>
             <option value="all">
               {t.settings_catalog_cache_all((((catalogMeta?.total ?? 0) * 0.1) / 1000).toFixed(1))}
             </option>
@@ -439,6 +444,11 @@ export default function AdminPage() {
               ? t.settings_catalog_cache_status(
                   catalogMeta.cached_images.toLocaleString(t.date_locale),
                   catalogMeta.total.toLocaleString(t.date_locale),
+                )
+              : s.catalog_image_cache_level === "standard" && catalogMeta.standard_total != null
+              ? t.settings_catalog_cache_status_standard(
+                  (catalogMeta.standard_cached ?? 0).toLocaleString(t.date_locale),
+                  catalogMeta.standard_total.toLocaleString(t.date_locale),
                 )
               : t.settings_catalog_cache_status_owned(
                   catalogMeta.cached_images.toLocaleString(t.date_locale),

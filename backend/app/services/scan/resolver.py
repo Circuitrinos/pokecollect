@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.pokemon_set import PokemonSet
+from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.scan import ScanCandidate, ScanMatch, ScanRawRead
 from app.services import tcgdex
 from app.services.card_names import basic_energy_name
@@ -30,6 +31,8 @@ from app.services.set_sync import PTCGO_TO_SETID
 _LIVE_CACHE: dict[tuple[str, str], tuple[float, Optional[tcgdex.TcgdexCard]]] = {}
 _LIVE_TTL = 600.0        # s, gefundene Karten
 _LIVE_TTL_MISS = 60.0    # s, nicht gefunden
+_DOWN_TTL = 5.0          # s, TCGdex antwortete nicht (5xx/Netz): bald wieder fragen, bis dahin nicht
+_DOWN: dict[tuple[str, str], float] = {}   # (id, Sprache) → bis wann „TCGdex gerade nicht erreichbar"
 _LIVE_MAX = 2000
 _cached: ContextVar[bool] = ContextVar("scan_live_cache", default=False)
 # Innerhalb EINER Scan-Anfrage: schon geladene Karten (resolve_reads lädt sie vorab gleichzeitig)
@@ -41,6 +44,29 @@ def _copy(card):
     return card.model_copy(deep=True) if card is not None else None
 
 
+def _down(card_id: str, lang: str) -> bool:
+    """Kam für diese Karte eben keine Antwort von TCGdex (statt „gibt es nicht")?"""
+    until = _DOWN.get((card_id, lang))
+    return until is not None and until > time.monotonic()
+
+
+async def _load(card_id: str, lang: str):
+    """tcgdex.get_card + merken, ob ein None nur „TCGdex antwortet nicht" hieß."""
+    token = tcgdex.UNREACHABLE.set(False)
+    try:
+        card = await tcgdex.get_card(card_id, lang)
+        down = card is None and tcgdex.UNREACHABLE.get()
+    finally:
+        tcgdex.UNREACHABLE.reset(token)
+    if down:
+        if len(_DOWN) >= _LIVE_MAX:
+            _DOWN.clear()
+        _DOWN[(card_id, lang)] = time.monotonic() + _DOWN_TTL
+    else:
+        _DOWN.pop((card_id, lang), None)
+    return card, down
+
+
 async def _get_card(card_id: str, lang: str):
     key = (card_id, lang)
     req = _request_cards.get()
@@ -49,7 +75,7 @@ async def _get_card(card_id: str, lang: str):
         return _copy(req[key])
     if not _cached.get():
         log.debug("TCGdex %s/%s: laden", lang, card_id)
-        card = await tcgdex.get_card(card_id, lang)
+        card, _ = await _load(card_id, lang)
     else:
         now = time.monotonic()
         hit = _LIVE_CACHE.get(key)
@@ -58,11 +84,12 @@ async def _get_card(card_id: str, lang: str):
             card = hit[1]
         else:
             log.debug("TCGdex %s/%s: laden (Live)", lang, card_id)
-            card = await tcgdex.get_card(card_id, lang)
+            card, down = await _load(card_id, lang)
             if len(_LIVE_CACHE) >= _LIVE_MAX:
                 for k in sorted(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])[: _LIVE_MAX // 4]:
                     _LIVE_CACHE.pop(k, None)
-            _LIVE_CACHE[key] = (now + (_LIVE_TTL if card is not None else _LIVE_TTL_MISS), card)
+            ttl = _LIVE_TTL if card is not None else _DOWN_TTL if down else _LIVE_TTL_MISS
+            _LIVE_CACHE[key] = (now + ttl, card)
     if req is not None:
         req[key] = card
     return _copy(card)
@@ -201,6 +228,40 @@ def _set_by_set_id(db: Session, set_id: Optional[str]) -> Optional[PokemonSet]:
     if not set_id:
         return None
     return db.scalars(select(PokemonSet).where(PokemonSet.set_id == set_id)).first()
+
+
+def _catalog_card(db: Session, row: Optional[TcgdexCatalog], lang: str) -> Optional[tcgdex.TcgdexCard]:
+    """Karte aus dem lokalen Katalog (TCGdex' eigene Daten, nachts abgeglichen) — wenn
+    TCGdex selbst gerade nicht antwortet. Ohne Preise; Rest wie von TCGdex."""
+    if row is None:
+        return None
+    s = _set_by_set_id(db, row.set_id)
+    en = lang == "en"
+    set_name = ((s.name_en or s.name) if en else s.name) if s else row.set_name
+    flags = (row.variants_normal, row.variants_reverse, row.variants_holo, row.variants_firstedition)
+    return tcgdex.TcgdexCard(
+        id=row.card_id, localId=row.local_id,
+        name=(row.name_en or row.name) if en else (row.name or row.name_en),
+        image=row.image, category=row.category, rarity=row.rarity, illustrator=row.illustrator,
+        dexId=[row.dex_id] if row.dex_id is not None else None,
+        set=tcgdex.SetRef(id=row.set_id, name=set_name, cardCount=tcgdex.CardCount(
+            official=s.card_count_official, total=s.card_count_total) if s else None),
+        variants=None if all(f is None for f in flags) else tcgdex.Variants(
+            normal=bool(row.variants_normal), reverse=bool(row.variants_reverse),
+            holo=bool(row.variants_holo), firstEdition=bool(row.variants_firstedition)),
+        regulationMark=row.regulation_mark, energyType=row.energy_type,
+        stage=row.stage, trainerType=row.trainer_type,
+    )
+
+
+def _catalog_by_number(db: Session, set_id: str, local_id: str) -> Optional[TcgdexCatalog]:
+    """Katalogzeile über Set + aufgedruckte Nummer ("91" findet auch "091")."""
+    q = select(TcgdexCatalog).where(TcgdexCatalog.set_id == set_id)
+    if local_id.isdigit():
+        q = q.where(TcgdexCatalog.local_id_num == int(local_id))
+    else:
+        q = q.where(func.upper(TcgdexCatalog.local_id) == local_id.upper())
+    return db.scalars(q.order_by(TcgdexCatalog.card_id)).first()
 
 
 def _resolve_set_id(db: Session, code: Optional[str]) -> tuple[Optional[str], Optional[PokemonSet]]:
@@ -398,8 +459,14 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     via_card_id = False
     if read.tcgdex_card_id:
         tc = await _get_card(read.tcgdex_card_id, tcg_lang)
-        if tc is None and tcg_lang != "en":
+        if tc is None and tcg_lang != "en" and not _down(read.tcgdex_card_id, tcg_lang):
             tc = await _get_card(read.tcgdex_card_id, "en")
+        if tc is None:
+            # Die Karte steht fest (Bild-Abgleich), nur TCGdex liefert sie gerade nicht —
+            # Brian 17.11.: sonst ging sie ohne Bild, Set, Nummer und Varianten in die Prüfung
+            tc = _catalog_card(db, db.get(TcgdexCatalog, read.tcgdex_card_id), tcg_lang)
+            if tc is not None:
+                log.info("TCGdex ohne %s — Kartendaten aus dem lokalen Katalog", read.tcgdex_card_id)
         if tc is not None:
             via_number = via_card_id = True
             if tc.set and tc.set.id:
@@ -409,6 +476,10 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
 
     if tc is None and set_id and local_id:
         tc = await tcgdex.fetch_card_by_set_multilang(set_id, local_id, tcg_lang)
+        if tc is None:
+            tc = _catalog_card(db, _catalog_by_number(db, set_id, local_id), tcg_lang)
+            if tc is not None:
+                log.info("TCGdex ohne %s/%s — Kartendaten aus dem lokalen Katalog", set_id, local_id)
         if tc is not None:
             via_number = True
 
