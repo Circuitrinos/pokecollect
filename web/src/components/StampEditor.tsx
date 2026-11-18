@@ -11,13 +11,15 @@ import CornerEditor, { CornerSuggestion } from "@/components/CornerEditor";
 // Kartenseite und Admin-Liste „Play!-Stempel". Mit gelernter Vorlage schlägt der
 // Bild-Abgleich den Stempel vor: beim Öffnen überall, nach dem Ziehen um die Ecken.
 // Der Stempel sitzt unten rechts (manchmal links) am Bildfenster.
+// `proposal`: Fund aus „Alle markieren" — Startecken, noch nicht gespeichert.
 export const DEFAULT_STAMP: number[][] = [[0.79, 0.375], [0.96, 0.375], [0.96, 0.47], [0.79, 0.47]];
 
-export default function StampEditor({ cardId, photo, version, initialQuad, onSaved, onClose }: {
+export default function StampEditor({ cardId, photo, version, initialQuad, proposal, onSaved, onClose }: {
   cardId: number;
   photo: string;            // eigenes Foto (Pfad unter /images)
   version?: string | null;  // Cache-Bust
   initialQuad?: number[][] | null;
+  proposal?: number[][] | null;
   onSaved: (card: Card) => void;
   onClose: () => void;
 }) {
@@ -28,7 +30,7 @@ export default function StampEditor({ cardId, photo, version, initialQuad, onSav
   if (!src) return null;
   // erster Vorschlag ohne Hinweis (beide Stellen), danach um die gezogenen Ecken
   const suggest = async (quad: number[][]): Promise<CornerSuggestion | null> => {
-    const hint = askedRef.current || initialQuad ? quad : null;
+    const hint = askedRef.current || initialQuad || proposal ? quad : null;
     askedRef.current = true;
     const r = await cardApi.stampSuggest(cardId, hint);
     setNoTemplate(!r.data.template);
@@ -49,12 +51,12 @@ export default function StampEditor({ cardId, photo, version, initialQuad, onSav
   return (
     <CornerEditor
       imageUrl={src}
-      initialQuad={initialQuad ?? DEFAULT_STAMP}
+      initialQuad={initialQuad ?? proposal ?? DEFAULT_STAMP}
       title={t.stamp_title}
       hint={t.stamp_hint}
       orientable={false}
       suggest={suggest}
-      suggestOnOpen={!initialQuad}
+      suggestOnOpen={!initialQuad && !proposal}
       suggestTexts={{ hint: t.stamp_suggest_hint, busy: t.stamp_suggest_busy,
         none: noTemplate ? t.stamp_suggest_no_template : t.stamp_suggest_none }}
       onCancel={onClose}

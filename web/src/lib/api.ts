@@ -670,7 +670,7 @@ export type StampItem = {
   set: string | null; number: string | null; tcgdex_card_id: string | null; photo: string;
   stamp_quad: number[][] | null; updated_at: string | null;
 };
-export interface StampSuggestion { quad: number[][] | null; score: number | null; ok: boolean; template: boolean }
+export interface StampSuggestion { quad: number[][] | null; score: number | null; ok: boolean; sure?: boolean; template: boolean }
 export interface StampTemplate { exists: boolean; samples?: number; marked?: number; built_at?: string | null }
 // Reverse-Holo-Modell im Bild-Abgleich (matcher/tools/foil_eval.py --save)
 export interface FoilModel {

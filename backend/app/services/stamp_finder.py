@@ -110,7 +110,8 @@ async def status() -> dict:
 
 async def find(photo: Path, hint: Optional[list]) -> dict:
     """Stempel im entzerrten Kartenfoto (um `hint` herum, wenn gegeben).
-    → {"quad" (Kartenkoordinaten) oder None, "score", "ok", "template"}."""
+    → {"quad" (Kartenkoordinaten) oder None, "score", "ok", "sure", "template"};
+    "sure" wie beim Scan (Prize Pack angehakt) — „Alle markieren" speichert nur diese."""
     form = {"quad": json.dumps(hint)} if hint else {}
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         r = await client.post(_url("/stamp"), files=[_file("file", photo)], data=form)
@@ -119,4 +120,4 @@ async def find(photo: Path, hint: Optional[list]) -> dict:
     body = r.json()
     q = body.get("quad")
     return {"quad": q if isinstance(q, list) and len(q) == 4 else None, "score": body.get("score"),
-            "ok": bool(body.get("ok")), "template": bool(body.get("template"))}
+            "ok": bool(body.get("ok")), "sure": bool(body.get("sure")), "template": bool(body.get("template"))}

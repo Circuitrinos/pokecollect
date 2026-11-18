@@ -82,7 +82,7 @@ def test_stamp_suggest_for_own_cards(client, monkeypatch):
 def test_find_reads_the_matcher_answer(monkeypatch, tmp_path):
     photo = tmp_path / "card.jpg"
     photo.write_bytes(_jpeg((1, 2, 3)))
-    answers = iter([{"quad": BOX, "score": 0.91, "ok": True, "template": True},
+    answers = iter([{"quad": BOX, "score": 0.91, "ok": True, "sure": True, "template": True},
                     {"quad": None, "score": None, "ok": False, "template": False}])
     sent = []
 
@@ -91,9 +91,10 @@ def test_find_reads_the_matcher_answer(monkeypatch, tmp_path):
         return httpx.Response(200, json=next(answers))
 
     _mock_matcher(monkeypatch, handler)
-    assert asyncio.run(stamp_finder.find(photo, BOX)) == {"quad": BOX, "score": 0.91, "ok": True, "template": True}
+    assert asyncio.run(stamp_finder.find(photo, BOX)) == {"quad": BOX, "score": 0.91, "ok": True, "sure": True,
+                                                          "template": True}
     assert b'"quad"' in sent[0] and b"0.79" in sent[0]
-    assert asyncio.run(stamp_finder.find(photo, None)) == {"quad": None, "score": None, "ok": False,
+    assert asyncio.run(stamp_finder.find(photo, None)) == {"quad": None, "score": None, "ok": False, "sure": False,
                                                            "template": False}
     assert b'name="quad"' not in sent[1]
 
