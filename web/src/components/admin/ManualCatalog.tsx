@@ -5,10 +5,15 @@ import { ManualCard, ManualCardInput, PokemonSet, catalogApi, setsApi } from "@/
 import { useI18n } from "@/lib/i18n";
 import { INPUT } from "@/components/settings/SettingsUI";
 import PictureFinder from "@/components/PictureFinder";
+import SelectOrAdd from "@/components/SelectOrAdd";
 
 // Admin: Katalogkarten von Hand anlegen, die TCGdex noch nicht kennt (Brian 18.11.:
-// „MEP 113 Enamorus"). Die Karte bekommt TCGdex' künftige ID; danach gleich ein Bild
-// (Bild finden: einfügen/hochladen/zuschneiden) — daraus lernt auch der Scanner.
+// „MEP 113 Enamorus"). Die Karte bekommt TCGdex' künftige ID; danach öffnet gleich die
+// Bildauswahl (PictureFinder: Vorschläge, Websuche, einfügen/hochladen, zuschneiden) —
+// aus dem Bild lernt auch der Scanner. Später: „Bild wählen/ändern" je Karte.
+// Felder mit festen Werten sind Dropdowns (Brian 18.11.); Seltenheit, Regulation Mark
+// und Illustrator mit „＋ Neu …" — das Set nicht: ein geratenes Set brächte eine ID,
+// die TCGdex später nicht trifft (keine Übernahme durch den Katalog-Sync).
 type Category = ManualCardInput["category"];
 const EMPTY = { set: "", number: "", name: "", category: "Pokemon" as Category, dex: "", trainerType: "",
   energyType: "", rarity: "", mark: "", illustrator: "", normal: true, reverse: false, holo: false };
@@ -18,20 +23,27 @@ export default function ManualCatalog() {
   const [sets, setSets] = useState<PokemonSet[]>([]);
   const [items, setItems] = useState<ManualCard[]>([]);
   const [rarities, setRarities] = useState<string[]>([]);
+  const [marks, setMarks] = useState<string[]>([]);
+  const [illustrators, setIllustrators] = useState<string[]>([]);
   const [f, setF] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [picture, setPicture] = useState<{ cardId: string; name: string } | null>(null);
 
   const load = useCallback(() => {
-    catalogApi.manualList().then((r) => { setItems(r.data.items); setRarities(r.data.rarities); }).catch(() => {});
+    catalogApi.manualList().then((r) => {
+      setItems(r.data.items);
+      setRarities(r.data.rarities);
+      setMarks(r.data.marks);
+    }).catch(() => {});
+    catalogApi.illustrators().then((r) => setIllustrators(r.data)).catch(() => {});
   }, []);
   useEffect(() => {
     load();
     setsApi.list().then((r) => setSets(r.data.filter((s) => s.set_id))).catch(() => {});
   }, [load]);
 
-  const byCode = useMemo(() => new Map(sets.map((s) => [s.code.toUpperCase(), s])), [sets]);
-  const chosenSet = byCode.get(f.set.trim().toUpperCase()) ?? null;
+  const byCode = useMemo(() => new Map(sets.map((s) => [s.code, s])), [sets]);
+  const chosenSet = byCode.get(f.set) ?? null;
   const put = <K extends keyof typeof EMPTY>(k: K, v: (typeof EMPTY)[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const submit = async () => {
@@ -79,30 +91,19 @@ export default function ManualCatalog() {
       <p className="text-gray-400 text-xs">{t.manual_hint}</p>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <label className="col-span-1">
+        <label className="col-span-2">
           <span className={label}>{t.manual_set}</span>
-          <input list="manual-sets" value={f.set} onChange={(e) => put("set", e.target.value)} className={INPUT}
-            placeholder="MEP" data-testid="manual-set" />
-          <datalist id="manual-sets">
-            {sets.map((s) => <option key={s.code} value={s.code}>{s.name_en || s.name}</option>)}
-          </datalist>
+          <select value={f.set} onChange={(e) => put("set", e.target.value)} className={INPUT} data-testid="manual-set">
+            <option value="">{t.manual_choose_set}</option>
+            {sets.map((s) => <option key={s.code} value={s.code}>{s.code} — {s.name_en || s.name}</option>)}
+          </select>
         </label>
         <label className="col-span-1">
           <span className={label}>{t.manual_number}</span>
           <input value={f.number} onChange={(e) => put("number", e.target.value)} className={INPUT}
-            placeholder="113" data-testid="manual-number" />
+            placeholder={t.manual_eg("113")} data-testid="manual-number" />
         </label>
-        <label className="col-span-2">
-          <span className={label}>{t.manual_name}</span>
-          <input value={f.name} onChange={(e) => put("name", e.target.value)} className={INPUT}
-            placeholder="Enamorus" data-testid="manual-name" />
-        </label>
-        <p className="col-span-2 sm:col-span-4 -mt-2 text-[11px] text-gray-500">
-          {chosenSet ? `${chosenSet.name_en || chosenSet.name}${f.number.trim() ? ` · ${chosenSet.code} ${f.number.trim()}` : ""}`
-            : f.set.trim() ? t.manual_unknown_set : " "}
-        </p>
-
-        <label>
+        <label className="col-span-1">
           <span className={label}>{t.manual_category}</span>
           <select value={f.category} onChange={(e) => put("category", e.target.value as Category)} className={INPUT}>
             <option value="Pokemon">{t.manual_cat_pokemon}</option>
@@ -110,11 +111,21 @@ export default function ManualCatalog() {
             <option value="Energy">{t.manual_cat_energy}</option>
           </select>
         </label>
+        <p className="col-span-2 sm:col-span-4 -mt-2 text-[11px] text-gray-500">
+          {chosenSet && f.number.trim() ? `${chosenSet.code} ${f.number.trim()} · ${chosenSet.name_en || chosenSet.name}`
+            : " "}
+        </p>
+
+        <label className="col-span-2">
+          <span className={label}>{t.manual_name}</span>
+          <input value={f.name} onChange={(e) => put("name", e.target.value)} className={INPUT}
+            placeholder={t.manual_eg("Enamorus")} data-testid="manual-name" />
+        </label>
         {f.category === "Pokemon" && (
           <label>
             <span className={label}>{t.manual_dex}</span>
             <input type="number" min={1} max={2000} value={f.dex} onChange={(e) => put("dex", e.target.value)}
-              className={INPUT} placeholder="905" />
+              className={INPUT} placeholder={t.manual_eg("905")} />
           </label>
         )}
         {f.category === "Trainer" && (
@@ -139,21 +150,22 @@ export default function ManualCatalog() {
             </select>
           </label>
         )}
-        <label>
+        <div>
           <span className={label}>{t.manual_rarity}</span>
-          <input list="manual-rarities" value={f.rarity} onChange={(e) => put("rarity", e.target.value)} className={INPUT} />
-          <datalist id="manual-rarities">{rarities.map((r) => <option key={r} value={r} />)}</datalist>
-        </label>
-        <label>
+          <SelectOrAdd value={f.rarity} options={rarities} onChange={(v) => put("rarity", v)} className={INPUT}
+            addLabel={t.manual_new_rarity} testId="manual-rarity" />
+        </div>
+        <div>
           <span className={label}>{t.manual_mark}</span>
-          <input value={f.mark} maxLength={1} onChange={(e) => put("mark", e.target.value.toUpperCase())}
-            className={INPUT} placeholder="I" />
-        </label>
-        <label className="col-span-2">
+          <SelectOrAdd value={f.mark} options={marks} onChange={(v) => put("mark", v)} className={INPUT}
+            addLabel={t.manual_new_mark} maxLength={1} upper testId="manual-mark" />
+        </div>
+        <div className="col-span-1 sm:col-span-3">
           <span className={label}>{t.manual_illustrator}</span>
-          <input value={f.illustrator} onChange={(e) => put("illustrator", e.target.value)} className={INPUT} />
-        </label>
-        <div className="col-span-2">
+          <SelectOrAdd value={f.illustrator} options={illustrators} onChange={(v) => put("illustrator", v)}
+            className={INPUT} addLabel={t.manual_new_illustrator} testId="manual-illustrator" />
+        </div>
+        <div className="col-span-2 sm:col-span-4 -mt-1">
           <span className={label}>{t.manual_finishes}</span>
           <div className="flex flex-wrap gap-3 text-sm text-gray-200 py-2">
             {(["normal", "reverse", "holo"] as const).map((k) => (
@@ -192,7 +204,11 @@ export default function ManualCatalog() {
                   {it.linked > 0 && <div className="text-gray-500">{t.manual_linked(it.linked)}</div>}
                 </div>
                 <button type="button" onClick={() => setPicture({ cardId: it.card_id, name: it.name ?? it.card_id })}
-                  className="rounded bg-gray-700 px-2 py-1 text-xs text-white hover:bg-gray-600">🖼 {t.manual_picture}</button>
+                  data-testid="manual-picture"
+                  className={`rounded px-2 py-1 text-xs text-white ${it.image_url
+                    ? "bg-gray-700 hover:bg-gray-600" : "bg-pokemon-blue hover:opacity-90"}`}>
+                  🖼 {it.image_url ? t.manual_change_picture : t.manual_choose_picture}
+                </button>
                 <button type="button" onClick={() => void remove(it)} disabled={it.linked > 0}
                   title={it.linked > 0 ? t.manual_linked(it.linked) : undefined}
                   className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-red-800 disabled:opacity-40">

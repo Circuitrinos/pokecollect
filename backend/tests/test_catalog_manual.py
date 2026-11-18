@@ -16,7 +16,7 @@ from app.models.pokemon_set import PokemonSet
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.schemas.scan import ScanRawRead
 from app.services import catalog as catalog_svc
-from app.services import catalog_manual, tcgdex
+from app.services import catalog_manual, picture_finder, tcgdex
 from app.services.scan.resolver import resolve_one
 
 API = "/api/v1"
@@ -97,6 +97,11 @@ def test_list_and_remove(client, db):
     mine = [i for i in items if i["set_id"] == SET_ID]
     assert [(i["card_id"], i["name"], i["set_name"], i["linked"]) for i in mine] == \
         [("tmep-113", "Enamorus", "Test Black Star Promos", 0)]
+    # Auswahllisten fürs Formular: was der Katalog kennt, samt der eben angelegten Werte
+    body = client.get(f"{API}/catalog/manual").json()
+    assert "None" in body["rarities"] and "I" in body["marks"]
+    assert body["rarities"] == sorted(body["rarities"], key=str.casefold)
+    assert all(len(m) == 1 for m in body["marks"])
 
     db.add(PokemonCard(kartenname="TestManual Enamorus", besessen=True, tcgdex_card_id="tmep-113"))
     db.commit()
@@ -161,3 +166,36 @@ def test_sync_takes_over_once_tcgdex_has_the_card(client, db, monkeypatch):
     owned = db.query(PokemonCard).filter(PokemonCard.kartenname == "TestManual Owned").one()
     assert owned.bild_karte_url == image + "/high.webp"       # statt des Hand-Bilds
     assert db.get(TcgdexCatalog, "tmep-001") is not None       # Karten, die TCGdex nicht liefert, bleiben
+
+
+def test_picture_tool_works_for_a_hand_added_card(client, db, monkeypatch, png_bytes):
+    """Die Bildauswahl (Bild finden) für eine Karte, die TCGdex nicht kennt: Suchbegriff
+    und Vorschläge, dann ein hochgeladenes Bild — das sieht die Liste, und der Scanner
+    wird angestoßen, es zu lernen."""
+    client.post(f"{API}/catalog/manual", json=_card())
+
+    async def none(row):
+        return []
+    monkeypatch.setattr(picture_finder, "_tcgdex_langs", none)
+    async def ptcg(row):
+        return [{"url": "https://images.pokemontcg.io/swsh10/109_hires.png", "source": "pokemontcg",
+                 "label": "Astral Radiance · 109"}]
+    monkeypatch.setattr(picture_finder, "_pokemontcg", ptcg)
+
+    r = client.get(f"{API}/catalog/tmep-113/pictures")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["current"] is None
+    assert body["query"] == "Enamorus Test Black Star Promos 113 pokemon card"
+    assert {c["source"] for c in body["candidates"]} == {"pokemontcg", "pokemon.com"}
+
+    r = client.post(f"{API}/catalog/tmep-113/picture/upload", files={"file": ("p.png", png_bytes, "image/png")})
+    assert r.status_code == 200 and r.json()["image_source"] == "manual"
+    item = next(i for i in client.get(f"{API}/catalog/manual").json()["items"] if i["card_id"] == "tmep-113")
+    assert item["image_url"]
+    assert len(db.matcher_calls) == 2          # angelegt + Bild: der Scanner lädt neu
+    db.expire_all()
+    from app.services.card_images import safe_media_path
+    path = safe_media_path(db.get(TcgdexCatalog, "tmep-113").image_pfad)
+    assert path is not None and path.is_file()
+    path.unlink()

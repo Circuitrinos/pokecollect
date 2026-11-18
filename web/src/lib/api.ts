@@ -1134,7 +1134,7 @@ export const catalogApi = {
   regulation: () => api.get<{ min_mark: string; pending_owned: number; pending_catalog: number }>("/catalog/regulation"),
   loadRegulation: () => api.post<{ detail: string }>("/catalog/regulation"),
   illustrators: () => api.get<string[]>("/catalog/illustrators"),
-  manualList: () => api.get<{ items: ManualCard[]; rarities: string[] }>("/catalog/manual"),
+  manualList: () => api.get<{ items: ManualCard[]; rarities: string[]; marks: string[] }>("/catalog/manual"),
   manualAdd: (data: ManualCardInput) => api.post<{ card_id: string }>("/catalog/manual", data),
   manualRemove: (cardId: string) => api.delete(`/catalog/manual/${encodeURIComponent(cardId)}`),
   addWishlist: (cardId: string, opts: CatalogAddOpts = {}) =>

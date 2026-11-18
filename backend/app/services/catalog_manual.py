@@ -147,9 +147,17 @@ def remove_card(db: Session, card_id: str) -> None:
 
 
 def rarities(db: Session) -> list[str]:
-    """Seltenheiten, wie TCGdex sie schreibt — als Auswahlhilfe im Formular."""
-    return [r for r in db.scalars(select(TcgdexCatalog.rarity).where(TcgdexCatalog.rarity.isnot(None))
-                                  .group_by(TcgdexCatalog.rarity).order_by(func.count().desc()).limit(40)).all() if r]
+    """Seltenheiten, wie TCGdex sie schreibt — die Auswahlliste im Formular
+    (eine von Hand neu angelegte steht danach auch drin)."""
+    rows = db.scalars(select(TcgdexCatalog.rarity).where(TcgdexCatalog.rarity.isnot(None)).distinct()).all()
+    return sorted({r.strip() for r in rows if r and r.strip()}, key=str.casefold)
+
+
+def marks(db: Session) -> list[str]:
+    """Regulation Marks im Katalog (A … J …) — die Auswahlliste im Formular."""
+    rows = db.scalars(select(TcgdexCatalog.regulation_mark)
+                      .where(TcgdexCatalog.regulation_mark.isnot(None)).distinct()).all()
+    return sorted({m for r in rows if (m := regulation.norm_mark(r))})
 
 
 async def tell_matcher() -> None:

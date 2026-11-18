@@ -220,6 +220,7 @@ def manual_cards(request: Request, db: Session = Depends(get_db)):
             "linked": catalog_manual.linked_cards(db, r.card_id),
         } for r in rows],
         "rarities": catalog_manual.rarities(db),
+        "marks": catalog_manual.marks(db),
     }
 
 
