@@ -221,6 +221,7 @@ def _run_light_migrations():
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS effect_key TEXT",
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS effect_checked BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS pokemon_com_checked TIMESTAMP",
+        "ALTER TABLE tcgdex_catalog ADD COLUMN IF NOT EXISTS added_by_hand BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS name_mark TEXT",
         # Persönlicher Einstand: Kaufpreis + Kaufdatum (#26)
         "ALTER TABLE pokemon_cards ADD COLUMN IF NOT EXISTS kaufpreis_eur NUMERIC(8,2)",

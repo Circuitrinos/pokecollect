@@ -149,6 +149,13 @@ def _propagate(card_id: str, url: str) -> int:
         return res.rowcount or 0
 
 
+def propagate_replacement(card_id: str, url: str) -> int:
+    """Eigene Karten dieser ID, die das lokal gespeicherte Katalogbild zeigen
+    („katalog:") oder keins haben, bekommen `url` (TCGdex übernimmt eine von Hand
+    angelegte Karte samt Bild)."""
+    return _propagate(card_id, url)
+
+
 def use_url(db: Session, row: TcgdexCatalog, url: str) -> int:
     """Bild von einem erlaubten Host übernehmen (vorher per Spiegel geprüft)."""
     row.image_url = url

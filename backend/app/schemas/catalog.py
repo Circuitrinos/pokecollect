@@ -1,5 +1,5 @@
-from typing import Optional
-from pydantic import BaseModel, field_validator
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas._validators import reject_control_chars
 
@@ -77,4 +77,24 @@ class CatalogAddRequest(BaseModel):
     prioritaet: Optional[str] = None
 
     # #117: Steuerzeichen/Surrogate endeten sonst als 500 aus der Datenbank
+    _v_ctrl = field_validator("*", mode="before")(reject_control_chars)
+
+
+class ManualCatalogCard(BaseModel):
+    """Katalogkarte von Hand anlegen (Admin), solange TCGdex sie nicht kennt."""
+    set_id: str = Field(..., min_length=1, max_length=40)
+    number: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1, max_length=120)          # englisch
+    name_de: Optional[str] = Field(None, max_length=120)
+    category: Literal["Pokemon", "Trainer", "Energy"]
+    rarity: Optional[str] = Field(None, max_length=60)
+    dex_id: Optional[int] = Field(None, ge=1, le=2000)
+    regulation_mark: Optional[str] = Field(None, max_length=1)
+    illustrator: Optional[str] = Field(None, max_length=120)
+    trainer_type: Optional[Literal["Item", "Supporter", "Tool", "Stadium"]] = None
+    energy_type: Optional[Literal["Basic", "Special"]] = None
+    normal: bool = True
+    reverse: bool = False
+    holo: bool = False
+
     _v_ctrl = field_validator("*", mode="before")(reject_control_chars)

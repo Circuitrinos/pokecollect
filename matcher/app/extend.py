@@ -70,7 +70,7 @@ class Extender:
             failed = self._failed()
             now = time.time()
             todo = [c for c in catalog.values()
-                    if c.region in self.regions and c.image_url and c.image_url.startswith("https://")
+                    if c.region in self.regions and c.picture_url
                     and c.card_id not in known
                     and now - failed.get(c.card_id, 0) > RETRY_FAILED_AFTER_S]
             self.status.update(running=True, todo=len(todo), done=0, failed=0)
@@ -111,7 +111,7 @@ class Extender:
     @staticmethod
     def _fetch_features(http: httpx.Client, card: CatalogCard) -> tuple[features.Features, int, int] | None:
         try:
-            r = http.get(card.image_url)
+            r = http.get(card.picture_url)
             if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
                 return None
             img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)

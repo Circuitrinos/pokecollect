@@ -457,6 +457,7 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     # Auswahl im Picker): direkt laden; fehlt sie in der Scan-Sprache, die
     # englische Fassung (dieselbe TCGdex-ID).
     via_card_id = False
+    catalog_row: Optional[TcgdexCatalog] = None   # Kartendaten kamen aus dem lokalen Katalog
     if read.tcgdex_card_id:
         tc = await _get_card(read.tcgdex_card_id, tcg_lang)
         if tc is None and tcg_lang != "en" and not _down(read.tcgdex_card_id, tcg_lang):
@@ -464,7 +465,8 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
         if tc is None:
             # Die Karte steht fest (Bild-Abgleich), nur TCGdex liefert sie gerade nicht —
             # Brian 17.11.: sonst ging sie ohne Bild, Set, Nummer und Varianten in die Prüfung
-            tc = _catalog_card(db, db.get(TcgdexCatalog, read.tcgdex_card_id), tcg_lang)
+            catalog_row = db.get(TcgdexCatalog, read.tcgdex_card_id)
+            tc = _catalog_card(db, catalog_row, tcg_lang)
             if tc is not None:
                 log.info("TCGdex ohne %s — Kartendaten aus dem lokalen Katalog", read.tcgdex_card_id)
         if tc is not None:
@@ -477,7 +479,8 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
     if tc is None and set_id and local_id:
         tc = await tcgdex.fetch_card_by_set_multilang(set_id, local_id, tcg_lang)
         if tc is None:
-            tc = _catalog_card(db, _catalog_by_number(db, set_id, local_id), tcg_lang)
+            catalog_row = _catalog_by_number(db, set_id, local_id)
+            tc = _catalog_card(db, catalog_row, tcg_lang)
             if tc is not None:
                 log.info("TCGdex ohne %s/%s — Kartendaten aus dem lokalen Katalog", set_id, local_id)
         if tc is not None:
@@ -609,7 +612,10 @@ async def resolve_one(db: Session, read: ScanRawRead, default_lang: str = "DE") 
             local_id=tc.localId,
             rarity=tc.rarity,
             dex_id=dex_id,
-            image_url=tcgdex.image_url(tc.image),
+            # von Hand angelegte Karte mit Bild von einem erlaubten Host (Bild finden)
+            image_url=tcgdex.image_url(tc.image) or (
+                catalog_row.image_url if catalog_row is not None
+                and tcgdex.is_allowed_image_url(catalog_row.image_url) else None),
             variants_normal=tc.variants.normal if tc.variants else None,
             variants_reverse=tc.variants.reverse if tc.variants else None,
             variants_holo=tc.variants.holo if tc.variants else None,

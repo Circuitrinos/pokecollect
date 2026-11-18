@@ -7,6 +7,7 @@ from __future__ import annotations
 import collections
 import difflib
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 import psycopg2
 
 log = logging.getLogger(__name__)
+API_URL = os.getenv("API_URL", "http://api:8000").rstrip("/")
 
 
 @dataclass
@@ -28,11 +30,24 @@ class CatalogCard:
     name_en: str | None
     image_url: str | None
     set_official: int | None
+    image_pfad: str | None = None
+
+    @property
+    def picture_url(self) -> str | None:
+        """The catalog picture to learn from: TCGdex' (https) — or, for a card TCGdex
+        has no picture for (added by hand in the admin page, or "find picture"), the
+        copy the api stored, fetched from the api like learned scan photos."""
+        if (self.image_url or "").startswith("https://"):
+            return self.image_url
+        rel = (self.image_pfad or "").lstrip("/")
+        if rel and ".." not in rel.split("/"):
+            return f"{API_URL}/{rel}"
+        return None
 
 
 _CATALOG_SQL = """
 SELECT c.card_id, c.region, c.set_id, s.name_en, c.set_name, c.local_id,
-       c.name, c.name_en, c.image_url, s.card_count_official
+       c.name, c.name_en, c.image_url, s.card_count_official, c.image_pfad
 FROM tcgdex_catalog c
 LEFT JOIN pokemon_sets s ON s.set_id = c.set_id
 """

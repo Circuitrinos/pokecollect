@@ -480,7 +480,7 @@ class Shortlist:
             return
         bf = self.status["backfill"]
         todo = [catalog[c] for c in known_ids
-                if c in catalog and not self.index.has(c) and (catalog[c].image_url or "").startswith("https://")]
+                if c in catalog and not self.index.has(c) and catalog[c].picture_url]
         bf.update(running=True, todo=len(todo), done=0, failed=0)
         try:
             if todo:
@@ -489,7 +489,7 @@ class Shortlist:
                     ThreadPoolExecutor(4) as pool:
                 for s in range(0, len(todo), BACKFILL_CHUNK):
                     batch = todo[s:s + BACKFILL_CHUNK]
-                    imgs = list(pool.map(lambda c: _download(http, c.image_url), batch))
+                    imgs = list(pool.map(lambda c: _download(http, c.picture_url), batch))
                     ok = [(c.card_id, i) for c, i in zip(batch, imgs) if i is not None]
                     bf["failed"] += len(batch) - len(ok)
                     if ok:

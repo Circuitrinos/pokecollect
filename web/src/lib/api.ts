@@ -1094,6 +1094,19 @@ export type PictureCandidate = { url: string; spiegel: string | null; source: st
 export type PictureCandidates = { card_id: string; current: string | null; query: string; candidates: PictureCandidate[] };
 export type PictureResult = { image_url: string | null; image_source: string | null; cards_updated: number };
 
+// Von Hand angelegte Katalogkarten (Admin) — Karten, die TCGdex noch nicht kennt
+export type ManualCardInput = {
+  set_id: string; number: string; name: string; name_de?: string | null;
+  category: "Pokemon" | "Trainer" | "Energy"; rarity?: string | null; dex_id?: number | null;
+  regulation_mark?: string | null; illustrator?: string | null;
+  trainer_type?: "Item" | "Supporter" | "Tool" | "Stadium" | null; energy_type?: "Basic" | "Special" | null;
+  normal: boolean; reverse: boolean; holo: boolean;
+};
+export type ManualCard = {
+  card_id: string; name: string | null; set_id: string | null; set_code: string | null; set_name: string | null;
+  local_id: string | null; category: string | null; rarity: string | null; image_url: string | null; linked: number;
+};
+
 export const catalogApi = {
   list: (params: Record<string, unknown> = {}) => api.get<CatalogListResponse>("/catalog", { params }),
   // Bild finden (Admin): Vorschläge, Bildadresse übernehmen, eingefügtes Bild hochladen
@@ -1121,6 +1134,9 @@ export const catalogApi = {
   regulation: () => api.get<{ min_mark: string; pending_owned: number; pending_catalog: number }>("/catalog/regulation"),
   loadRegulation: () => api.post<{ detail: string }>("/catalog/regulation"),
   illustrators: () => api.get<string[]>("/catalog/illustrators"),
+  manualList: () => api.get<{ items: ManualCard[]; rarities: string[] }>("/catalog/manual"),
+  manualAdd: (data: ManualCardInput) => api.post<{ card_id: string }>("/catalog/manual", data),
+  manualRemove: (cardId: string) => api.delete(`/catalog/manual/${encodeURIComponent(cardId)}`),
   addWishlist: (cardId: string, opts: CatalogAddOpts = {}) =>
     api.post<{ card_id: number }>(`/catalog/${encodeURIComponent(cardId)}/wishlist`, {
       ...catalogAddBody(opts),

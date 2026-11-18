@@ -93,4 +93,7 @@ class TcgdexCatalog(Base):
     variants_holo = Column(Boolean, nullable=True)
     variants_firstedition = Column(Boolean, nullable=True)
     enriched = Column(Boolean, default=False, index=True)  # Volldetails (Illustrator etc.) geladen?
+    # Von Hand angelegt (Admin), weil TCGdex die Karte noch nicht kennt (Brian 18.11.:
+    # MEP 113 Enamorus). Bekommt TCGdex sie, übernimmt der Katalog-Sync und räumt das ab.
+    added_by_hand = Column(Boolean, nullable=False, default=False, server_default="false")
     updated = Column(Text, nullable=True)               # TCGdex-Zeitstempel

@@ -247,6 +247,44 @@ def health() -> dict:
             "ocr": numocr.available(), "catalog": len(catalog)}
 
 
+@app.post("/catalog/refresh")
+def catalog_refresh() -> dict:
+    """The api added a catalog card or a picture (admin): reload the catalog and take
+    new cards in now, not at the next daily pass. In the background; a call while one
+    runs queues one more round, so a picture uploaded right after the card isn't lost."""
+    if state["status"] != "ready":
+        return {"ok": False, "status": state["status"]}
+    with _refresh_guard:
+        if _refresh["running"]:
+            _refresh["again"] = True
+            return {"ok": True, "queued": True}
+        _refresh["running"] = True
+    threading.Thread(target=_refresh_catalog, name="catalog-refresh", daemon=True).start()
+    return {"ok": True}
+
+
+_refresh = {"running": False, "again": False}
+_refresh_guard = threading.Lock()
+
+
+def _refresh_catalog() -> None:
+    global catalog
+    _lower_priority()
+    while True:
+        try:
+            catalog = load_catalog(DATABASE_URL)
+            if EXTEND:
+                extender.run_once(catalog)
+            shortlist.backfill(catalog, store.known_card_ids())
+        except Exception:
+            log.exception("Catalog refresh failed")
+        with _refresh_guard:
+            if not _refresh["again"]:
+                _refresh["running"] = False
+                return
+            _refresh["again"] = False
+
+
 @app.post("/learn")
 def learn_now() -> dict:
     """The api saved a scan photo: index it soon (debounced)."""

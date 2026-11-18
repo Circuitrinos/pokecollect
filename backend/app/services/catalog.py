@@ -142,6 +142,7 @@ async def sync_catalog(db: Session) -> dict:
     }
 
     created = updated = 0
+    taken_over: list[str] = []   # von Hand angelegt, jetzt bei TCGdex
     if excluded:
         # Früher evtl. indizierte Pocket-Karten entfernen (Self-Healing).
         db.query(TcgdexCatalog).filter(
@@ -175,6 +176,14 @@ async def sync_catalog(db: Session) -> dict:
                 created += 1
             else:
                 updated += 1
+            if row.added_by_hand:
+                # TCGdex kennt die Karte jetzt: Volldaten über die übliche Anreicherung
+                # nachladen; ein von Hand gespeichertes Bild weicht dem von TCGdex
+                row.added_by_hand = False
+                row.enriched = row.regulation_checked = row.effect_checked = False
+                if image and row.image_source == "manual":
+                    row.image_pfad = None
+                taken_over.append(cid)
             row.region = "west"      # EN+DE = dieselbe Karte
             row.set_id = sid
             row.set_code = code
@@ -190,6 +199,15 @@ async def sync_catalog(db: Session) -> dict:
                 # #43: image_pfad (lokaler Bild-Cache) bewusst unangetastet — siehe
                 # Kommentar bei _apply_full() weiter oben.
         db.commit()  # je Set committen (kleinere Transaktionen)
+
+    if taken_over:
+        from app.services import picture_finder
+        for cid in taken_over:
+            row = existing[cid]
+            if row.image_url:   # eigene Karten mit dem Hand-Bild („katalog:") zeigen jetzt TCGdex' Bild
+                picture_finder.propagate_replacement(cid, row.image_url)
+        log.info("Katalog-Sync: TCGdex hat jetzt %d von Hand angelegte Karte(n): %s",
+                 len(taken_over), ", ".join(taken_over))
 
     # Nicht-westliche Regionen (JP …) additiv indizieren — eigene Karten.
     from app.services.set_sync import EXTRA_REGIONS

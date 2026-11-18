@@ -17,8 +17,8 @@ from app.domain.pokedex import GEN_RANGES
 from app.domain.search import parse_kurzcode
 from app.models.card import PokemonCard
 from app.models.tcgdex_catalog import TcgdexCatalog
-from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse
-from app.services import catalog as catalog_svc, catalog_images, picture_finder, pokemon_com, regulation, sorting, tcgdex
+from app.schemas.catalog import CatalogAddRequest, CatalogDetail, CatalogItem, CatalogListResponse, ManualCatalogCard
+from app.services import catalog as catalog_svc, catalog_images, catalog_manual, picture_finder, pokemon_com, regulation, sorting, tcgdex
 from app.services import bild_spiegel
 from app.services.set_names import english_set_names
 from app.services.set_sync import sync_sets
@@ -205,6 +205,44 @@ async def trigger_regulation_backfill(background_tasks: BackgroundTasks):
 # die manuellen POST /catalog/enrich(-all)-Endpoints wurden entfernt (Issue #12).
 
 
+# ── Von Hand angelegte Karten (Admin): TCGdex kennt sie noch nicht ─────────────
+
+@router.get("/manual", dependencies=[Depends(require_admin)])
+def manual_cards(request: Request, db: Session = Depends(get_db)):
+    rows = catalog_manual.list_cards(db)
+    set_en = english_set_names(db, list({r.set_id for r in rows if r.set_id}))
+    return {
+        "items": [{
+            "card_id": r.card_id, "name": r.name_en or r.name, "set_id": r.set_id, "set_code": r.set_code,
+            "set_name": set_en.get(r.set_id) or r.set_name, "local_id": r.local_id, "category": r.category,
+            "rarity": r.rarity, "image_url": catalog_images.resolve_catalog_image_url(
+                r.image_pfad, r.image_url, str(request.base_url)),
+            "linked": catalog_manual.linked_cards(db, r.card_id),
+        } for r in rows],
+        "rarities": catalog_manual.rarities(db),
+    }
+
+
+@router.post("/manual", dependencies=[Depends(require_admin)], status_code=201)
+async def add_manual_card(req: ManualCatalogCard, db: Session = Depends(get_db)):
+    try:
+        row = catalog_manual.add_card(db, **req.model_dump())
+    except catalog_manual.ManualCardError as exc:
+        raise HTTPException(status_code=409 if exc.existing else 422,
+                            detail={"message": str(exc), "card_id": exc.existing})
+    await catalog_manual.tell_matcher()
+    return {"card_id": row.card_id}
+
+
+@router.delete("/manual/{card_id}", dependencies=[Depends(require_admin)], status_code=204)
+def remove_manual_card(card_id: str, db: Session = Depends(get_db)):
+    try:
+        catalog_manual.remove_card(db, card_id)
+    except catalog_manual.ManualCardError as exc:
+        raise HTTPException(status_code=409 if exc.existing else 404,
+                            detail={"message": str(exc), "card_id": exc.existing})
+
+
 @router.get("/illustrators")
 def list_illustrators(db: Session = Depends(get_db)):
     """Alle bekannten Illustratoren (für das Filter-Dropdown)."""
@@ -342,6 +380,7 @@ async def use_picture(card_id: str, req: PictureRequest, request: Request, db: S
     if await bild_spiegel.datei_fuer(req.url) is None:
         raise HTTPException(status_code=404, detail="Bild nicht verfügbar")
     updated = picture_finder.use_url(db, row, req.url)
+    await catalog_manual.tell_matcher()   # z. B. von Hand angelegt: der Scanner lernt das Bild
     return _picture_result(db, row, request, updated)
 
 
@@ -356,6 +395,7 @@ async def upload_picture(card_id: str, request: Request, file: UploadFile = File
         updated = picture_finder.store_upload(db, row, data)
     except ValueError:
         raise HTTPException(status_code=400, detail="Bilddatei konnte nicht verarbeitet werden")
+    await catalog_manual.tell_matcher()   # Karte ohne TCGdex-Bild: der Scanner lernt das hochgeladene
     return _picture_result(db, row, request, updated)
 
 
