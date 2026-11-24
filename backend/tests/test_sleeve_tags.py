@@ -176,13 +176,33 @@ def test_scan_link_and_move(client, clean):
     assert client.get(f"{API}/tags/by-card/{a}").json() is None
 
 
-def test_deleting_the_card_frees_the_tag(client, clean):
+def test_selling_a_card_frees_its_tag(client, clean):
+    """Brian 23.11.: verkauft/getauscht und aus der Hülle → Aufkleber wieder frei."""
     client.post(f"{API}/tags/sheets", json={"count": 1})
-    a = _card(client, "TestTag Weg")
-    code = st.code_for(5)
-    client.put(f"{API}/tags/{code}", json={"card_id": a})
+    a, b, c = _card(client, "TestTag Weg"), _card(client, "TestTag Bulk"), _card(client, "TestTag Wunsch")
+    ca, cb, cc = st.code_for(5), st.code_for(6), st.code_for(7)
+    for code, card in ((ca, a), (cb, b), (cc, c)):
+        assert client.put(f"{API}/tags/{code}", json={"card_id": card}).status_code == 200
+    # gelöscht — einzeln und per Auswahl
     assert client.delete(f"{API}/cards/{a}").status_code == 204
-    assert client.get(f"{API}/tags/{code}").json()["card_id"] is None
+    assert client.post(f"{API}/cards/meta/bulk", json={"action": "delete", "ids": [b]}).status_code == 200
+    # behalten, aber nicht mehr besessen (zurück auf die Wunschliste)
+    r = client.put(f"{API}/cards/{c}", json={"besessen": False, "wunschliste": True})
+    assert r.status_code == 200
+    for code in (ca, cb, cc):
+        assert client.get(f"{API}/tags/{code}").json()["card_id"] is None
+    assert client.get(f"{API}/tags/by-card/{c}").json() is None
+    # und lässt sich gleich für die nächste Karte verwenden
+    d = _card(client, "TestTag Neu")
+    assert client.put(f"{API}/tags/{ca}", json={"card_id": d}).json()["card_id"] == d
+
+
+def test_editing_an_owned_card_keeps_its_tag(client, clean):
+    client.post(f"{API}/tags/sheets", json={"count": 1})
+    a = _card(client, "TestTag Bleibt")
+    client.put(f"{API}/tags/{st.code_for(3)}", json={"card_id": a})
+    assert client.put(f"{API}/cards/{a}", json={"zustand": "Near Mint", "besessen": True}).status_code == 200
+    assert client.get(f"{API}/tags/by-card/{a}").json()["code"] == st.code_for(3)
 
 
 def test_only_owned_cards_and_real_codes(client, clean):

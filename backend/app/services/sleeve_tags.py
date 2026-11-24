@@ -269,6 +269,13 @@ def link(db: Session, tag: SleeveTag, card: PokemonCard, replace: bool = False) 
     return tag
 
 
+def release_card(db: Session, card_id: int) -> None:
+    """Aufkleber einer Karte freigeben, die nicht mehr besessen ist (ohne Commit).
+    Gelöschte Karten gibt die Datenbank selbst frei (ON DELETE SET NULL)."""
+    for tag in db.scalars(select(SleeveTag).where(SleeveTag.card_id == card_id)):
+        tag.card_id, tag.verknuepft_am = None, None
+
+
 def unlink(db: Session, tag: SleeveTag) -> None:
     tag.card_id, tag.verknuepft_am = None, None
     db.commit()

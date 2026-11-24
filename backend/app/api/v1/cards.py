@@ -30,7 +30,7 @@ from app.models.card import PokemonCard, PreisHistorie
 from app.models.collection import Collection, collection_cards
 from app.models.tcgdex_catalog import TcgdexCatalog
 from app.services.catalog_lookup import catalog_row_for
-from app.services import card_bulk, image_fallback, pokemon_com, regulation, scan_export, sorting
+from app.services import card_bulk, image_fallback, pokemon_com, regulation, scan_export, sleeve_tags, sorting
 from app.services.tcgdex import is_allowed_image_url
 from app.services.scan import local_match
 from app.services.pricing import variant_usd
@@ -376,6 +376,7 @@ def create_card(data: CardCreate, background_tasks: BackgroundTasks, db: Session
 def update_card(card_id: int, data: CardUpdate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     card = _card_or_404(card_id, db)
     updated = data.model_dump(exclude_unset=True)
+    was_owned = bool(card.besessen)
     mark_changed = "regulation_mark" in updated and updated["regulation_mark"] != card.regulation_mark
     # Andere Karte (Set/Nummer wirklich geändert) → Zeichen neu aus TCGdex. Die
     # Detailseite schickt das ganze Formular, also Werte vergleichen.
@@ -402,6 +403,10 @@ def update_card(card_id: int, data: CardUpdate, background_tasks: BackgroundTask
             card.regulation_mark = None   # andere Karte → Zeichen kommt neu aus TCGdex
         background_tasks.add_task(_trigger_image_fetch, card.id)
     regulation.apply_to_card(db, card)
+    # Verkauft/getauscht, aber als Wunsch behalten: der Hüllen-Aufkleber wird frei
+    # (Brian 23.11.) — wie beim Löschen, wo die Datenbank ihn selbst freigibt.
+    if was_owned and not card.besessen:
+        sleeve_tags.release_card(db, card.id)
     db.commit()
     db.refresh(card)
     return _card_response(db, card)
