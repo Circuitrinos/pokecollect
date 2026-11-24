@@ -1277,3 +1277,63 @@ export type ScanDatasetCounts = { exportable: number; not_exportable: number; no
 export type ScanDatasetSummary = ScanDatasetCounts & {
   users: (ScanDatasetCounts & { username: string; display_name: string | null })[];
 };
+
+// ── Hüllen-Aufkleber (backend/app/api/v1/tags.py) ──────────────────────────
+// Blanko gedruckte QR-Aufkleber für die Kartenhüllen; der Link im Code führt auf
+// /T/<Code> (app/T/[code]/page.tsx), dort wird der Aufkleber einer Karte zugeordnet.
+export type TagSettings = {
+  base_url: string;
+  offset_x_mm: number;
+  offset_y_mm: number;
+  sheet_name: string;
+  per_sheet: number;
+};
+export type TagSheet = {
+  id: number;
+  nr: number;
+  first: number;
+  last: number;
+  count: number;
+  linked: number;
+  start_slot: number;
+  created_at: string | null;
+};
+export type SleeveTag = {
+  serial: number;
+  code: string;
+  sheet_nr: number | null;
+  slot: number;
+  card_id: number | null;
+  linked_at: string | null;
+  card: Card | null;
+};
+// Fehlergründe im detail.reason der API
+export type TagErrorReason = "format" | "unknown" | "card" | "not_owned" | "card_tagged" | "tag_linked"
+  | "base_url" | "linked" | "start_slot";
+
+export function tagError(e: unknown): { reason: TagErrorReason | null; other: unknown } {
+  const d = (e as { response?: { data?: { detail?: { reason?: TagErrorReason; other?: unknown } } } })
+    ?.response?.data?.detail;
+  return { reason: d?.reason ?? null, other: d?.other };
+}
+
+export const tagsApi = {
+  settings: () => api.get<TagSettings>("/tags/settings"),
+  saveSettings: (s: Pick<TagSettings, "base_url" | "offset_x_mm" | "offset_y_mm">) =>
+    api.put<TagSettings>("/tags/settings", s),
+  sheets: () => api.get<TagSheet[]>("/tags/sheets"),
+  newSheets: (count: number, startSlot: number) =>
+    api.post<TagSheet[]>("/tags/sheets", { count, start_slot: startSlot }),
+  deleteSheet: (id: number) => api.delete(`/tags/sheets/${id}`),
+  sheetsPdf: (ids: number[]) =>
+    api.get<Blob>("/tags/sheets/pdf", { responseType: "blob", params: { ids: ids.join(","), lang: getUiLang() } }),
+  calibrationPdf: () =>
+    api.get<Blob>("/tags/calibration.pdf", { responseType: "blob", params: { lang: getUiLang() } }),
+  get: (code: string) => api.get<SleeveTag>(`/tags/${encodeURIComponent(code)}`),
+  link: (code: string, cardId: number, replace = false) =>
+    api.put<SleeveTag>(`/tags/${encodeURIComponent(code)}`, { card_id: cardId, replace }),
+  unlink: (code: string) => api.delete(`/tags/${encodeURIComponent(code)}/card`),
+  byCard: (cardId: number) => api.get<SleeveTag | null>(`/tags/by-card/${cardId}`),
+  candidates: (search: string) =>
+    api.get<Card[]>("/tags/candidates", { params: { search: search.trim() || undefined, limit: 30 } }),
+};

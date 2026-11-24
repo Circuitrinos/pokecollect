@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Users,
   Layers,
+  QrCode,
 } from "lucide-react";
 
 // Stabile Schlüssel für localStorage — bewusst getrennt vom Pfad, damit ein
@@ -31,6 +32,7 @@ export type NavKey =
   | "stats"
   | "friends"
   | "sealed"
+  | "tags"
   | "settings"
   | "admin";
 
@@ -48,6 +50,7 @@ export type NavLabelKey =
   | "nav_statistics"
   | "nav_friends"
   | "nav_sealed"
+  | "nav_tags"
   | "nav_settings"
   | "nav_admin";
 
@@ -80,6 +83,8 @@ export const NAV_TARGETS: NavTarget[] = [
   // Sealed-Seite baut Issue #35 parallel — Link jetzt schon aufnehmen, auch wenn
   // die Route bis zum Merge von #35 noch 404t.
   { key: "sealed", href: "/sealed", Icon: Package, labelKey: "nav_sealed" },
+  // Hüllen-Aufkleber: Bögen drucken und Drucker kalibrieren (app/tags/page.tsx)
+  { key: "tags", href: "/tags", Icon: QrCode, labelKey: "nav_tags" },
   { key: "settings", href: "/settings", Icon: Settings, labelKey: "nav_settings" },
   { key: "admin", href: "/admin", Icon: ShieldCheck, labelKey: "nav_admin", adminOnly: true },
 ];

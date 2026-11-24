@@ -27,8 +27,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     }
     const token = localStorage.getItem("token");
     if (!token) {
-      // ready bleibt false → nichts rendern, bis /login geladen ist
-      router.replace("/login");
+      // ready bleibt false → nichts rendern, bis /login geladen ist. Das Ziel
+      // geht mit (next=): ein gescannter Hüllen-Aufkleber (/T/…) soll nach dem
+      // Anmelden dort weitermachen statt auf der Startseite.
+      const target = pathname + window.location.search;
+      router.replace(target && target !== "/" ? `/login?next=${encodeURIComponent(target)}` : "/login");
       return;
     }
     setReady(true);

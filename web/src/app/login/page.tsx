@@ -8,6 +8,14 @@ import { APP_VERSION } from "@/lib/version";
 
 const INPUT = "w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500";
 
+// Ziel nach dem Anmelden (AuthGuard hängt es als ?next= an) — nur eigene Pfade,
+// nie „//host" (offene Weiterleitung).
+function nextPath(): string {
+  if (typeof window === "undefined") return "/";
+  const n = new URLSearchParams(window.location.search).get("next") || "/";
+  return n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/";
+}
+
 export default function LoginPage() {
   const { t, lang, setLang } = useI18n();
   const [username, setUsername] = useState("admin");
@@ -44,7 +52,7 @@ export default function LoginPage() {
       localStorage.setItem("token", r.data.access_token);
       await clearClientCaches();
       // Harte Navigation statt Router: alle Seiten-States frisch laden
-      window.location.href = "/";
+      window.location.href = nextPath();
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 401) {
         toast.error(t.login_failed);
@@ -77,7 +85,7 @@ export default function LoginPage() {
 
         {sso && (
           <a
-            href={authApi.ssoLoginUrl("/")}
+            href={authApi.ssoLoginUrl(nextPath())}
             className="block w-full text-center bg-blue-700 text-white text-sm px-4 py-2 rounded hover:bg-blue-600"
           >
             {t.login_sso(cfg?.oidc_provider_name || "SSO")}

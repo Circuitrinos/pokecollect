@@ -34,12 +34,15 @@ from app.models.collection import Collection, CollectionSoll
 from app.models.deck import Deck, DeckSlot
 from app.models.scan_draft import ScanDraft
 from app.models.sealed import SealedProduct
+from app.models.sleeve_tag import SleeveTag, TagSheet
 from app.models.user import User
 
 log = logging.getLogger(__name__)
 
 USER_KEY = "user_id"
-OWNED_MODELS = (PokemonCard, Collection, SealedProduct, Deck, ScanDraft)
+# Hüllen-Aufkleber haben immer einen Besitzer (Druck im Benutzer-Kontext) —
+# darum nur in OWNED_MODELS, nicht in OWNED_TABLES (adopt_orphans).
+OWNED_MODELS = (PokemonCard, Collection, SealedProduct, Deck, ScanDraft, SleeveTag, TagSheet)
 OWNED_TABLES = ("pokemon_cards", "collections", "sealed_products", "decks", "scan_drafts")
 
 
@@ -76,6 +79,8 @@ def _scope_to_user(state):
         ),
         with_loader_criteria(Deck, lambda cls: cls.user_id == uid, include_aliases=True),
         with_loader_criteria(ScanDraft, lambda cls: cls.user_id == uid, include_aliases=True),
+        with_loader_criteria(SleeveTag, lambda cls: cls.user_id == uid, include_aliases=True),
+        with_loader_criteria(TagSheet, lambda cls: cls.user_id == uid, include_aliases=True),
         with_loader_criteria(
             DeckSlot,
             lambda cls: cls.deck_id.in_(select(Deck.id).where(Deck.user_id == uid)),

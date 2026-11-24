@@ -12,3 +12,4 @@ from app.models.sealed import SealedCatalog, SealedProduct, sealed_product_sets 
 from app.models.friends import CollectionShare, Friendship  # noqa: F401
 from app.models.scan_check import ScanCheck  # noqa: F401
 from app.models.scan_draft import ScanDraft  # noqa: F401
+from app.models.sleeve_tag import SleeveTag, TagSheet  # noqa: F401

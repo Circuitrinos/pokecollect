@@ -9,6 +9,7 @@ import PhotoPanel from "@/components/carddetail/PhotoPanel";
 import EditForm from "@/components/carddetail/EditForm";
 import CollectionsPanel from "@/components/carddetail/CollectionsPanel";
 import DeckPanel from "@/components/carddetail/DeckPanel";
+import SleeveTagPanel from "@/components/carddetail/SleeveTagPanel";
 import ImageLightbox from "@/components/ImageLightbox";
 import { cardImageSrc, cardName } from "@/lib/utils";
 import { cardNeighbors } from "@/lib/cardNav";
@@ -337,6 +338,9 @@ export default function CardDetailPage() {
 
         {/* Deck (höchstens eines) */}
         <DeckPanel card={card} onChanged={(c) => setCard(c)} />
+
+        {/* Hüllen-Aufkleber (QR auf der Hülle) */}
+        <SleeveTagPanel card={card} />
       </div>
 
       <div className="mt-4 bg-pokemon-card rounded-lg p-4">

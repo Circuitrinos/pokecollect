@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import require_auth
 from app.api.v1 import (auth, card_gaps, cards, client_log, catalog, collections, data, decks, friends, prices, scan, scan_drafts, scan_quality,
-                        sealed, settings, sets, users)
+                        sealed, settings, sets, tags, users)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -30,6 +30,7 @@ for protected in (
     sealed.router,
     settings.router,
     sets.router,
+    tags.router,           # Hüllen-Aufkleber, je Benutzer (tenancy.py)
     users.router,   # zusätzlich require_admin je Route
 ):
     router.include_router(protected, dependencies=[Depends(require_auth)])
