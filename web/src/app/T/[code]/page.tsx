@@ -6,9 +6,19 @@ import toast from "react-hot-toast";
 import { QrCode, Search } from "lucide-react";
 import Image from "@/components/AppImage";
 import { API_BASE, Card, SleeveTag, TagErrorReason, tagError, tagsApi } from "@/lib/api";
-import { cardImageSrc, cardName, extractSetCode } from "@/lib/utils";
+import { cardImageSrc, cardName, extractSetCode, formatEur, imageUrl } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { valueLabel } from "@/lib/enumLabels";
+import { useBinderPlace } from "@/lib/binderPlace";
+import FirstEditionBadge from "@/components/FirstEditionBadge";
+import PrizePackBadge from "@/components/PrizePackBadge";
+
+// Zeitstempel der API sind UTC ohne Zonenangabe
+function apiDate(iso: string | null | undefined): Date | null {
+  if (!iso) return null;
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+  return isNaN(d.getTime()) ? null : d;
+}
 
 // Ziel des QR-Codes auf einem Hüllen-Aufkleber (backend/app/services/sleeve_tags.py).
 // Der Link ist groß geschrieben (…/T/K7M2 — kleiner QR-Code), darum heißt der
@@ -19,6 +29,7 @@ export default function TagLandingPage() {
   const { code } = useParams<{ code: string }>();
   const router = useRouter();
   const { t, lang } = useI18n();
+  const place = useBinderPlace();
   const [tag, setTag] = useState<SleeveTag | null>(null);
   const [err, setErr] = useState<TagErrorReason | null>(null);
   const [search, setSearch] = useState("");
@@ -93,21 +104,52 @@ export default function TagLandingPage() {
       {cands !== null && cands.length === 0 && <p className="text-gray-500 text-sm">{t.tag_no_candidates}</p>}
       <ul className="space-y-2">
         {(cands ?? []).map((card) => {
-          const { src, fallbacks } = cardImageSrc(card, API_BASE, true);
+          // Welches Exemplar? Eigenes Foto (auch das Scan-Foto hinter einem
+          // Katalogbild), Folierung/Sprache/Zustand, Binder-Fach, Erfassungszeit.
+          const { src: catalogSrc, fallbacks } = cardImageSrc(card, API_BASE, true);
+          const ownPhoto = card.bild_thumbnail_pfad ? catalogSrc : imageUrl(card.bild_scan_pfad, API_BASE, card.aktualisiert_am);
+          const src = ownPhoto ?? catalogSrc;
+          const finish = [valueLabel(card.folierung, lang), card.muster ? valueLabel(card.muster, lang) : ""].filter(Boolean).join(" · ");
+          const where = card.sammlungen ?? [];
+          const added = apiDate(card.hinzugefuegt_am);
           return (
             <li key={card.id}>
               <button type="button" onClick={() => pick(card)} disabled={busy}
-                className="w-full flex items-center gap-3 bg-pokemon-card hover:bg-gray-700/60 rounded-lg p-2 text-left disabled:opacity-60">
-                <div className="relative w-12 aspect-[63/88] shrink-0 rounded overflow-hidden bg-gray-800">
-                  {src && <Image src={src} fallbacks={fallbacks} alt={card.kartenname} fill className="object-cover" sizes="48px" />}
+                className="w-full flex items-start gap-3 bg-pokemon-card hover:bg-gray-700/60 rounded-lg p-2 text-left disabled:opacity-60">
+                <div className="relative w-16 aspect-[63/88] shrink-0 rounded overflow-hidden bg-gray-800">
+                  {src && <Image src={src} fallbacks={ownPhoto ? [catalogSrc, ...fallbacks].filter((u): u is string => !!u) : fallbacks}
+                    alt={card.kartenname} fill className="object-cover" sizes="64px" />}
+                  {ownPhoto && (
+                    <span title={t.tag_own_photo} className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-center text-gray-200 leading-tight py-0.5">
+                      📷
+                    </span>
+                  )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-white text-sm font-medium truncate">{cardName(card, lang)}</div>
-                  <div className="text-gray-400 text-xs font-mono">
-                    {extractSetCode(card.set_edition) || "–"} {card.karten_nr ?? ""}
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-white text-sm font-medium truncate">{cardName(card, lang)}</span>
+                    {card.erste_edition && <FirstEditionBadge className="shrink-0" />}
+                    {card.prize_pack && <PrizePackBadge className="shrink-0" />}
                   </div>
-                  <div className="text-gray-500 text-xs truncate">
-                    {[card.folierung, card.sprache, card.zustand].map((v) => valueLabel(v, lang)).filter(Boolean).join(" · ")}
+                  <div className="text-gray-400 text-xs">
+                    <span className="font-mono">{extractSetCode(card.set_edition) || "–"} {card.karten_nr ?? ""}</span>
+                    {finish && <> · {finish}</>}
+                  </div>
+                  <div className="text-gray-400 text-xs">
+                    {[card.sprache, valueLabel(card.zustand, lang)].filter(Boolean).join(" · ")}
+                  </div>
+                  <div className="text-xs truncate">
+                    {where.length > 0 ? (
+                      <span className="text-sky-300/90">📁 {where.map((c) => place.short(c)).join(", ")}</span>
+                    ) : card.deck_name ? null : (
+                      <span className="italic text-amber-400/80">{t.card_no_collection}</span>
+                    )}
+                    {card.deck_name && <span className="text-indigo-300 ml-1">🃏 {card.deck_name}</span>}
+                  </div>
+                  <div className="text-gray-500 text-[11px] truncate">
+                    {[added ? t.tag_added(added.toLocaleString(t.date_locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "",
+                      card.kaufpreis_eur != null ? t.tag_paid(formatEur(card.kaufpreis_eur)) : "",
+                      card.notizen ?? ""].filter(Boolean).join(" · ")}
                   </div>
                 </div>
               </button>
