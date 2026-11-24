@@ -249,3 +249,23 @@ def test_every_code_on_a_sheet_is_distinct():
     contents = [st.qr_content(BASE, s) for s in range(1, 1000)]
     assert len(set(contents)) == len(contents)
     assert all(tag_pdf.qr_version(c) == 2 for c in contents[::97])
+
+
+def test_card_answers_carry_the_tag_code(client, clean):
+    """Brian 24.11.: Karten mit Aufkleber zeigen ihren Code (Raster, Binder, Detail)."""
+    client.post(f"{API}/tags/sheets", json={"count": 1})
+    a, b = _card(client, "TestTag Mit"), _card(client, "TestTag Ohne")
+    code = st.code_for(9)
+    client.put(f"{API}/tags/{code}", json={"card_id": a})
+    assert client.get(f"{API}/cards/{a}").json()["tag_code"] == code
+    assert client.get(f"{API}/cards/{b}").json()["tag_code"] is None
+    items = {c["id"]: c for c in client.get(f"{API}/cards", params={"search": "TestTag", "limit": 50}).json()["items"]}
+    assert items[a]["tag_code"] == code and items[b]["tag_code"] is None
+    coll = client.post(f"{API}/collections", json={"name": "TestTag Binder"}).json()["id"]
+    try:
+        assert client.post(f"{API}/collections/{coll}/cards", json={"card_id": a}).json()["tag_code"] == code
+        client.post(f"{API}/collections/{coll}/cards", json={"card_id": b})
+        listed = {c["id"]: c["tag_code"] for c in client.get(f"{API}/collections/{coll}/cards").json()}
+        assert listed == {a: code, b: None}
+    finally:
+        client.delete(f"{API}/collections/{coll}")

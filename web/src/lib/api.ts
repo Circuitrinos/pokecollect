@@ -121,6 +121,7 @@ export type Card = {
   deck_name?: string | null;
   // Sammlungen der Karte (nur in Kartenlisten; undefined = nicht abgefragt)
   sammlungen?: { id: number; name: string; place?: { page: number; slot: number; row: number; col: number } | null }[] | null;
+  tag_code?: string | null;   // Hüllen-Aufkleber ("K7M2"), nur eigene Karten
   // TCGdex-Anreicherung (v0.7.0)
   tcgdex_card_id: string | null;
   set_id: string | null;

@@ -232,6 +232,9 @@ class CardResponse(CardBase):
     deck_name: Optional[str] = None
     # Sammlungen der Karte (nur in Kartenlisten befüllt; None = nicht abgefragt)
     sammlungen: Optional[list["CollectionRef"]] = None
+    # Code des Hüllen-Aufklebers ("K7M2", services/sleeve_tags.py) — nur für
+    # eigene Karten befüllt (Listen, Sammlungen, Einzelkarte), nie in geteilten
+    tag_code: Optional[str] = None
     # TCGdex-Anreicherung
     tcgdex_card_id: Optional[str] = None
     set_id: Optional[str] = None

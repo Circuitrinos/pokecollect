@@ -291,6 +291,7 @@ def _card_response(db: Session, card: PokemonCard) -> CardResponse:
     Antworten.
     """
     resp = CardResponse.model_validate(card)
+    resp.tag_code = sleeve_tags.codes_for_cards(db, [card.id]).get(card.id)
     row = catalog_row_for(db, card.tcgdex_card_id)
     resp.katalog_bild = bool(
         (card.bild_karte_url and (is_allowed_image_url(card.bild_karte_url)

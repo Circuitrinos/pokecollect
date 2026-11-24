@@ -8,6 +8,7 @@ import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
 import FirstEditionBadge from "@/components/FirstEditionBadge";
 import PrizePackBadge from "@/components/PrizePackBadge";
+import TagCodeBadge from "@/components/TagCodeBadge";
 import RegulationBadge from "@/components/RegulationBadge";
 import { useI18n } from "@/lib/i18n";
 import { useBinderPlace } from "@/lib/binderPlace";
@@ -105,14 +106,15 @@ export default function CardGrid({ cards, apiBase, placeholderEnabled = true, re
               {/* Bild */}
               <div className="aspect-[63/88] relative bg-gray-800">
                 {/* 1st-Edition- und Play!-Badge dezent oben links (#25) */}
-                {(card.erste_edition || card.prize_pack || card.deck_id) && (
-                  <div className="absolute top-1 left-1 z-10 flex gap-1">
+                {(card.erste_edition || card.prize_pack || card.deck_id || card.tag_code) && (
+                  <div className="absolute top-1 left-1 z-10 flex flex-wrap gap-1 pr-8">
                     {card.erste_edition && <FirstEditionBadge className="shadow" />}
                     {card.prize_pack && <PrizePackBadge className="shadow" />}
                     {card.deck_id && (
                       <span className="shadow rounded bg-indigo-700/90 px-1 text-[10px] leading-4 text-white" data-testid="card-deck-badge"
                         title={t.card_in_deck(card.deck_name ?? "")}>🃏</span>
                     )}
+                    <TagCodeBadge code={card.tag_code} />
                   </div>
                 )}
                 {imgSrc ? (

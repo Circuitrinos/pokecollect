@@ -242,6 +242,15 @@ class TagConflict(Exception):
         self.reason, self.other = reason, other
 
 
+def codes_for_cards(db: Session, card_ids) -> dict[int, str]:
+    """Karte → Aufkleber-Code, für Kartenlisten (eine Abfrage)."""
+    ids = [i for i in card_ids if i is not None]
+    if not ids:
+        return {}
+    rows = db.execute(select(SleeveTag.card_id, SleeveTag.serial).where(SleeveTag.card_id.in_(ids))).all()
+    return {card_id: code_for(serial) for card_id, serial in rows}
+
+
 def tag_for_card(db: Session, card_id: int) -> Optional[SleeveTag]:
     return db.scalar(select(SleeveTag).where(SleeveTag.card_id == card_id))
 

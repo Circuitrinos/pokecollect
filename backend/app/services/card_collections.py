@@ -19,6 +19,10 @@ def with_collections(db: Session, cards) -> list[CardResponse]:
                           .order_by(Collection.name)).all()
         for card_id, cid, name, position, layout in rows:
             by_card[card_id].append(CollectionRef(id=cid, name=name, place=binder_place(position, layout)))
+    from app.services.sleeve_tags import codes_for_cards   # Hüllen-Aufkleber
+
+    codes = codes_for_cards(db, ids)
     for r in out:
         r.sammlungen = by_card.get(r.id, [])
+        r.tag_code = codes.get(r.id)
     return out

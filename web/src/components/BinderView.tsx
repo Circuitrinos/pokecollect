@@ -7,6 +7,7 @@ import { cardImageSrc, setCodeFromEdition } from "@/lib/utils";
 import { rememberCardOrder } from "@/lib/cardNav";
 import RarityBadge from "@/components/RarityBadge";
 import RegulationBadge from "@/components/RegulationBadge";
+import TagCodeBadge from "@/components/TagCodeBadge";
 import { useI18n } from "@/lib/i18n";
 import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
 import { Camera } from "lucide-react";
@@ -431,6 +432,7 @@ export default function BinderView({
                     rememberCardOrder(items.map((it) => it.card.id));
                   }}
                 >
+                  <TagCodeBadge code={card.tag_code} className="absolute top-1 left-1 z-10" />
                   {src ? (
                     <Image
                       src={src}

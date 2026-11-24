@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,14 +19,15 @@ from app.schemas.friends import FriendUser, SharesUpdate
 from app.services import friends as friends_svc
 from app.tenancy import current_user_id
 from app.services import catalog as catalog_svc
-from app.services import set_goal
+from app.services import set_goal, sleeve_tags
 from app.services.collection_slots import next_free_position
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
 
-def _card_with_position(card: PokemonCard, position) -> CollectionCardResponse:
+def _card_with_position(card: PokemonCard, position, tag_code: Optional[str] = None) -> CollectionCardResponse:
     base = CardResponse.model_validate(card).model_dump()
+    base["tag_code"] = tag_code      # Hüllen-Aufkleber (services/sleeve_tags.py)
     return CollectionCardResponse(**base, position=position)
 
 
@@ -132,7 +135,8 @@ def list_collection_cards(collection_id: int, db: Session = Depends(get_db)):
         .where(collection_cards.c.collection_id == collection_id)
         .order_by(collection_cards.c.position.nulls_last(), PokemonCard.id)
     ).all()
-    return [_card_with_position(card, position) for card, position in rows]
+    codes = sleeve_tags.codes_for_cards(db, [card.id for card, _ in rows])
+    return [_card_with_position(card, position, codes.get(card.id)) for card, position in rows]
 
 
 @router.post("/{collection_id}/cards", response_model=CollectionCardResponse, status_code=201)
@@ -158,7 +162,7 @@ def add_card_to_collection(collection_id: int, data: CollectionCardAdd, db: Sess
             )
         )
         db.commit()
-    return _card_with_position(card, position)
+    return _card_with_position(card, position, sleeve_tags.codes_for_cards(db, [card.id]).get(card.id))
 
 
 @router.delete("/{collection_id}/cards/{card_id}", status_code=204)

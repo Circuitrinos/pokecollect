@@ -6,6 +6,7 @@ import { CollectionCard } from "@/lib/api";
 import { cardImageSrc } from "@/lib/utils";
 import RarityBadge from "@/components/RarityBadge";
 import RegulationBadge from "@/components/RegulationBadge";
+import TagCodeBadge from "@/components/TagCodeBadge";
 import { useI18n } from "@/lib/i18n";
 import { useCoarsePointer, useLongPress } from "@/lib/useLongPress";
 
@@ -92,9 +93,14 @@ export default function SortableCardGrid({ cards, apiBase, onReorder, onRemove, 
                 }
               }}>
                 <div className="aspect-[63/88] relative bg-gray-800">
-                  {card.deck_id && (
-                    <span className="absolute top-1 left-1 z-10 shadow rounded bg-indigo-700/90 px-1 text-[10px] leading-4 text-white"
-                      data-testid="card-deck-badge" title={t.card_in_deck(card.deck_name ?? "")}>🃏</span>
+                  {(card.deck_id || card.tag_code) && (
+                    <div className="absolute top-1 left-1 z-10 flex flex-wrap gap-1 pr-8">
+                      {card.deck_id && (
+                        <span className="shadow rounded bg-indigo-700/90 px-1 text-[10px] leading-4 text-white"
+                          data-testid="card-deck-badge" title={t.card_in_deck(card.deck_name ?? "")}>🃏</span>
+                      )}
+                      <TagCodeBadge code={card.tag_code} />
+                    </div>
                   )}
                   {src ? (
                     <Image
