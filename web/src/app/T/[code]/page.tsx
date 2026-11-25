@@ -61,7 +61,9 @@ export default function TagLandingPage() {
     try {
       await tagsApi.link(tag.code, card.id, replace);
       toast.success(t.tag_linked_ok(tag.code, cardName(card, lang)));
-      router.replace(`/cards/${card.id}`);
+      // Vom Scanner in PokéCollect gekommen: gleich weiter mit dem nächsten Aufkleber
+      const fromScan = new URLSearchParams(window.location.search).get("from") === "scan";
+      router.replace(fromScan ? "/tags/scan" : `/cards/${card.id}`);
     } catch (e) {
       const { reason, other } = tagError(e);
       if (reason === "card_tagged") setConflict({ card, other: String(other) });

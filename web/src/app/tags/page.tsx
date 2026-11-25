@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { QrCode } from "lucide-react";
+import Link from "next/link";
+import { QrCode, ScanQrCode } from "lucide-react";
 import { TagSettings, TagSheet, tagError, tagsApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { Field, INPUT, Section, triggerBlobDownload } from "@/components/settings/SettingsUI";
@@ -111,6 +112,10 @@ export default function TagsPage() {
         <div>
           <h1 className="text-xl font-bold text-white">{t.tags_title}</h1>
           <p className="text-gray-400 text-sm mt-1">{t.tags_intro}</p>
+          <Link href="/tags/scan"
+            className="inline-flex items-center gap-1.5 mt-3 bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded">
+            <ScanQrCode className="w-4 h-4" aria-hidden />{t.tags_scan_button}
+          </Link>
         </div>
       </div>
 

@@ -17,6 +17,7 @@ import {
   Users,
   Layers,
   QrCode,
+  ScanQrCode,
 } from "lucide-react";
 
 // Stabile Schlüssel für localStorage — bewusst getrennt vom Pfad, damit ein
@@ -33,6 +34,7 @@ export type NavKey =
   | "friends"
   | "sealed"
   | "tags"
+  | "tagscan"
   | "settings"
   | "admin";
 
@@ -51,6 +53,7 @@ export type NavLabelKey =
   | "nav_friends"
   | "nav_sealed"
   | "nav_tags"
+  | "nav_tagscan"
   | "nav_settings"
   | "nav_admin";
 
@@ -85,6 +88,8 @@ export const NAV_TARGETS: NavTarget[] = [
   { key: "sealed", href: "/sealed", Icon: Package, labelKey: "nav_sealed" },
   // Hüllen-Aufkleber: Bögen drucken und Drucker kalibrieren (app/tags/page.tsx)
   { key: "tags", href: "/tags", Icon: QrCode, labelKey: "nav_tags" },
+  // Aufkleber in PokéCollect scannen (app/tags/scan) — gut für die untere Leiste
+  { key: "tagscan", href: "/tags/scan", Icon: ScanQrCode, labelKey: "nav_tagscan" },
   { key: "settings", href: "/settings", Icon: Settings, labelKey: "nav_settings" },
   { key: "admin", href: "/admin", Icon: ShieldCheck, labelKey: "nav_admin", adminOnly: true },
 ];

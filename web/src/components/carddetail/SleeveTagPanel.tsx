@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { QrCode } from "lucide-react";
+import { QrCode, ScanQrCode } from "lucide-react";
+import QrScanner from "@/components/QrScanner";
+import { cameraAvailable } from "@/components/CameraCapture";
 import { Card, SleeveTag, tagError, tagsApi } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
@@ -12,6 +14,9 @@ export default function SleeveTagPanel({ card }: { card: Card }) {
   const [tag, setTag] = useState<SleeveTag | null | undefined>(undefined);
   const [number, setNumber] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [canScan, setCanScan] = useState(false);
+  useEffect(() => { setCanScan(cameraAvailable()); }, []);
 
   useEffect(() => {
     if (!card.besessen) return;
@@ -20,8 +25,7 @@ export default function SleeveTagPanel({ card }: { card: Card }) {
 
   if (!card.besessen || tag === undefined) return null;
 
-  const link = async (replace = false) => {
-    const code = number.trim();
+  const link = async (code: string, replace = false) => {
     if (!code) return;
     setBusy(true);
     try {
@@ -31,7 +35,7 @@ export default function SleeveTagPanel({ card }: { card: Card }) {
     } catch (e) {
       const { reason, other } = tagError(e);
       if (reason === "card_tagged") {
-        if (confirm(t.tag_card_tagged(String(other)))) await link(true);
+        if (confirm(t.tag_card_tagged(String(other)))) await link(code, true);
         return;
       }
       toast.error(reason === "tag_linked" ? t.tag_already_used
@@ -68,14 +72,24 @@ export default function SleeveTagPanel({ card }: { card: Card }) {
       ) : (
         <>
           <p className="text-gray-500 text-sm mb-2">{t.tag_panel_none}</p>
-          <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); void link(); }}>
+          <form className="flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); void link(number.trim()); }}>
             <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder={t.tag_panel_number}
               maxLength={12} autoCapitalize="characters" spellCheck={false} className="w-32 font-mono uppercase bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-white text-sm" />
             <button type="submit" disabled={busy || !number.trim()}
               className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded disabled:opacity-50">
               {t.tag_panel_link}
             </button>
+            {canScan && (
+              <button type="button" onClick={() => setScanning(true)} disabled={busy}
+                className="inline-flex items-center gap-1.5 bg-blue-700 hover:bg-blue-600 text-white text-sm px-3 py-1.5 rounded disabled:opacity-50">
+                <ScanQrCode className="w-4 h-4" aria-hidden />{t.tag_panel_scan}
+              </button>
+            )}
           </form>
+          {scanning && (
+            <QrScanner title={t.tag_panel_title} onClose={() => setScanning(false)}
+              onResult={(code) => { setScanning(false); void link(code); }} />
+          )}
         </>
       )}
     </div>
