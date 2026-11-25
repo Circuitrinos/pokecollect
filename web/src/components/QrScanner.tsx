@@ -4,17 +4,21 @@ import toast from "react-hot-toast";
 import { Flashlight, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { lightSet } from "@/lib/cameraZoom";
+import type { QrHit, QrResponse } from "@/lib/qrWorker";
 
 // Hüllen-Aufkleber in PokéCollect selbst scannen (backend/app/services/sleeve_tags.py).
-// Erkannt wird mit BarcodeDetector, wo der Browser ihn hat — in Chrome auf Android
-// hängt er an den Google-Diensten, auf Brians /e/OS-Handy also womöglich nicht —,
-// sonst mit jsQR (reines JavaScript, wird erst dann nachgeladen).
-// Gelesen wird nur das Quadrat in der Bildmitte: schneller, und ein Aufkleber daneben
-// (der Nachbar auf dem Bogen, die nächste Hülle) wird nicht versehentlich erkannt.
+// Erkannt wird mit BarcodeDetector, wo der Browser ihn wirklich hat (Chrome auf Android
+// bekommt ihn von den Google-Diensten — auf Brians /e/OS-Handy also womöglich nicht),
+// sonst mit zxing-cpp als WebAssembly in einem Worker (lib/qrWorker.ts).
+// Brian 24.11.: „the scanner is way slower than the default camera app" — darum:
+// Bild für Bild ohne Pause (sobald der Leser fertig ist, kommt das nächste), und
+// abwechselnd das Mittelquadrat in voller Auflösung (kleine Codes aus ~20 cm) und das
+// ganze Bild verkleinert (Code muss nicht genau im Quadrat liegen). Bei mehreren Codes
+// im Bild (Nachbar auf dem Bogen) gewinnt der zur Bildmitte nächste.
 const KEY = "qr_camera";
 const SQUARE = 0.62;            // Kantenlänge des Lesequadrats, Anteil der kürzeren Bildseite
-const MAX_PX = 720;             // größer bringt beim 0,38-mm-Modul nichts, kostet nur Zeit
-const EVERY_MS = 120;
+const CROP_MAX = 900;           // Mittelquadrat höchstens so groß (px) an den Leser
+const FULL_MAX = 1280;          // ganzes Bild: längere Seite höchstens so groß
 
 /** Code aus dem Inhalt eines QR-Codes: Aufkleber-Link (…/T/K7M2) oder der Code allein. */
 export function stickerCode(text: string): string | null {
@@ -23,8 +27,9 @@ export function stickerCode(text: string): string | null {
   return m ? m[1].toUpperCase() : null;
 }
 
-type Detector = { detect: (src: CanvasImageSource) => Promise<{ rawValue: string }[]> };
-type JsQR = (data: Uint8ClampedArray, w: number, h: number, o?: { inversionAttempts?: string }) => { data: string } | null;
+type Detector = {
+  detect: (src: CanvasImageSource) => Promise<{ rawValue: string; boundingBox: DOMRectReadOnly }[]>;
+};
 
 async function makeDetector(): Promise<Detector | null> {
   const BD = (window as unknown as {
@@ -38,6 +43,8 @@ async function makeDetector(): Promise<Detector | null> {
     return null;
   }
 }
+
+type Diag = { engine: string; fps: number };
 
 export default function QrScanner({ onResult, onClose, title }: {
   onResult: (code: string) => void;
@@ -57,6 +64,7 @@ export default function QrScanner({ onResult, onClose, title }: {
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [torch, setTorch] = useState<boolean | null>(null);   // null = Kamera hat keine Lampe
+  const [diag, setDiag] = useState<Diag | null>(null);
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((tr) => tr.stop());
@@ -77,7 +85,6 @@ export default function QrScanner({ onResult, onClose, title }: {
         stop();
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
-        // Nahfokus: Aufkleber werden auf ~10 cm gehalten
         await track?.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => {});
         const caps = track?.getCapabilities?.() as { torch?: boolean } | undefined;
         setTorch(caps?.torch ? false : null);
@@ -94,61 +101,154 @@ export default function QrScanner({ onResult, onClose, title }: {
     return () => { alive = false; stop(); };
   }, [deviceId, stop]);
 
-  // Lesen: alle EVERY_MS das Mittelquadrat, nie zwei Durchläufe gleichzeitig
+  // Lesen: ein Bild nach dem anderen, ohne Pause dazwischen
   useEffect(() => {
     if (!size) return;
     let alive = true;
-    let timer: ReturnType<typeof setTimeout>;
     let detector: Detector | null | undefined;          // undefined = noch nicht geprüft
-    let jsqr: JsQR | null = null;
-    let lastForeign = "";
+    let worker: Worker | null = null;
+    let reqId = 0;
+    const pending = new Map<number, (hits: QrHit[] | null) => void>();
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let frame = 0;
+    let reads = 0;
+    let since = performance.now();
+    let engine = "";
+    let lastForeign = "";
 
-    const tick = async () => {
-      const v = videoRef.current;
-      if (!alive || doneRef.current) return;
-      if (v && ctx && v.videoWidth) {
-        const side = Math.round(Math.min(v.videoWidth, v.videoHeight) * SQUARE);
-        const out = Math.min(side, MAX_PX);
+    const viaWorker = (image: ImageData, multi: boolean) => new Promise<QrHit[] | null>((resolve) => {
+      if (!worker) {
+        worker = new Worker(new URL("../lib/qrWorker.ts", import.meta.url), { type: "module" });
+        worker.onmessage = (e: MessageEvent<QrResponse>) => {
+          const cb = pending.get(e.data.id);
+          pending.delete(e.data.id);
+          cb?.("hits" in e.data ? e.data.hits : null);
+        };
+        worker.onerror = () => {
+          pending.forEach((cb) => cb(null));
+          pending.clear();
+          if (alive) setError(t.qr_reader_failed);
+          alive = false;
+        };
+      }
+      const id = ++reqId;
+      pending.set(id, resolve);
+      worker.postMessage({ id, image, multi }, [image.data.buffer]);
+    });
+
+    const grab = (v: HTMLVideoElement, full: boolean): ImageData | null => {
+      if (!ctx) return null;
+      const W = v.videoWidth, H = v.videoHeight;
+      if (full) {
+        const k = Math.min(1, FULL_MAX / Math.max(W, H));
+        canvas.width = Math.round(W * k);
+        canvas.height = Math.round(H * k);
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      } else {
+        const side = Math.round(Math.min(W, H) * SQUARE);
+        const out = Math.min(side, CROP_MAX);
         canvas.width = canvas.height = out;
-        ctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, out, out);
-        let text: string | null = null;
-        if (detector === undefined) detector = await makeDetector();
+        ctx.drawImage(v, (W - side) / 2, (H - side) / 2, side, side, 0, 0, out, out);
+      }
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    };
+
+    // Aufkleber-Code nächst der Bildmitte; fremde QR-Codes einmal melden
+    const pick = (hits: QrHit[]): string | null => {
+      let best: string | null = null;
+      let bestD = Infinity;
+      for (const h of hits) {
+        const code = stickerCode(h.text);
+        if (!code) {
+          if (h.text !== lastForeign) { lastForeign = h.text; toast.error(t.qr_not_tag); }
+          continue;
+        }
+        const d = (h.cx - 0.5) ** 2 + (h.cy - 0.5) ** 2;
+        if (d < bestD) { bestD = d; best = code; }
+      }
+      return best;
+    };
+
+    const next = (v: HTMLVideoElement) => {
+      if (!alive || doneRef.current) return;
+      const rvfc = (v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }).requestVideoFrameCallback;
+      if (rvfc) rvfc.call(v, () => void step());
+      else requestAnimationFrame(() => void step());
+    };
+
+    const step = async () => {
+      const v = videoRef.current;
+      if (!alive || doneRef.current || !v) return;
+      if (v.videoWidth) {
+        frame++;
+        if (detector === undefined) {
+          detector = await makeDetector();
+          engine = detector ? "native" : "zxing";
+        }
+        let hits: QrHit[] | null = null;
         if (detector) {
           try {
-            text = (await detector.detect(canvas))[0]?.rawValue ?? null;
+            hits = (await detector.detect(v)).map((r) => ({
+              text: r.rawValue,
+              cx: (r.boundingBox.x + r.boundingBox.width / 2) / v.videoWidth,
+              cy: (r.boundingBox.y + r.boundingBox.height / 2) / v.videoHeight,
+            }));
           } catch {
-            detector = null;                              // kaputt → ab jetzt jsQR
+            detector = null;                              // kaputt → ab jetzt zxing
+            engine = "zxing";
           }
         }
         if (!detector) {
-          if (!jsqr) jsqr = (await import("jsqr")).default as unknown as JsQR;
-          const img = ctx.getImageData(0, 0, out, out);
-          text = jsqr(img.data, out, out, { inversionAttempts: "dontInvert" })?.data ?? null;
+          const full = frame % 2 === 0;
+          const image = grab(v, full);
+          hits = image ? await viaWorker(image, full) : null;
         }
-        if (text && alive && !doneRef.current) {
-          const code = stickerCode(text);
-          if (code) {
-            doneRef.current = true;
-            navigator.vibrate?.(40);
-            stop();
-            onResultRef.current(code);
-            return;
-          }
-          if (text !== lastForeign) { lastForeign = text; toast.error(t.qr_not_tag); }
+        reads++;
+        const now = performance.now();
+        if (now - since > 1000 && alive) {
+          setDiag({ engine, fps: Math.round((reads * 1000) / (now - since)) });
+          reads = 0;
+          since = now;
+        }
+        const code = hits ? pick(hits) : null;
+        if (code && alive && !doneRef.current) {
+          doneRef.current = true;
+          navigator.vibrate?.(40);
+          stop();
+          onResultRef.current(code);
+          return;
         }
       }
-      if (alive) timer = setTimeout(tick, EVERY_MS);
+      next(v);
     };
-    timer = setTimeout(tick, EVERY_MS);
-    return () => { alive = false; clearTimeout(timer); };
+
+    if (videoRef.current) next(videoRef.current);
+    return () => {
+      alive = false;
+      worker?.terminate();
+      pending.forEach((cb) => cb(null));
+      pending.clear();
+    };
   }, [size, stop, t]);
 
   const toggleTorch = () => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track || torch === null) return;
     lightSet(track, !torch, null).then(() => setTorch(!torch)).catch(() => setTorch(null));
+  };
+
+  // Antippen: dort scharfstellen (wo der Browser das kann), danach wieder Dauer-Fokus
+  const focusAt = (e: React.MouseEvent<HTMLDivElement>) => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    track.applyConstraints({ advanced: [{ focusMode: "single-shot", pointsOfInterest: [{ x, y }] } as MediaTrackConstraintSet] })
+      .then(() => setTimeout(() => {
+        track.applyConstraints({ advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] }).catch(() => {});
+      }, 1500))
+      .catch(() => {});
   };
 
   const sq = size ? Math.min(size.w, size.h) * SQUARE : 0;
@@ -174,7 +274,7 @@ export default function QrScanner({ onResult, onClose, title }: {
           <X size={20} />
         </button>
       </div>
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0" onClick={focusAt}>
         <video ref={videoRef} playsInline muted autoPlay
           onLoadedMetadata={(e) => setSize({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
           className="absolute inset-0 h-full w-full object-contain" />
@@ -195,7 +295,15 @@ export default function QrScanner({ onResult, onClose, title }: {
           <div className="absolute inset-x-4 top-1/3 rounded bg-gray-900/90 p-3 text-sm text-red-300">{t.camera_error(error)}</div>
         )}
       </div>
-      <p className="p-3 pb-6 text-center text-xs text-gray-300">{t.qr_hint}</p>
+      <div className="p-3 pb-6 text-center space-y-1">
+        <p className="text-xs text-gray-300">{t.qr_hint}</p>
+        {/* Für die Fehlersuche: welcher Leser, welche Kamera-Auflösung, wie viele Bilder je Sekunde */}
+        {size && diag && (
+          <p className="text-[10px] text-gray-600 font-mono" data-testid="qr-diag">
+            {diag.engine} · {size.w}×{size.h} · {diag.fps}/s
+          </p>
+        )}
+      </div>
     </div>
   );
 }

@@ -20,3 +20,5 @@ build/
 e2e/playwright-report/
 e2e/test-results/
 e2e/.auth/
+# zxing-wasm-Leser, beim Build aus node_modules kopiert (web/scripts/copy-zxing-wasm.mjs)
+web/public/zxing/

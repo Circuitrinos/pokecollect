@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-zxing-wasm.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-zxing-wasm.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint --max-warnings 0",
@@ -17,7 +19,7 @@
     "react-dom": "19.3.1",
     "recharts": "2.15.4",
     "axios": "1.20.0",
-    "jsqr": "1.4.0",
+    "zxing-wasm": "3.1.6",
     "react-hot-toast": "2.6.0",
     "lucide-react": "0.577.0",
     "sharp": "0.35.5"
